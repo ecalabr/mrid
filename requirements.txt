@@ -1,0 +1,10 @@
+pydicom
+numpy
+pillow
+PyYAML
+pandas
+scikit-learn
+joblib
+sentence-transformers
+torch>=1.8.0    # Optional for CNN functionality
+torchvision
