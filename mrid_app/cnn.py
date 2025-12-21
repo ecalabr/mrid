@@ -15,9 +15,12 @@ except Exception:
 _CNN_TRANSFORMS = None
 
 try:
-    from .config import IMAGE_SIZE
+    from .config import IMAGE_SIZE, NUM_EPOCHS, BATCH_SIZE, LR
 except Exception:
     IMAGE_SIZE = 64
+    NUM_EPOCHS = 200
+    BATCH_SIZE = 8
+    LR = 0.001
 
 
 def _get_transforms():
@@ -98,8 +101,7 @@ class ImageDataset(Dataset):
         return self.X[idx], self.y[idx]
 
 
-def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNClass=None,
-                          NUM_EPOCHS=500, BATCH_SIZE=8, LR=0.001):
+def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNClass=None):
     if torch is None:
         return None, None
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

@@ -12,6 +12,7 @@ import joblib
 import pydicom
 from PIL import Image, ImageTk
 import shutil
+import colorsys
 
 
 # Small helper to enable Tk autoscaling
@@ -34,6 +35,24 @@ def enable_tkinter_autoscaling(root):
                 continue
     except Exception:
         pass
+
+
+def _generate_color_map(labels):
+    """Generate high-contrast colors for each label.
+    Returns dict label -> (bg_hex, fg_hex).
+    """
+    cmap = {}
+    n = max(1, len(labels))
+    for i, lab in enumerate(labels):
+        h = float(i) / n
+        s = 0.7
+        v = 0.92
+        r, g, b = colorsys.hsv_to_rgb(h, s, v)
+        bh = '#%02x%02x%02x' % (int(r * 255), int(g * 255), int(b * 255))
+        lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        fh = '#000000' if lum > 0.5 else '#ffffff'
+        cmap[lab] = (bh, fh)
+    return cmap
 
 
 class TrainClassifierGUI:
@@ -154,16 +173,28 @@ class MainApp:
         mode_frame.pack(side="right", padx=5)
         tk.Label(mode_frame, text="Mode:").pack(side="left", padx=5)
         mode_options = ["Manual", "Semi-Auto", "Full-Auto"]
-        mode_dropdown = ttk.Combobox(mode_frame, textvariable=self.classification_mode, values=mode_options, state="readonly", width=12)
-        mode_dropdown.pack(side="left", padx=5)
-        mode_dropdown.bind("<<ComboboxSelected>>", self._check_model_status)
+        # Replaced ttk.Combobox with tk.OptionMenu. Keep using the same
+        # StringVar (self.classification_mode) and call _check_model_status via
+        # the OptionMenu 'command' so existing logic that relies on the
+        # variable and event handling remains unchanged.
+        mode_menu = tk.OptionMenu(mode_frame, self.classification_mode, *mode_options, command=self._check_model_status)
+        try:
+            mode_menu.config(width=12)
+        except Exception:
+            pass
+        mode_menu.pack(side="left", padx=5)
         model_type_frame = tk.Frame(control_frame)
         model_type_frame.pack(side="right", padx=5)
         tk.Label(model_type_frame, text="Model Type:").pack(side="left", padx=5)
         model_options = ["DICOM Header Model", "Image-Based Model", "Header + Image Model"]
-        model_dropdown = ttk.Combobox(model_type_frame, textvariable=self.model_type, values=model_options, state="readonly", width=20)
-        model_dropdown.pack(side="left", padx=5)
-        model_dropdown.bind("<<ComboboxSelected>>", self._check_model_status)
+        # Replace model-type Combobox with OptionMenu; preserve self.model_type
+        # StringVar and call _check_model_status on selection changes.
+        model_menu = tk.OptionMenu(model_type_frame, self.model_type, *model_options, command=self._check_model_status)
+        try:
+            model_menu.config(width=20)
+        except Exception:
+            pass
+        model_menu.pack(side="left", padx=5)
 
         # New convert toggle (Yes/No)
         convert_frame = tk.Frame(control_frame)
@@ -648,22 +679,44 @@ from . import processing
 
 
 def load_image_worker(dicom_paths, panel_label_ref, root):
+    """Load a center slice (PIL Image) in a worker thread and schedule creation
+    of the PhotoImage on the main thread. The worker only does PIL work; the
+    PhotoImage is constructed on the Tk main thread to avoid invisible images.
     """
-    Runs load_center_slice in a background thread and updates the GUI panel.
-    """
-    img = processing.load_center_slice(dicom_paths)
+    try:
+        pil_img = processing.load_center_slice(dicom_paths)
+    except Exception:
+        pil_img = None
 
-    if img is None:
-        img = Image.new("L", (256, 256), 128)
+    if pil_img is None:
+        pil_img = Image.new('L', (256, 256), 128)
 
-    img = img.resize((256, 256))
-    tk_img = ImageTk.PhotoImage(img)
+    try:
+        pil_img = pil_img.resize((256, 256))
+    except Exception:
+        pass
 
     def update_panel():
-        panel_label_ref.config(image=tk_img)
-        panel_label_ref.image = tk_img
+        try:
+            try:
+                pil_rgb = pil_img.convert('RGB') if hasattr(pil_img, 'convert') else pil_img
+            except Exception:
+                pil_rgb = pil_img
 
-    root.after(0, update_panel)
+            tk_img = ImageTk.PhotoImage(pil_rgb, master=panel_label_ref)
+            panel_label_ref.config(image=tk_img)
+            panel_label_ref.image = tk_img
+        except Exception:
+            # If anything goes wrong, leave the existing image in place
+            try:
+                _ = panel_label_ref.image
+            except Exception:
+                pass
+
+    try:
+        panel_label_ref.after(0, update_panel)
+    except Exception:
+        update_panel()
 
 
 def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, study_done_event, mode="Manual",
@@ -691,8 +744,15 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
 
     dropdown_values = TARGET_SERIES
     dropdown_vars = {}
+    dropdown_widgets = {}
 
-    placeholder_img = Image.new("L", (256, 256), 200)
+    # Precompute color map for the dropdown labels
+    try:
+        color_map = _generate_color_map(dropdown_values)
+    except Exception:
+        color_map = {k: (None, None) for k in dropdown_values}
+
+    placeholder_img = Image.new("RGB", (256, 256), (200, 200, 200))
     tk_placeholder = ImageTk.PhotoImage(placeholder_img)
 
     optimized_assignments = {}
@@ -764,15 +824,158 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
             initial_value = "Other"
 
         variable = tk.StringVar(value=initial_value)
-        dropdown = ttk.Combobox(series_frame, textvariable=variable, values=dropdown_values, state="readonly")
-        dropdown.grid(row=2, column=0, pady=(0, 5))
-        dropdown_vars[first_path] = variable
 
-        threading.Thread(
-            target=load_image_worker,
-            args=(dicom_paths, panel, root),
-            daemon=True
-        ).start()
+        # determine sensible defaults
+        try:
+            default_bg = series_frame.cget('bg') or '#f0f0f0'
+        except Exception:
+            default_bg = '#f0f0f0'
+        default_fg = '#000000'
+
+        # per-series colored dropdown implementation
+        class ColoredDropdown:
+            def __init__(self, parent, var, options, cmap, series_key):
+                self.var = var
+                self.options = list(options)
+                self.cmap = cmap
+                self.series_key = series_key
+                self.btn = tk.Button(parent, text=self.var.get(), width=20, relief='raised')
+                self.menu = tk.Menu(parent, tearoff=0)
+
+                for opt in self.options:
+                    def _mk(v=opt):
+                        def _cmd():
+                            try:
+                                self.var.set(v)
+                            except Exception:
+                                pass
+                            # Update only this button's display
+                            try:
+                                self._update_display(v)
+                            except Exception:
+                                pass
+
+                            # If a non-'Other' value was selected, clear that value
+                            # from any other dropdowns by setting them to 'Other'.
+                            if v != 'Other':
+                                for other_key, other_var in dropdown_vars.items():
+                                    if other_key == self.series_key:
+                                        continue
+                                    try:
+                                        if other_var.get() == v:
+                                            other_var.set('Other')
+                                            other_widget = dropdown_widgets.get(other_key)
+                                            if other_widget:
+                                                try:
+                                                    other_widget._update_display('Other')
+                                                except Exception:
+                                                    pass
+                                    except Exception:
+                                        pass
+                        return _cmd
+
+                    cmd = _mk(opt)
+                    if opt == 'Other':
+                        try:
+                            self.menu.add_command(label=opt, command=cmd)
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            bg, fg = self.cmap.get(opt, (None, None))
+                            if bg is not None:
+                                self.menu.add_command(label=opt, command=cmd, background=bg, foreground=fg, activebackground=bg, activeforeground=fg)
+                            else:
+                                self.menu.add_command(label=opt, command=cmd)
+                        except Exception:
+                            try:
+                                self.menu.add_command(label=opt, command=cmd)
+                            except Exception:
+                                pass
+
+                def _on_click(event=None, menu=self.menu, btn=self.btn):
+                    try:
+                        menu.tk_popup(btn.winfo_rootx(), btn.winfo_rooty() + btn.winfo_height())
+                    except Exception:
+                        try:
+                            menu.post(btn.winfo_rootx(), btn.winfo_rooty() + btn.winfo_height())
+                        except Exception:
+                            pass
+
+                self.btn.configure(command=_on_click)
+
+                try:
+                    if hasattr(self.var, 'trace_add'):
+                        self.var.trace_add('write', lambda *a: self._update_display())
+                    else:
+                        self.var.trace('w', lambda *a: self._update_display())
+                except Exception:
+                    pass
+
+            def _update_display(self, v=None):
+                val = self.var.get() if v is None else v
+                if val == 'Other':
+                    try:
+                        self.btn.config(bg=default_bg, fg=default_fg, activebackground=default_bg, activeforeground=default_fg, text=val)
+                    except Exception:
+                        try:
+                            self.btn.config(text=val)
+                        except Exception:
+                            pass
+                    try:
+                        self.btn.update_idletasks()
+                    except Exception:
+                        pass
+                    return
+
+                bg, fg = self.cmap.get(val, (None, None))
+                try:
+                    if bg is not None:
+                        self.btn.config(bg=bg, fg=fg, activebackground=bg, activeforeground=fg, text=val)
+                    else:
+                        self.btn.config(bg=default_bg, fg=default_fg, text=val)
+                    try:
+                        self.btn.update_idletasks()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+        # create control row and widget
+        control_row = tk.Frame(series_frame)
+        cd = ColoredDropdown(control_row, variable, dropdown_values, color_map, first_path)
+        try:
+            cd.btn.pack(side='left')
+        except Exception:
+            try:
+                cd.btn.grid(row=0, column=0)
+            except Exception:
+                pass
+
+        try:
+            control_row.grid(row=2, column=0, pady=(0, 5))
+        except Exception:
+            try:
+                control_row.pack(pady=(0,5))
+            except Exception:
+                pass
+
+        try:
+            cd._update_display()
+        except Exception:
+            pass
+
+        dropdown_vars[first_path] = variable
+        try:
+            dropdown_widgets[first_path] = cd
+        except Exception:
+            pass
+
+        # Start background image loader to replace placeholder with center slice
+        try:
+            threading.Thread(target=load_image_worker, args=(dicom_paths, panel, root), daemon=True).start()
+        except Exception:
+            pass
 
     button_frame = tk.Frame(root, pady=10)
     button_frame.grid(row=1, column=0, sticky="ew")
