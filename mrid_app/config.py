@@ -37,4 +37,5 @@ CATEGORICAL_COLS = [
 TEXT_COLS = ['SeriesDescription', 'ContrastBolusAgent']
 
 # NOTE: The sentence-transformers model is large and should be loaded lazily.
-SEMANTIC_MODEL = None
+SEMANTIC_MODEL_NAME = 'all-MiniLM-L6-v2'
+SEMANTIC_MODEL = None  # always None initially

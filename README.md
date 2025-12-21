@@ -1,13 +1,11 @@
 MRID - DICOM Classification Tool
 
 This repository contains a GUI tool for quickly classifying DICOM series
-into target MRI series types (T1/T2/FLAIR/T1c/Other). The original
-single-file script has been refactored into a package for clarity.
+into target MRI series types (T1/T2/FLAIR/T1c/Other).
 
 Structure
-- mrid.py (original single-file script - kept for reference)
 - mrid_app/
-  - __init__.py
+  - \_\_init\_\_.py
   - config.py       # constants and model settings
   - utils.py        # small helper utilities
   - prep.py         # feature preprocessing and text encoding
@@ -27,15 +25,3 @@ Getting started
 
    python run.py
 
-Notes
-- The refactor splits responsibilities across modules but keeps the
-  user-facing behaviour the same.
-- CNN/image training code is included but may require GPU-enabled PyTorch
-  and a non-empty dataset to run successfully.
-- The SentenceTransformer model will be downloaded on first run.
-
-Next steps / Improvements
-- Fully move the remaining classification logic (file scanning,
-  hierarchy building, and per-study GUI) into modules for testability.
-- Add unit tests and CI configuration.
-- Provide CLI wrappers for non-GUI usage.

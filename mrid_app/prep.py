@@ -1,7 +1,7 @@
 import re
 import numpy as np
 import pandas as pd
-from .config import ARRAY_COLS_MAPPING, INITIAL_FEATURE_COLS, CATEGORICAL_COLS, TEXT_COLS, SEMANTIC_MODEL
+from .config import ARRAY_COLS_MAPPING, INITIAL_FEATURE_COLS, CATEGORICAL_COLS, TEXT_COLS, SEMANTIC_MODEL, SEMANTIC_MODEL_NAME
 
 
 def _get_semantic_model():
@@ -9,7 +9,8 @@ def _get_semantic_model():
     if SEMANTIC_MODEL is None:
         try:
             from sentence_transformers import SentenceTransformer
-            SEMANTIC_MODEL = SentenceTransformer('all-MiniLM-L6-v2')
+            SEMANTIC_MODEL = SentenceTransformer(SEMANTIC_MODEL_NAME)
+            print("Loaded semantic model:", SEMANTIC_MODEL_NAME)
         except Exception:
             SEMANTIC_MODEL = None
     return SEMANTIC_MODEL

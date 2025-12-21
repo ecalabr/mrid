@@ -572,14 +572,31 @@ class MainApp:
                 # 2. Setup progress window
                 gui = ProgressGUI(total_files=len(all_files))
 
-                # 3. Parallel processing (scan)
+                # 3. Parallel processing (scan) — use batched workers to reduce per-file overhead
                 pool = mp.Pool(mp.cpu_count())
                 results = []
 
                 try:
-                    for i, res in enumerate(pool.imap_unordered(check_dicom, all_files)):
-                        results.append(res)
-                        gui.update(i + 1)
+                    # Create chunks of files to process per worker call (batching reduces per-file overhead)
+                    batch_size = 64
+                    chunks = [all_files[i:i+batch_size] for i in range(0, len(all_files), batch_size)]
+
+                    # Use the batched scanner; import the batch function
+                    from .scanner import check_dicom_batch
+
+                    processed = 0
+                    for batch_res in pool.imap_unordered(check_dicom_batch, chunks):
+                        # batch_res is a list of per-file results (or None entries)
+                        if batch_res:
+                            results.extend(batch_res)
+                            processed += len(batch_res)
+                        else:
+                            # if a worker returned None or failed, assume the corresponding chunk files yielded None
+                            processed += batch_size
+                        # clamp processed to total files
+                        if processed > len(all_files):
+                            processed = len(all_files)
+                        gui.update(processed)
 
                         if self.stop_requested.is_set():
                             gui.close()
@@ -855,23 +872,26 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                             except Exception:
                                 pass
 
-                            # If a non-'Other' value was selected, clear that value
-                            # from any other dropdowns by setting them to 'Other'.
-                            if v != 'Other':
-                                for other_key, other_var in dropdown_vars.items():
-                                    if other_key == self.series_key:
-                                        continue
-                                    try:
-                                        if other_var.get() == v:
-                                            other_var.set('Other')
-                                            other_widget = dropdown_widgets.get(other_key)
-                                            if other_widget:
-                                                try:
-                                                    other_widget._update_display('Other')
-                                                except Exception:
-                                                    pass
-                                    except Exception:
-                                        pass
+                            # If in Semi-Auto mode and a non-'Other' value was selected, clear that value
+                            # from any other dropdowns by setting them to 'Other'. This ensures uniqueness.
+                            try:
+                                if mode == 'Semi-Auto' and v != 'Other':
+                                    for other_key, other_var in dropdown_vars.items():
+                                        if other_key == self.series_key:
+                                            continue
+                                        try:
+                                            if other_var.get() == v:
+                                                other_var.set('Other')
+                                                other_widget = dropdown_widgets.get(other_key)
+                                                if other_widget:
+                                                    try:
+                                                        other_widget._update_display('Other')
+                                                    except Exception:
+                                                        pass
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
                         return _cmd
 
                     cmd = _mk(opt)
@@ -966,10 +986,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
             pass
 
         dropdown_vars[first_path] = variable
-        try:
-            dropdown_widgets[first_path] = cd
-        except Exception:
-            pass
+        dropdown_widgets[first_path] = cd
 
         # Start background image loader to replace placeholder with center slice
         try:
