@@ -30,6 +30,8 @@ def check_dicom(filepath, include_types=None, exclude_types=None):
                 Tag(0x0020, 0x000E),  # SeriesInstanceUID
                 Tag(0x0008, 0x103E),  # SeriesDescription
                 Tag(0x0020, 0x0011),  # SeriesNumber
+                Tag(0x0020, 0x0032),  # ImagePositionPatient
+                Tag(0x0020, 0x0037),  # ImageOrientationPatient
             ]
             try:
                 ds = pydicom.dcmread(filepath, stop_before_pixels=True, force=True, specific_tags=specific)
@@ -57,6 +59,8 @@ def check_dicom(filepath, include_types=None, exclude_types=None):
             "series_uid": str(getattr(ds, "SeriesInstanceUID", None)),
             "series_desc": getattr(ds, "SeriesDescription", "UNKNOWN_SERIES"),
             "series_number": int(getattr(ds, "SeriesNumber", 0)),
+            "image_position": getattr(ds, "ImagePositionPatient", None),
+            "image_orientation": getattr(ds, "ImageOrientationPatient", None),
         }
     except Exception:
         return None
@@ -209,4 +213,3 @@ def build_hierarchy(dicom_records):
 
     hierarchy = convert_defaultdict_to_dict(reorder_hierarchy(hierarchy, truncate_desc=5))
     return hierarchy
-

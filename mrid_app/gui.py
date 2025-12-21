@@ -761,7 +761,6 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
 
     dropdown_values = TARGET_SERIES
     dropdown_vars = {}
-    dropdown_widgets = {}
 
     # Precompute color map for the dropdown labels
     try:
@@ -851,11 +850,14 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
 
         # per-series colored dropdown implementation
         class ColoredDropdown:
-            def __init__(self, parent, var, options, cmap, series_key):
+            def __init__(self, parent, var, options, cmap, key=None, all_vars=None, mode=None):
                 self.var = var
                 self.options = list(options)
                 self.cmap = cmap
-                self.series_key = series_key
+                # identifier for this dropdown (first_path) and reference to the dict of all dropdown vars
+                self.key = key
+                self.all_vars = all_vars
+                self.mode = mode
                 self.btn = tk.Button(parent, text=self.var.get(), width=20, relief='raised')
                 self.menu = tk.Menu(parent, tearoff=0)
 
@@ -866,30 +868,12 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                                 self.var.set(v)
                             except Exception:
                                 pass
-                            # Update only this button's display
+                            # update this button's display
+                            self._update_display(v)
+                            # enforce uniqueness in Semi-Auto mode: if user selected a non-'Other' value,
+                            # find any other dropdowns with that same value and set them to 'Other'
                             try:
-                                self._update_display(v)
-                            except Exception:
-                                pass
-
-                            # If in Semi-Auto mode and a non-'Other' value was selected, clear that value
-                            # from any other dropdowns by setting them to 'Other'. This ensures uniqueness.
-                            try:
-                                if mode == 'Semi-Auto' and v != 'Other':
-                                    for other_key, other_var in dropdown_vars.items():
-                                        if other_key == self.series_key:
-                                            continue
-                                        try:
-                                            if other_var.get() == v:
-                                                other_var.set('Other')
-                                                other_widget = dropdown_widgets.get(other_key)
-                                                if other_widget:
-                                                    try:
-                                                        other_widget._update_display('Other')
-                                                    except Exception:
-                                                        pass
-                                        except Exception:
-                                            pass
+                                self._handle_duplicates(v)
                             except Exception:
                                 pass
                         return _cmd
@@ -932,6 +916,23 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 except Exception:
                     pass
 
+            def _handle_duplicates(self, val):
+                # Only enforce uniqueness when in Semi-Auto mode and a non-'Other' value was selected
+                if not self.all_vars or self.mode != 'Semi-Auto' or val == 'Other':
+                    return
+                try:
+                    for k, other_var in list(self.all_vars.items()):
+                        # skip our own entry
+                        if k == self.key:
+                            continue
+                        try:
+                            if other_var.get() == val:
+                                other_var.set('Other')
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
             def _update_display(self, v=None):
                 val = self.var.get() if v is None else v
                 if val == 'Other':
@@ -963,7 +964,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
 
         # create control row and widget
         control_row = tk.Frame(series_frame)
-        cd = ColoredDropdown(control_row, variable, dropdown_values, color_map, first_path)
+        cd = ColoredDropdown(control_row, variable, dropdown_values, color_map, key=first_path, all_vars=dropdown_vars, mode=mode)
         try:
             cd.btn.pack(side='left')
         except Exception:
@@ -986,7 +987,26 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
             pass
 
         dropdown_vars[first_path] = variable
-        dropdown_widgets[first_path] = cd
+
+        # Enforce uniqueness for initial semi-auto assignments: if this dropdown's
+        # initial value duplicates an existing assignment (earlier dropdowns), reset it to 'Other'.
+        try:
+            if mode == 'Semi-Auto' and variable.get() != 'Other':
+                for k, ov in dropdown_vars.items():
+                    if k == first_path:
+                        continue
+                    try:
+                        if ov.get() == variable.get():
+                            variable.set('Other')
+                            try:
+                                cd._update_display()
+                            except Exception:
+                                pass
+                            break
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
         # Start background image loader to replace placeholder with center slice
         try:
