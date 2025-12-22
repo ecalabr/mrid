@@ -110,15 +110,18 @@ class TrainClassifierGUI:
 
 
 class ProgressGUI:
-    def __init__(self, total_files):
+    def __init__(self, total_files, title="Scanning DICOM Files...", label_text="Scanning files..."):
         try:
             self.root = tk.Toplevel(tk._default_root)
         except AttributeError:
             self.root = tk.Toplevel()
-        self.root.title("Scanning DICOM Files...")
+        try:
+            self.root.title(title)
+        except Exception:
+            pass
         self.root.geometry("500x160")
         self.root.protocol("WM_DELETE_WINDOW", self.do_nothing)
-        self.label = tk.Label(self.root, text="Scanning files...")
+        self.label = tk.Label(self.root, text=label_text)
         self.label.pack(pady=10)
         self.progress = ttk.Progressbar(self.root, orient="horizontal",
                                         length=400, mode="determinate",
@@ -612,13 +615,37 @@ class MainApp:
                 # 4. Process results
                 dicom_records = [r for r in results if r is not None]
                 print(f"Identified {len(dicom_records)} valid DICOM files.")
-                hierarchy = build_hierarchy(dicom_records)
 
-                # Save newly-created hierarchy to output_dir
+                # Show a progress window while building the hierarchy: count unique groups
                 try:
-                    write_yaml_hierarchy(hierarchy, output_dir)
+                    groups = set((r['patient'], r['study_uid'], r['series_uid']) for r in dicom_records)
+                    total_groups = max(1, len(groups))
                 except Exception:
-                    pass
+                    total_groups = max(1, len(dicom_records))
+
+                build_gui = None
+                try:
+                    build_gui = ProgressGUI(total_files=total_groups, title="Building hierarchy...", label_text="Organizing series/groups...")
+                    # pass a callback that updates the progress GUI
+                    def _build_progress_cb(n):
+                        try:
+                            if build_gui:
+                                build_gui.update(n)
+                        except Exception:
+                            pass
+
+                    hierarchy = build_hierarchy(dicom_records, output_dir, progress_callback=_build_progress_cb)
+                    # save hierarchy to YAML
+                    try:
+                        write_yaml_hierarchy(hierarchy, output_dir)
+                    except Exception as e:
+                        print(f"Failed to write hierarchy.yaml: {e}")
+                finally:
+                    try:
+                        if build_gui:
+                            build_gui.close()
+                    except Exception:
+                        pass
 
             # At this point `hierarchy` is available (either loaded or newly constructed)
             # 5. Loop through each study and classify
@@ -1019,7 +1046,8 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     button_frame.grid_columnconfigure(0, weight=1)
     button_frame.grid_columnconfigure(1, weight=0)
     button_frame.grid_columnconfigure(2, weight=0)
-    button_frame.grid_columnconfigure(3, weight=1)
+    button_frame.grid_columnconfigure(3, weight=0)
+    button_frame.grid_columnconfigure(4, weight=1)
 
     def on_done():
         worker_args = (mrn, study_uid, output_root, dropdown_vars, study_dict)
@@ -1051,7 +1079,23 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         root.destroy()
         study_done_event.set()
 
-    tk.Button(button_frame, bg="#ff4f4f", activebackground="#ff4f4f", text="Stop All", font=("Arial", 14), command=on_stop).grid(row=0, column=1, padx=10, sticky="w")
-    tk.Button(button_frame, bg="#4fff5b", activebackground="#4fff5b", text="Done", font=("Arial", 14), command=on_done).grid(row=0, column=2, padx=10, sticky="e")
+    def on_skip():
+        # Skip this study without saving or conversion; just advance to next study
+        try:
+            root.grab_release()
+        except Exception:
+            pass
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        try:
+            study_done_event.set()
+        except Exception:
+            pass
+
+    tk.Button(button_frame, bg="#e0a2a2", activebackground="#e0a2a2", text="Stop All", font=("Arial", 14), command=on_stop).grid(row=0, column=1, padx=10)
+    tk.Button(button_frame, bg="#fff7a8", activebackground="#fff7a8", text="Skip", font=("Arial", 14), command=on_skip).grid(row=0, column=2, padx=10)
+    tk.Button(button_frame, bg="#a2e0b2", activebackground="#a2e0b2", text="Done", font=("Arial", 14), command=on_done).grid(row=0, column=3, padx=10)
 
     root.update()

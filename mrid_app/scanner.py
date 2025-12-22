@@ -1,7 +1,11 @@
 from collections import defaultdict
+from operator import itemgetter
+from itertools import groupby
+import os
+from .config import EXCLUDE_TYPES, INCLUDE_TYPES, IGNORE_MULTIPLE_ORIENTATIONS, SEPARATE_STACKED_SERIES
 
 
-def check_dicom(filepath, include_types=None, exclude_types=None):
+def check_dicom(filepath):
     """Worker function executed in parallel.
 
     Returns minimal DICOM metadata or None. Filters to only ORIGINAL + PRIMARY images
@@ -43,8 +47,8 @@ def check_dicom(filepath, include_types=None, exclude_types=None):
             ds = pydicom.dcmread(filepath, stop_before_pixels=True, force=True)
 
         img_type = getattr(ds, "ImageType", [])
-        include_types = include_types or ["ORIGINAL", "PRIMARY"]
-        exclude_types = exclude_types or ["DERIVED", "SECONDARY", "ADC", "DIFFUSION", "LOCALIZER", "MIP", "MPR"]
+        include_types = INCLUDE_TYPES
+        exclude_types = EXCLUDE_TYPES
 
         # simple checks
         if not all([item in img_type for item in include_types]):
@@ -95,6 +99,8 @@ def check_dicom_batch(filepaths, include_types=None, exclude_types=None):
                     Tag(0x0020, 0x000E),  # SeriesInstanceUID
                     Tag(0x0008, 0x103E),  # SeriesDescription
                     Tag(0x0020, 0x0011),  # SeriesNumber
+                    Tag(0x0020, 0x0032),  # ImagePositionPatient
+                    Tag(0x0020, 0x0037),  # ImageOrientationPatient
                 ]
             except Exception:
                 specific = None
@@ -138,6 +144,8 @@ def check_dicom_batch(filepaths, include_types=None, exclude_types=None):
                     "series_uid": str(getattr(ds, "SeriesInstanceUID", None)),
                     "series_desc": getattr(ds, "SeriesDescription", "UNKNOWN_SERIES"),
                     "series_number": int(getattr(ds, "SeriesNumber", 0)),
+                    "image_position": getattr(ds, "ImagePositionPatient", None),
+                    "image_orientation": getattr(ds, "ImageOrientationPatient", None),
                 }
                 results.append(rec)
             except Exception:
@@ -183,33 +191,112 @@ def reorder_hierarchy(hierarchy: dict, truncate_desc=5) -> dict:
     fully_sorted_hierarchy = dict(sorted(studies_sorted_by_uid.items()))
     return fully_sorted_hierarchy
 
+def build_hierarchy(dicom_records, output_dir=None, progress_callback=None):
+    # Sort globally once
+    dicom_records.sort(key=itemgetter(
+        'patient', 'study_uid', 'series_number', 'series_uid', 'path'
+    ))
 
-def build_hierarchy(dicom_records):
-    hierarchy = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
-    series_seen = set()
+    hierarchy = {}
 
-    for rec in dicom_records:
-        if rec is None:
+    # Pre-create temp directory if needed
+    temp_base = None
+    if output_dir:
+        temp_base = os.path.join(output_dir, 'temporary_files')
+        os.makedirs(temp_base, exist_ok=True)
+
+    group_key = itemgetter('patient', 'study_uid', 'series_uid')
+
+    # Use a counter to report progress back to caller
+    processed_groups = 0
+
+    for (mrn, study_uid, series_uid), member_files in groupby(dicom_records, key=group_key):
+        processed_groups += 1
+        try:
+            files = list(member_files)
+            first_rec = files[0]
+        except Exception:
+            # Still call back to advance progress if possible
+            try:
+                if progress_callback:
+                    progress_callback(processed_groups)
+            except Exception:
+                pass
             continue
-        series_uid = rec["series_uid"]
-        if series_uid in series_seen:
-            continue
-        mrn = rec["patient"]
-        study_uid = rec["study_uid"]
-        desc = rec["series_desc"] or "UNKNOWN_SERIES"
-        ser_num = rec["series_number"]
-        series_seen.add(series_uid)
-        desc = desc.strip() if isinstance(desc, str) else "UNKNOWN_SERIES"
-        existing = hierarchy[mrn][study_uid]
-        if desc in existing:
-            suffix = 2
-            new_desc = f"{desc} ({suffix})"
-            while new_desc in existing:
-                suffix += 1
-                new_desc = f"{desc} ({suffix})"
-            desc = new_desc
-        desc = f"{ser_num:04d} {desc}"
-        hierarchy[mrn][study_uid][desc].append(rec["path"])
 
-    hierarchy = convert_defaultdict_to_dict(reorder_hierarchy(hierarchy, truncate_desc=5))
+        # 1. VALIDATION: Orientation
+        if IGNORE_MULTIPLE_ORIENTATIONS:
+            unique_orientations = {tuple(f['image_orientation']) for f in files if f['image_orientation']}
+            if len(unique_orientations) > 1:
+                try:
+                    if progress_callback:
+                        progress_callback(processed_groups)
+                except Exception:
+                    pass
+                continue
+
+        # 2. VALIDATION & SPLITTING: Duplicate Positions
+        # We handle splitting and normal assignment here
+        patient_dict = hierarchy.setdefault(mrn, {})
+        study_dict = patient_dict.setdefault(study_uid, {})
+        base_desc = first_rec['series_desc'] or "UNKNOWN_SERIES"
+
+        unique_positions_set = {tuple(f['image_position']) for f in files if f['image_position']}
+
+        if SEPARATE_STACKED_SERIES and len(unique_positions_set) != len(files):
+            # FAST SPLITTING: Use a occurrence counter to assign bucket IDs
+            # This handles multi-echo/dynamic data in O(N)
+            pos_counts = {}
+            subseries_buckets = []  # List of lists
+
+            try:
+                for item in files:
+                    pos = tuple(item['image_position'])
+                    # Get the current "volume index" for this specific spatial coordinate
+                    idx = pos_counts.get(pos, 0)
+                    pos_counts[pos] = idx + 1
+
+                    # Ensure the bucket exists
+                    if idx >= len(subseries_buckets):
+                        subseries_buckets.append([])
+                    subseries_buckets[idx].append(item)
+
+                # Process Buckets (Create symlinks)
+                for n, s in enumerate(subseries_buckets):
+                    if not temp_base: continue
+
+                    subseries_dir = os.path.join(temp_base, f'{mrn}-{series_uid}_{n:02d}')
+                    os.makedirs(subseries_dir, exist_ok=True)
+
+                    first_link = None
+                    for item in s:
+                        link_path = os.path.join(subseries_dir, os.path.basename(item['path']))
+                        if not os.path.exists(link_path):
+                            os.symlink(item['path'], link_path)
+                        if not first_link:
+                            first_link = link_path
+
+                    # Add to hierarchy with suffix
+                    desc_key = f"{base_desc}_{n:02d}"
+                    study_dict.setdefault(desc_key, []).append(first_link)
+            except Exception as e:
+                print(f"Error during splitting series {base_desc} for patient {mrn}: {e}")
+                try:
+                    if progress_callback:
+                        progress_callback(processed_groups)
+                except Exception:
+                    pass
+                continue
+
+        else:
+            # NORMAL CASE: No duplicates or separation disabled
+            study_dict.setdefault(base_desc, []).append(first_rec['path'])
+
+        # Notify progress for this group
+        try:
+            if progress_callback:
+                progress_callback(processed_groups)
+        except Exception:
+            pass
+
     return hierarchy
