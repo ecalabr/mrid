@@ -2,72 +2,8 @@ from collections import defaultdict
 from operator import itemgetter
 from itertools import groupby
 import os
-from .config import EXCLUDE_TYPES, INCLUDE_TYPES, IGNORE_MULTIPLE_ORIENTATIONS, SEPARATE_STACKED_SERIES
-
-
-def check_dicom(filepath):
-    """Worker function executed in parallel.
-
-    Returns minimal DICOM metadata or None. Filters to only ORIGINAL + PRIMARY images
-    by default. This implementation minimizes disk I/O by performing a small
-    preamble check and requesting only the tags we need when pydicom supports it.
-    """
-    try:
-        # Quick preamble check (cheap). Most DICOMs have 'DICM' at offset 128.
-        try:
-            with open(filepath, 'rb') as fh:
-                fh.seek(128)
-                pre = fh.read(4)
-                has_preamble = (pre == b'DICM')
-        except Exception:
-            has_preamble = False
-
-        import pydicom
-        ds = None
-        # Prepare a set of tags we need; pydicom may accept specific_tags kwarg
-        try:
-            from pydicom.tag import Tag
-            specific = [
-                Tag(0x0008, 0x0008),  # ImageType
-                Tag(0x0010, 0x0020),  # PatientID
-                Tag(0x0020, 0x000D),  # StudyInstanceUID
-                Tag(0x0020, 0x000E),  # SeriesInstanceUID
-                Tag(0x0008, 0x103E),  # SeriesDescription
-                Tag(0x0020, 0x0011),  # SeriesNumber
-                Tag(0x0020, 0x0032),  # ImagePositionPatient
-                Tag(0x0020, 0x0037),  # ImageOrientationPatient
-            ]
-            try:
-                ds = pydicom.dcmread(filepath, stop_before_pixels=True, force=True, specific_tags=specific)
-            except TypeError:
-                # older pydicom doesn't support specific_tags
-                ds = pydicom.dcmread(filepath, stop_before_pixels=True, force=True)
-        except Exception:
-            # If anything goes wrong with Tag or specific_tags, fall back to full header read
-            ds = pydicom.dcmread(filepath, stop_before_pixels=True, force=True)
-
-        img_type = getattr(ds, "ImageType", [])
-        include_types = INCLUDE_TYPES
-        exclude_types = EXCLUDE_TYPES
-
-        # simple checks
-        if not all([item in img_type for item in include_types]):
-            return None
-        if any([item in img_type for item in exclude_types]):
-            return None
-
-        return {
-            "path": filepath,
-            "patient": getattr(ds, "PatientID", "UNKNOWN_MRN"),
-            "study_uid": str(getattr(ds, "StudyInstanceUID", None)),
-            "series_uid": str(getattr(ds, "SeriesInstanceUID", None)),
-            "series_desc": getattr(ds, "SeriesDescription", "UNKNOWN_SERIES"),
-            "series_number": int(getattr(ds, "SeriesNumber", 0)),
-            "image_position": getattr(ds, "ImagePositionPatient", None),
-            "image_orientation": getattr(ds, "ImageOrientationPatient", None),
-        }
-    except Exception:
-        return None
+import shutil
+from .config import EXCLUDE_TYPES, INCLUDE_TYPES, IGNORE_MULTIPLE_ORIENTATIONS, SEPARATE_STACKED_SERIES, MAX_SPLIT
 
 
 def check_dicom_batch(filepaths, include_types=None, exclude_types=None):
@@ -99,9 +35,11 @@ def check_dicom_batch(filepaths, include_types=None, exclude_types=None):
                     Tag(0x0020, 0x000E),  # SeriesInstanceUID
                     Tag(0x0008, 0x103E),  # SeriesDescription
                     Tag(0x0020, 0x0011),  # SeriesNumber
-                    Tag(0x0020, 0x0032),  # ImagePositionPatient
-                    Tag(0x0020, 0x0037),  # ImageOrientationPatient
                 ]
+                if IGNORE_MULTIPLE_ORIENTATIONS:
+                    specific = specific + [Tag(0x0020, 0x0037)]  # ImageOrientationPatient
+                if SEPARATE_STACKED_SERIES:
+                    specific = specific + [Tag(0x0020, 0x0032)]  # ImagePositionPatient
             except Exception:
                 specific = None
 
@@ -203,6 +141,8 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None):
     temp_base = None
     if output_dir:
         temp_base = os.path.join(output_dir, 'temporary_files')
+        if os.path.isdir(temp_base):
+            shutil.rmtree(temp_base)
         os.makedirs(temp_base, exist_ok=True)
 
     group_key = itemgetter('patient', 'study_uid', 'series_uid')
@@ -228,6 +168,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None):
         if IGNORE_MULTIPLE_ORIENTATIONS:
             unique_orientations = {tuple(f['image_orientation']) for f in files if f['image_orientation']}
             if len(unique_orientations) > 1:
+                print(f"Warning: Skipping series {first_rec['series_desc']} for patient {mrn}: Multiple orientations")
                 try:
                     if progress_callback:
                         progress_callback(processed_groups)
@@ -262,6 +203,14 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None):
                     subseries_buckets[idx].append(item)
 
                 # Process Buckets (Create symlinks)
+                if len(subseries_buckets) > MAX_SPLIT:
+                    print(f"Warning: Series {base_desc} for patient {mrn} exceeded max splits ({MAX_SPLIT}). Skipping.")
+                    try:
+                        if progress_callback:
+                            progress_callback(processed_groups)
+                    except Exception:
+                        pass
+                    continue
                 for n, s in enumerate(subseries_buckets):
                     if not temp_base: continue
 
@@ -277,7 +226,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None):
                             first_link = link_path
 
                     # Add to hierarchy with suffix
-                    desc_key = f"{base_desc}_{n:02d}"
+                    desc_key = f"{base_desc} {n:02d}"
                     study_dict.setdefault(desc_key, []).append(first_link)
             except Exception as e:
                 print(f"Error during splitting series {base_desc} for patient {mrn}: {e}")

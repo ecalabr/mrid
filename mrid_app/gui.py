@@ -554,7 +554,7 @@ class MainApp:
         """
         try:
             import multiprocessing as mp
-            from .scanner import check_dicom, build_hierarchy
+            from .scanner import build_hierarchy
             from .utils import write_yaml_hierarchy
             from . import processing
 
@@ -844,7 +844,17 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
             combined_p = None
             rf_p = None
             cnn_p = None
+            top_label = None
+            top_p = None
             try:
+                combined_scores = prob_info.get('combined', {}) if isinstance(prob_info, dict) else {}
+                # find the top combined label/prob if present
+                if isinstance(combined_scores, dict) and combined_scores:
+                    try:
+                        top_label, top_p = max(combined_scores.items(), key=lambda kv: kv[1])
+                    except Exception:
+                        top_label, top_p = None, None
+                # prefer to show probabilities for the selected label when available
                 if 'combined' in prob_info and initial_value in prob_info['combined']:
                     combined_p = prob_info['combined'][initial_value]
                 if 'rf' in prob_info and initial_value in prob_info['rf']:
@@ -855,12 +865,18 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 pass
 
             prob_parts = []
-            if combined_p is not None:
-                prob_parts.append(f"combined={combined_p:.2f}")
-            if rf_p is not None:
-                prob_parts.append(f"rf={rf_p:.2f}")
-            if cnn_p is not None:
-                prob_parts.append(f"cnn={cnn_p:.2f}")
+            if initial_value != 'Other':
+                if combined_p is not None:
+                    prob_parts.append(f"combined={combined_p:.2f}")
+                if rf_p is not None:
+                    prob_parts.append(f"rf={rf_p:.2f}")
+                if cnn_p is not None:
+                    prob_parts.append(f"cnn={cnn_p:.2f}")
+            else:
+                # If pre-selected as 'Other', show the top combined prediction (label + prob) if available
+                if top_label is not None and top_p is not None:
+                    prob_parts.append(f"best={top_label}, combined={top_p:.2f}")
+
             prob_str = (" (" + ", ".join(prob_parts) + ")") if prob_parts else ""
             print(f"  -> Series '{series_desc}' semi-auto pre-selected as: {initial_value}{prob_str}")
         elif mode == "Manual":
@@ -1094,8 +1110,19 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         except Exception:
             pass
 
-    tk.Button(button_frame, bg="#e0a2a2", activebackground="#e0a2a2", text="Stop All", font=("Arial", 14), command=on_stop).grid(row=0, column=1, padx=10)
-    tk.Button(button_frame, bg="#fff7a8", activebackground="#fff7a8", text="Skip", font=("Arial", 14), command=on_skip).grid(row=0, column=2, padx=10)
-    tk.Button(button_frame, bg="#a2e0b2", activebackground="#a2e0b2", text="Done", font=("Arial", 14), command=on_done).grid(row=0, column=3, padx=10)
+    # make buttons
+    btn_stop = tk.Button(button_frame, bg="#e0a2a2", activebackground="#e0a2a2", text="Stop All (a)", font=("Arial", 14), command=on_stop)
+    btn_skip = tk.Button(button_frame, bg="#fff7a8", activebackground="#fff7a8", text="Skip (s)", font=("Arial", 14), command=on_skip)
+    btn_done = tk.Button(button_frame, bg="#a2e0b2", activebackground="#a2e0b2", text="Approve (d)", font=("Arial", 14), command=on_done)
+
+    # grid buttons
+    btn_stop.grid(row=0, column=1, padx=10)
+    btn_skip.grid(row=0, column=2, padx=10)
+    btn_done.grid(row=0, column=3, padx=10)
+
+    # add hotkeys
+    root.bind("<a>", lambda event: btn_stop.invoke())
+    root.bind("<s>", lambda event: btn_skip.invoke())
+    root.bind("<d>", lambda event: btn_done.invoke())
 
     root.update()
