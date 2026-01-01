@@ -23,7 +23,8 @@ def TrainHeaderClassifierLogic(output_dir, gui):
         for study_folder in os.listdir(output_dir):
             study_path = os.path.join(output_dir, study_folder)
             if os.path.isdir(study_path):
-                csv_path = os.path.join(study_path, "classification_results.csv")
+                study_id = os.path.basename(study_path.rstrip(os.sep))
+                csv_path = os.path.join(study_path, f"{study_id}_classification-results.csv")
                 if os.path.exists(csv_path):
                     try:
                         df = pd.read_csv(csv_path)

@@ -673,7 +673,7 @@ class MainApp:
                 self.progress_label.set(
                     f"Classifying Study {i + 1} of {total_studies} ({mode}/{model_type}): {mrn} / {study_uid}")
 
-                classification_csv = os.path.join(output_dir, f"{mrn}-{study_uid}", "classification_results.csv")
+                classification_csv = os.path.join(output_dir, f"{mrn}-{study_uid}", f"{mrn}-{study_uid}_classification-results.csv")
                 if os.path.exists(classification_csv):
                     try:
                         self.progress_bar.config(value=i + 1)

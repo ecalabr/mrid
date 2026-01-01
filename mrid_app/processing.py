@@ -111,7 +111,7 @@ def background_conversion_worker(*args, convert=True, **kwargs):
 
     study_out_dir = os.path.join(output_root, f"{mrn}-{study_uid}")
     os.makedirs(study_out_dir, exist_ok=True)
-    csv_path = os.path.join(study_out_dir, "classification_results.csv")
+    csv_path = os.path.join(study_out_dir, f"{mrn}-{study_uid}_classification-results.csv")
 
     def safe_get(ds, tag_name):
         value = getattr(ds, tag_name, None)
