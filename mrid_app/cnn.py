@@ -1,6 +1,8 @@
 import os
 from PIL import Image
 import numpy as np
+import pickle
+import hashlib
 
 try:
     import torch
@@ -13,6 +15,7 @@ except Exception:
 
 # Defer torchvision import until transforms are required
 _CNN_TRANSFORMS = None
+_AUGMENTATION_TRANSFORMS = None
 
 try:
     from .config import IMAGE_SIZE, NUM_EPOCHS, BATCH_SIZE, LR
@@ -36,6 +39,22 @@ def _get_transforms():
         except Exception:
             _CNN_TRANSFORMS = None
     return _CNN_TRANSFORMS
+
+
+def _get_augmentation_transforms():
+    """Get transforms for on-the-fly augmentation (random dimension swaps and rotations)"""
+    global _AUGMENTATION_TRANSFORMS
+    if _AUGMENTATION_TRANSFORMS is None:
+        try:
+            from torchvision import transforms
+            _AUGMENTATION_TRANSFORMS = transforms.Compose([
+                transforms.RandomRotation(degrees=15),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.RandomVerticalFlip(p=0.5),
+            ])
+        except Exception:
+            _AUGMENTATION_TRANSFORMS = None
+    return _AUGMENTATION_TRANSFORMS
 
 # Define SimpleCNN only if torch is available
 if torch is not None:
@@ -89,6 +108,105 @@ def prepare_cnn_input_data(filepaths, load_center_slice_func):
     return X
 
 
+def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output_dir, progress_callback=None):
+    """
+    Preprocess training data by applying standard transforms and save to cache for fast I/O.
+    Returns the cache file path if successful, None otherwise.
+
+    Args:
+        filepaths: List of file paths to process
+        labels: List of labels corresponding to filepaths
+        load_center_slice_func: Function to load center slice from DICOM
+        output_dir: Directory to save cache file
+        progress_callback: Optional callback function(current, total, message) for progress updates
+    """
+    transforms = _get_transforms()
+    if transforms is None:
+        print("PyTorch torchvision.transforms unavailable")
+        return None
+
+    # Generate cache filename based on data hash and save directly to output_dir
+    data_hash = hashlib.md5(str(sorted(filepaths)).encode()).hexdigest()[:16]
+    cache_path = os.path.join(output_dir, f"cnn_preprocessed_data_{data_hash}.pkl")
+
+    # Check if cache exists
+    if os.path.exists(cache_path):
+        print(f"Loading preprocessed data from cache: {cache_path}")
+        if progress_callback:
+            progress_callback(0, 1, "Loading from cache...")
+        try:
+            with open(cache_path, 'rb') as f:
+                cached_data = pickle.load(f)
+            if progress_callback:
+                progress_callback(1, 1, "Cache loaded successfully")
+            return cache_path
+        except Exception as e:
+            print(f"Error loading cache, will regenerate: {e}")
+
+    # Preprocess all images
+    total_files = len(filepaths)
+    print(f"Preprocessing {total_files} images...")
+    if progress_callback:
+        progress_callback(0, total_files, f"Preprocessing 0/{total_files} images...")
+
+    processed_images = []
+    valid_labels = []
+
+    if hasattr(filepaths, 'tolist'):
+        filepaths = filepaths.tolist()
+    if hasattr(labels, 'tolist'):
+        labels = labels.tolist()
+
+    for idx, path in enumerate(filepaths):
+        slice_img = load_center_slice_func([path])
+        if slice_img is None:
+            continue
+        try:
+            img = slice_img.convert('L')
+            tensor = transforms(img)
+            processed_images.append(tensor)
+            valid_labels.append(labels[idx])
+        except Exception as e:
+            print(f"Error processing {path}: {e}")
+
+        # Update progress every 10 images or on last image
+        if progress_callback and (idx % 10 == 0 or idx == total_files - 1):
+            progress_callback(idx + 1, total_files, f"Preprocessing {idx + 1}/{total_files} images...")
+
+    if not processed_images:
+        print("No images were successfully processed")
+        return None
+
+    # Stack tensors and save to cache
+    if progress_callback:
+        progress_callback(total_files, total_files, "Saving preprocessed data to cache...")
+
+    X = torch.stack(processed_images)
+    y = np.array(valid_labels)
+
+    cached_data = {'X': X, 'y': y}
+
+    try:
+        with open(cache_path, 'wb') as f:
+            pickle.dump(cached_data, f)
+        print(f"Cached preprocessed data to: {cache_path}")
+    except Exception as e:
+        print(f"Warning: Failed to save cache: {e}")
+
+    return cache_path
+
+
+def load_cached_data(cache_path):
+    """Load preprocessed data from cache file."""
+    try:
+        with open(cache_path, 'rb') as f:
+            cached_data = pickle.load(f)
+        return cached_data['X'], cached_data['y']
+    except Exception as e:
+        print(f"Error loading cached data: {e}")
+        return None, None
+
+
 class ImageDataset(Dataset):
     def __init__(self, X_data, y_labels):
         self.X = X_data
@@ -101,7 +219,56 @@ class ImageDataset(Dataset):
         return self.X[idx], self.y[idx]
 
 
-def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNClass=None):
+class AugmentedImageDataset(Dataset):
+    """
+    Dataset with on-the-fly augmentation using random dimension swaps and rotations.
+    Applied to preprocessed, cached training data.
+    """
+    def __init__(self, X_data, y_labels, apply_augmentation=True):
+        self.X = X_data
+        self.y = y_labels
+        self.apply_augmentation = apply_augmentation
+
+    def __len__(self):
+        return len(self.y)
+
+    def __getitem__(self, idx):
+        image = self.X[idx]
+        label = self.y[idx]
+
+        if self.apply_augmentation and torch is not None:
+            # Random dimension swaps (transpose)
+            if np.random.rand() > 0.5:
+                # Swap height and width dimensions (dims 1 and 2 for CHW format)
+                image = torch.transpose(image, 1, 2)
+
+            # Random rotations (90, 180, 270 degrees)
+            k = np.random.randint(0, 4)  # 0, 1, 2, or 3 rotations of 90 degrees
+            if k > 0:
+                # Rotate in the spatial dimensions (dims 1 and 2)
+                image = torch.rot90(image, k=k, dims=[1, 2])
+
+            # Random flips
+            if np.random.rand() > 0.5:
+                image = torch.flip(image, dims=[1])  # Horizontal flip
+            if np.random.rand() > 0.5:
+                image = torch.flip(image, dims=[2])  # Vertical flip
+
+        return image, label
+
+
+def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNClass=None, progress_callback=None):
+    """
+    Train CNN model with optional progress reporting.
+
+    Args:
+        X_data: Training data
+        y_labels: Training labels
+        num_classes: Number of classes
+        output_dir: Directory to save model
+        SimpleCNNClass: Optional custom CNN class
+        progress_callback: Optional callback function(current_epoch, total_epochs, loss, accuracy, message)
+    """
     if torch is None:
         return None, None
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -109,8 +276,12 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
     X_train, X_val, y_train, y_val = train_test_split(X_data, y_labels, test_size=0.2, random_state=42, stratify=y_labels)
     y_train_tensor = torch.from_numpy(y_train).long()
     y_val_tensor = torch.from_numpy(y_val).long()
-    train_dataset = ImageDataset(X_train, y_train_tensor)
+
+    # Use AugmentedImageDataset for training (with augmentation)
+    # Use regular ImageDataset for validation (no augmentation)
+    train_dataset = AugmentedImageDataset(X_train, y_train_tensor, apply_augmentation=True)
     val_dataset = ImageDataset(X_val, y_val_tensor)
+
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
@@ -122,6 +293,7 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     best_accuracy = 0.0
+
     for epoch in range(NUM_EPOCHS):
         model.train()
         running_loss = 0.0
@@ -133,6 +305,7 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
+
         model.eval()
         correct = 0
         total = 0
@@ -143,11 +316,21 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
                 _, predicted = torch.max(outputs.data, 1)
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
+
         epoch_accuracy = 100 * correct / total if total > 0 else 0
-        print(f"Epoch {epoch + 1}/{NUM_EPOCHS} - Loss: {running_loss / max(len(train_loader),1):.4f}, Val Acc: {epoch_accuracy:.2f}%")
+        avg_loss = running_loss / max(len(train_loader), 1)
+
+        # Progress callback
+        if progress_callback:
+            message = f"Epoch {epoch + 1}/{NUM_EPOCHS} - Loss: {avg_loss:.4f}, Val Acc: {epoch_accuracy:.2f}%"
+            progress_callback(epoch + 1, NUM_EPOCHS, avg_loss, epoch_accuracy, message)
+
+        print(f"Epoch {epoch + 1}/{NUM_EPOCHS} - Loss: {avg_loss:.4f}, Val Acc: {epoch_accuracy:.2f}%")
+
         if epoch_accuracy > best_accuracy:
             best_accuracy = epoch_accuracy
             torch.save(model.state_dict(), model_path)
+
     return model_path, best_accuracy
 
 
@@ -210,14 +393,60 @@ def TrainImageClassifierLogic(output_dir, gui):
         # Prepare image tensors
         gui.update_status("2/6: Preparing image data (center slices)...")
         dicom_paths = master_df['Path']
-        X = prepare_cnn_input_data(dicom_paths, load_center_slice_func=processing_module.load_center_slice)
-        if X is None:
+
+        # Set up progress callback for preprocessing
+        total_paths = len(dicom_paths)
+        gui.set_determinate_mode(total_paths)
+
+        def preprocessing_progress(current, total, message):
+            """Callback to update GUI during preprocessing"""
+            gui.update_progress(current)
+            gui.update_status(f"2/6: {message}")
+
+        # Try to load from cache first, or preprocess and cache
+        cache_path = prepare_and_cache_cnn_data(
+            dicom_paths.tolist(),
+            master_df['Classification'].tolist(),
+            load_center_slice_func=processing_module.load_center_slice,
+            output_dir=output_dir,
+            progress_callback=preprocessing_progress
+        )
+
+        # Switch back to indeterminate mode
+        gui.set_indeterminate_mode()
+
+        if cache_path is None:
             gui.update_status("❌ Error: Failed to prepare CNN input data (missing torchvision or no images).")
             time.sleep(2)
             gui.close()
             return
 
-        y = master_df['Classification']
+        # Load cached data
+        gui.update_status("3/6: Loading preprocessed data from cache...")
+        X, y_str = load_cached_data(cache_path)
+        if X is None:
+            gui.update_status("❌ Error: Failed to load cached data.")
+            time.sleep(2)
+            gui.close()
+            return
+
+        # Note: y_str contains the string labels, need to filter and encode them
+        # Filter to match only valid classifications
+        valid_indices = []
+        valid_classifications = []
+        for idx, classification in enumerate(y_str):
+            if str(classification).lower() not in ['other', 'none']:
+                valid_indices.append(idx)
+                valid_classifications.append(classification)
+
+        if not valid_indices:
+            gui.update_status("❌ Error: No valid training samples after filtering.")
+            time.sleep(2)
+            gui.close()
+            return
+
+        X = X[valid_indices]
+        y = valid_classifications
 
         # Load or fit target encoder
         try:
@@ -237,14 +466,28 @@ def TrainImageClassifierLogic(output_dir, gui):
 
         gui.update_status(f"4/6: Training SimpleCNN (Num Classes: {num_classes})...")
 
+        # Set up progress callback for training
+        gui.set_determinate_mode(NUM_EPOCHS)
+
+        def training_progress(current_epoch, total_epochs, loss, accuracy, message):
+            """Callback to update GUI during training"""
+            gui.update_progress(current_epoch)
+            gui.update_status(f"4/6: {message}")
+
         # Train the model (this is a blocking call; caller should run in a thread)
         try:
-            model_path, best_accuracy = train_cnn_model_logic(X, y_encoded, num_classes, output_dir)
+            model_path, best_accuracy = train_cnn_model_logic(
+                X, y_encoded, num_classes, output_dir,
+                progress_callback=training_progress
+            )
         except Exception as e:
             gui.update_status(f"❌ Error during CNN training: {e}")
             time.sleep(2)
             gui.close()
             return
+
+        # Switch back to indeterminate mode
+        gui.set_indeterminate_mode()
 
         # Save the target encoder
         try:

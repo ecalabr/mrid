@@ -74,6 +74,29 @@ class TrainClassifierGUI:
         self.root.after(0, lambda: self.label.set(new_text))
         self.root.after(0, self.root.update_idletasks)
 
+    def set_determinate_mode(self, maximum):
+        """Switch progress bar to determinate mode with a maximum value"""
+        def _update():
+            self.progress.stop()
+            self.progress.config(mode="determinate", maximum=maximum, value=0)
+            self.root.update_idletasks()
+        self.root.after(0, _update)
+
+    def set_indeterminate_mode(self):
+        """Switch progress bar back to indeterminate mode"""
+        def _update():
+            self.progress.config(mode="indeterminate")
+            self.progress.start(10)
+            self.root.update_idletasks()
+        self.root.after(0, _update)
+
+    def update_progress(self, value):
+        """Update progress bar value (for determinate mode)"""
+        def _update():
+            self.progress["value"] = value
+            self.root.update_idletasks()
+        self.root.after(0, _update)
+
     def close(self):
         def _safe_close():
             # stop progressbar if it exists
