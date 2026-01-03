@@ -7,7 +7,7 @@ import pydicom
 from PIL import Image
 from .header import get_series_probabilities
 from .cnn import prepare_cnn_input_data, train_cnn_model_logic
-from .config import OVERRIDE_THRESHOLD
+from .config import OVERRIDE_THRESHOLD, PREFER_3D
 
 
 def convert_series_to_nifti(series_dir, output_path, label):
@@ -319,12 +319,19 @@ def get_image_probabilities(dicom_path, model, target_encoder):
 
 def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model, cnn_target_encoder, rf_field_types=None):
     """
-    Optimize selections for a study. Returns a tuple:
+    Optimize series selections for a study. Returns a tuple:
       - final_assignments: dict mapping series_start_path -> label
       - predictions_by_path: dict mapping series_start_path -> {label: probability}
 
-    This provides probabilities for GUIs to display. Backward callers expecting
-    only final_assignments should be updated to unpack the tuple.
+    Selection logic:
+      1. Get predictions for all series in the study
+      2. For each target label (excluding 'Other'):
+         a. Find all series where probability > OVERRIDE_THRESHOLD
+         b. If PREFER_3D is enabled for this label and there's a 3D series, select it
+         c. Otherwise, select the series with highest probability
+      3. Assign labels in order of confidence (highest probability first)
+      4. Ensure each series is assigned only once
+      5. Remaining series are assigned 'Other'
 
     Args:
         rf_field_types: Optional field types dictionary for consistent RF preprocessing
@@ -338,18 +345,22 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
     all_labels = target_encoder.classes_
     target_labels = [label for label in all_labels if label.lower() != 'other']
 
-    final_assignments = {}
-    # temporary predictions keyed by series description -> {'path':..., 'proba': np.array}
+    # Step 1: Get predictions for all series
     temp_predictions = {}
-
     for series_desc, dicom_paths in study_dict.items():
         first_path = dicom_paths[0]
         rf_proba = None
         cnn_proba = None
+
+        # Get RF predictions
         if model_type in ["DICOM Header Model", "Header + Image Model"] and rf_model is not None:
             rf_proba = get_series_probabilities(first_path, rf_model, rf_feature_encoder, rf_field_types)
+
+        # Get CNN predictions
         if model_type in ["Image-Based Model", "Header + Image Model"] and cnn_model is not None:
             cnn_proba = get_image_probabilities(first_path, cnn_model, cnn_target_encoder)
+
+        # Combine predictions based on model type
         final_proba = None
         if model_type == "Header + Image Model":
             if rf_proba is not None and cnn_proba is not None:
@@ -362,6 +373,7 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
             final_proba = rf_proba
         elif model_type == "Image-Based Model":
             final_proba = cnn_proba
+
         if final_proba is not None:
             temp_predictions[series_desc] = {
                 'path': first_path,
@@ -369,37 +381,64 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
                 'rf_proba': rf_proba,
                 'cnn_proba': cnn_proba
             }
-        else:
-            final_assignments[first_path] = "Other"
 
-    series_used = set(final_assignments.keys())
-    best_series_for_label = {}
+    # Step 2: For each target label, find the best series
+    label_candidates = {}  # label -> list of (path, proba, is_3d)
 
     for label in target_labels:
         label_index = np.where(all_labels == label)[0]
         if len(label_index) == 0:
             continue
         idx = label_index[0]
-        best_proba = -1.0
-        best_path = None
+
+        candidates = []
         for series_desc, pred in temp_predictions.items():
             current_path = pred['path']
-            if current_path not in series_used:
-                current_proba = pred['proba'][idx]
-                if current_proba > best_proba and current_proba > OVERRIDE_THRESHOLD:
-                    best_proba = current_proba
-                    best_path = current_path
-        if best_path:
-            best_series_for_label[label] = (best_path, best_proba)
+            current_proba = pred['proba'][idx]
 
+            # Only consider series that exceed the threshold
+            if current_proba > OVERRIDE_THRESHOLD:
+                # Check if this is a 3D acquisition
+                is_3d = check_is_3d_acquisition(current_path)
+                candidates.append((current_path, current_proba, is_3d))
+
+        if candidates:
+            # Apply PREFER_3D logic if enabled for this label
+            prefer_3d = PREFER_3D.get(label, False)
+
+            if prefer_3d:
+                # Check if there's at least one 3D series
+                has_3d = any(is_3d for _, _, is_3d in candidates)
+                if has_3d:
+                    # Filter to only 3D series and pick the best one
+                    candidates_3d = [c for c in candidates if c[2]]
+                    best_candidate = max(candidates_3d, key=lambda x: x[1])
+                else:
+                    # No 3D series, pick best overall
+                    best_candidate = max(candidates, key=lambda x: x[1])
+            else:
+                # Pick best overall
+                best_candidate = max(candidates, key=lambda x: x[1])
+
+            label_candidates[label] = best_candidate
+
+    # Step 3: Sort candidates by probability (highest first) and assign
+    # This ensures the most confident predictions get their preferred series first
     sorted_assignments = []
-    for label, (path, proba) in best_series_for_label.items():
+    for label, (path, proba, is_3d) in label_candidates.items():
         sorted_assignments.append((proba, path, label))
     sorted_assignments.sort(key=lambda x: x[0], reverse=True)
+
+    # Step 4: Assign labels, ensuring each series is used only once
+    final_assignments = {}
+    series_used = set()
+
     for proba, path, label in sorted_assignments:
         if path not in series_used:
             final_assignments[path] = label
             series_used.add(path)
+
+    # Step 5: Assign 'Other' to remaining series
     for series_desc, pred in temp_predictions.items():
         path = pred['path']
         if path not in series_used:
@@ -425,6 +464,26 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
         predictions_by_path = {}
 
     return final_assignments, predictions_by_path
+
+
+def check_is_3d_acquisition(dicom_path):
+    """
+    Check if a DICOM series is a 3D acquisition based on MRAcquisitionType.
+
+    Args:
+        dicom_path: Path to DICOM file
+
+    Returns:
+        bool: True if MRAcquisitionType is '3D', False otherwise
+    """
+    try:
+        ds = pydicom.dcmread(dicom_path, stop_before_pixels=True, force=True)
+        acq_type = getattr(ds, 'MRAcquisitionType', None)
+        if acq_type is not None:
+            return str(acq_type).strip().upper() == '3D'
+    except Exception as e:
+        print(f"Error checking 3D acquisition for {dicom_path}: {e}")
+    return False
 
 
 def full_auto_classify_study(study_dict, mrn, study_uid, output_root,

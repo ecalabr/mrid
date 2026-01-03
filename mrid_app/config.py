@@ -1,22 +1,35 @@
-import os
-
 # Directories (can be overridden by UI)
 DATA_DIR = "/media/ecalabr/raid/justin-data/dicoms_copy"
 OUT_DIR = "/media/ecalabr/raid/justin-data/dcm_parse_out"
 
-# Classification and model settings
+# Classification settings
 TARGET_SERIES = ["T1", "T2", "FLAIR", "T1c", "Other"]
-NUM_COLUMNS = 6
+# prefer the 3D acquisition (MRAcquisitionType == '3D') even if it's not the highest probability
+PREFER_3D = {
+    "T1": True,
+    "T2": False,
+    "FLAIR": True,
+    "T1c": True,
+    "Other": False
+}
+# DICOM ImageType filtering
 INCLUDE_TYPES = ["ORIGINAL", "PRIMARY"]
 EXCLUDE_TYPES = ["DERIVED", "SECONDARY", "ADC", "DIFFUSION", "LOCALIZER", "MIP", "MPR"]
 IGNORE_MULTIPLE_ORIENTATIONS = True
 SEPARATE_STACKED_SERIES = True
 MAX_SPLIT = 5  # max number of splits for stacked series
-OVERRIDE_THRESHOLD = 0.5
-IMAGE_SIZE = 64
-NUM_EPOCHS = 200
+
+# Classification UI options
+NUM_COLUMNS = 6  # number of columns in classification UI
+OVERRIDE_THRESHOLD = 0.5  # probability threshold for auto-classification
+
+# CNN hyperparameters
+IMAGE_SIZE = 128
+NUM_EPOCHS = 100
 BATCH_SIZE = 8
 LR = 0.001
+
+# Random Forest hyperparameters
 N_ESTIMATORS = 400
 
 # ============================================================================
