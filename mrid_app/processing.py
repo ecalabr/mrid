@@ -317,7 +317,7 @@ def get_image_probabilities(dicom_path, model, target_encoder):
         return None
 
 
-def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model, cnn_target_encoder):
+def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model, cnn_target_encoder, rf_field_types=None):
     """
     Optimize selections for a study. Returns a tuple:
       - final_assignments: dict mapping series_start_path -> label
@@ -325,6 +325,9 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
 
     This provides probabilities for GUIs to display. Backward callers expecting
     only final_assignments should be updated to unpack the tuple.
+
+    Args:
+        rf_field_types: Optional field types dictionary for consistent RF preprocessing
     """
     target_encoder = rf_target_encoder if rf_target_encoder is not None else cnn_target_encoder
     if target_encoder is None:
@@ -344,7 +347,7 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
         rf_proba = None
         cnn_proba = None
         if model_type in ["DICOM Header Model", "Header + Image Model"] and rf_model is not None:
-            rf_proba = get_series_probabilities(first_path, rf_model, rf_feature_encoder)
+            rf_proba = get_series_probabilities(first_path, rf_model, rf_feature_encoder, rf_field_types)
         if model_type in ["Image-Based Model", "Header + Image Model"] and cnn_model is not None:
             cnn_proba = get_image_probabilities(first_path, cnn_model, cnn_target_encoder)
         final_proba = None
@@ -426,12 +429,13 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
 
 def full_auto_classify_study(study_dict, mrn, study_uid, output_root,
                              model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model,
-                             cnn_target_encoder, convert=True):
+                             cnn_target_encoder, rf_field_types=None, convert=True):
     final_assignments, predictions_by_path = optimize_study_selections(
         study_dict,
         model_type,
         rf_model, rf_target_encoder, rf_feature_encoder,
-        cnn_model, cnn_target_encoder
+        cnn_model, cnn_target_encoder,
+        rf_field_types
     )
     for path, label in final_assignments.items():
         print(f"  -> Series starting with '{path}' auto-selected as: {label}")

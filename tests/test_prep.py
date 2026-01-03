@@ -1,15 +1,24 @@
 import pandas as pd
-import numpy as np
-from mrid_app.prep import _extract_and_clean_array_features, _preprocess_df
+from mrid_app.prep import _preprocess_df
+from mrid_app.field_detection import extract_and_clean_array_features
 
 
 def test_extract_array_features():
+    """Test array feature extraction using the new field_detection module."""
     df = pd.DataFrame({
-        'PixelSpacing (mm)': ['1\\\ 2', '[0.5, 0.5]', 'None'],
+        'PixelSpacing (mm)': ['1\\ 2', '[0.5, 0.5]', 'None'],
         'ImagePositionPatient (mm)': ['(1,2,3)', '1 2 3', None],
         'SeriesDescription': ['T1', 'T2', 'FLAIR']
     })
-    out = _extract_and_clean_array_features(df.copy())
+
+    # Create field types info for arrays
+    array_fields_info = {
+        'PixelSpacing (mm)': {'type': 'array', 'size': 2},
+        'ImagePositionPatient (mm)': {'type': 'array', 'size': 3}
+    }
+
+    out = extract_and_clean_array_features(df.copy(), array_fields_info)
+
     # Expect new columns for PixelSpacing_0, PixelSpacing_1, ImagePositionPatient_0..2
     assert any(col.startswith('PixelSpacing (mm)_') for col in out.columns)
     assert any(col.startswith('ImagePositionPatient (mm)_') for col in out.columns)
@@ -37,8 +46,10 @@ def test_preprocess_df_basic():
         'SpacingBetweenSlices (mm)': ['None', '1'] ,
         'ContrastBolusAgent': [None, 'GAD']
     })
-    X, cat_cols, text_cols = _preprocess_df(df, is_training=True)
-    assert 'TR (Repetition Time)' in X.columns
+    # _preprocess_df now returns 4 values when is_training=True: (X, cat_cols, text_cols, field_types)
+    X, cat_cols, text_cols, field_types = _preprocess_df(df, is_training=True)
+    assert 'TR (Repetition Time)' in X.columns or any('TR (Repetition Time)' in str(col) for col in X.columns)
     assert isinstance(cat_cols, list)
     assert isinstance(text_cols, list)
+    assert isinstance(field_types, dict)
 

@@ -3,6 +3,7 @@ from PIL import Image
 import numpy as np
 import pickle
 import hashlib
+import multiprocessing as mp
 
 try:
     import torch
@@ -108,9 +109,45 @@ def prepare_cnn_input_data(filepaths, load_center_slice_func):
     return X
 
 
-def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output_dir, progress_callback=None):
+def _process_single_image(args):
+    """
+    Worker function for parallel image preprocessing.
+
+    Args:
+        args: Tuple of (idx, path, label)
+
+    Returns:
+        Tuple of (idx, tensor, label) or (idx, None, None) if failed
+    """
+    idx, path, label = args
+
+    try:
+        # Import here to avoid pickling issues
+        from . import processing as processing_module
+
+        # Get transforms
+        transforms = _get_transforms()
+        if transforms is None:
+            return (idx, None, None)
+
+        # Load and process image
+        slice_img = processing_module.load_center_slice([path])
+        if slice_img is None:
+            return (idx, None, None)
+
+        img = slice_img.convert('L')
+        tensor = transforms(img)
+
+        return (idx, tensor, label)
+    except Exception as e:
+        print(f"Error processing {path}: {e}")
+        return (idx, None, None)
+
+
+def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output_dir, progress_callback=None, num_workers=None):
     """
     Preprocess training data by applying standard transforms and save to cache for fast I/O.
+    Uses parallel processing for faster preprocessing.
     Returns the cache file path if successful, None otherwise.
 
     Args:
@@ -119,6 +156,7 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output
         load_center_slice_func: Function to load center slice from DICOM
         output_dir: Directory to save cache file
         progress_callback: Optional callback function(current, total, message) for progress updates
+        num_workers: Number of parallel workers (default: cpu_count - 1)
     """
     transforms = _get_transforms()
     if transforms is None:
@@ -143,39 +181,72 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output
         except Exception as e:
             print(f"Error loading cache, will regenerate: {e}")
 
-    # Preprocess all images
+    # Preprocess all images using parallel processing
     total_files = len(filepaths)
-    print(f"Preprocessing {total_files} images...")
+    print(f"Preprocessing {total_files} images using parallel processing...")
     if progress_callback:
         progress_callback(0, total_files, f"Preprocessing 0/{total_files} images...")
-
-    processed_images = []
-    valid_labels = []
 
     if hasattr(filepaths, 'tolist'):
         filepaths = filepaths.tolist()
     if hasattr(labels, 'tolist'):
         labels = labels.tolist()
 
-    for idx, path in enumerate(filepaths):
-        slice_img = load_center_slice_func([path])
-        if slice_img is None:
-            continue
-        try:
-            img = slice_img.convert('L')
-            tensor = transforms(img)
-            processed_images.append(tensor)
-            valid_labels.append(labels[idx])
-        except Exception as e:
-            print(f"Error processing {path}: {e}")
+    # Determine number of workers
+    if num_workers is None:
+        num_workers = max(1, mp.cpu_count() - 1)
 
-        # Update progress every 10 images or on last image
-        if progress_callback and (idx % 10 == 0 or idx == total_files - 1):
-            progress_callback(idx + 1, total_files, f"Preprocessing {idx + 1}/{total_files} images...")
+    # Prepare arguments for parallel processing
+    args_list = [(idx, path, label) for idx, (path, label) in enumerate(zip(filepaths, labels))]
 
-    if not processed_images:
+    # Process images in parallel with progress tracking
+    processed_results = []
+    completed = 0
+
+    try:
+        # Use Pool with imap_unordered for progress tracking
+        with mp.Pool(processes=num_workers) as pool:
+            for result in pool.imap_unordered(_process_single_image, args_list, chunksize=1):
+                completed += 1
+
+                # Only keep successful results
+                if result[1] is not None:
+                    processed_results.append(result)
+
+                # Update progress every 10 images or on last image
+                if progress_callback and (completed % 10 == 0 or completed == total_files):
+                    progress_callback(completed, total_files, f"Preprocessing {completed}/{total_files} images...")
+
+    except Exception as e:
+        print(f"Error during parallel processing: {e}")
+        # Fall back to sequential processing
+        print("Falling back to sequential processing...")
+        processed_results = []
+        for idx, path in enumerate(filepaths):
+            slice_img = load_center_slice_func([path])
+            if slice_img is None:
+                continue
+            try:
+                img = slice_img.convert('L')
+                tensor = transforms(img)
+                processed_results.append((idx, tensor, labels[idx]))
+            except Exception as e:
+                print(f"Error processing {path}: {e}")
+
+            # Update progress every 10 images or on last image
+            if progress_callback and (idx % 10 == 0 or idx == total_files - 1):
+                progress_callback(idx + 1, total_files, f"Preprocessing {idx + 1}/{total_files} images...")
+
+    if not processed_results:
         print("No images were successfully processed")
         return None
+
+    # Sort results by original index to maintain order
+    processed_results.sort(key=lambda x: x[0])
+
+    # Extract tensors and labels
+    processed_images = [result[1] for result in processed_results]
+    valid_labels = [result[2] for result in processed_results]
 
     # Stack tensors and save to cache
     if progress_callback:

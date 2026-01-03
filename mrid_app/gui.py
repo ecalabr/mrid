@@ -175,12 +175,15 @@ class MainApp:
         self.rf_model = None
         self.rf_target_encoder = None
         self.rf_feature_encoder = None
+        self.rf_field_types = None  # Store field types for consistent preprocessing
         self.cnn_model = None
         self.cnn_target_encoder = None
         self.stop_requested = threading.Event()
         self.is_running = False
         # New flag for nifti conversion
         self.convert_to_nifti = tk.BooleanVar(value=False)
+        # Flag to indicate models should be loaded after training completes
+        self._auto_load_after_training = False
 
         # UI layout
         dir_frame = tk.LabelFrame(master, text="Directories", padx=10, pady=10)
@@ -287,29 +290,63 @@ class MainApp:
                 return
 
     def _load_model_handler(self):
+        """Handle Load Model(s) button press. If models don't exist, ask user if they want to train them."""
         output_dir = self.output_dir.get()
         model_type = self.model_type.get()
         rf_needed = model_type in ["DICOM Header Model", "Header + Image Model"]
         cnn_needed = model_type in ["Image-Based Model", "Header + Image Model"]
+
         rf_model_path = os.path.join(output_dir, "rf_classifier_model.joblib")
-        if rf_needed:
-            if os.path.exists(rf_model_path):
-                self._load_classifier_and_encoder()
-            else:
-                self.train_classifier_rf()
         cnn_model_path = os.path.join(output_dir, "cnn_classifier_model.pth")
-        if cnn_needed:
-            if os.path.exists(cnn_model_path):
+
+        # Check which models exist and which are missing
+        rf_exists = os.path.exists(rf_model_path) if rf_needed else True
+        cnn_exists = os.path.exists(cnn_model_path) if cnn_needed else True
+
+        # If all needed models exist, load them
+        if rf_exists and cnn_exists:
+            if rf_needed:
+                self._load_classifier_and_encoder()
+            if cnn_needed:
                 self._load_image_classifier()
-            else:
-                self.train_classifier_cnn()
-        self._check_model_status()
+            self._check_model_status()
+            return
+
+        # Models are missing - ask user if they want to train
+        missing_models = []
+        if rf_needed and not rf_exists:
+            missing_models.append("DICOM Header Model")
+        if cnn_needed and not cnn_exists:
+            missing_models.append("Image-Based Model")
+
+        missing_str = " and ".join(missing_models)
+        response = messagebox.askyesno(
+            "Models Not Found",
+            f"The following model(s) are not trained yet:\n\n{missing_str}\n\n"
+            f"Would you like to train them now?\n\n"
+            f"Note: Models will be automatically loaded after training completes.",
+            parent=self.master
+        )
+
+        if not response:
+            return
+
+        # User wants to train - set flag to load models after training
+        self._auto_load_after_training = True
+
+        # Start training for missing models
+        if rf_needed and not rf_exists:
+            self.train_classifier_rf()
+        if cnn_needed and not cnn_exists:
+            self.train_classifier_cnn()
 
     def _load_classifier_and_encoder(self):
         output_dir = self.output_dir.get()
         model_path = os.path.join(output_dir, "rf_classifier_model.joblib")
         target_encoder_path = os.path.join(output_dir, "label_encoder.joblib")
         feature_encoder_path = os.path.join(output_dir, "feature_encoder.joblib")
+        field_types_path = os.path.join(output_dir, "field_types.joblib")
+
         if not os.path.exists(model_path) or not os.path.exists(target_encoder_path) or not os.path.exists(feature_encoder_path):
             messagebox.showwarning("Load Warning", "Header Model files not found. Skipping RF load.")
             return
@@ -317,11 +354,21 @@ class MainApp:
             self.rf_model = joblib.load(model_path)
             self.rf_target_encoder = joblib.load(target_encoder_path)
             self.rf_feature_encoder = joblib.load(feature_encoder_path)
+
+            # Load field types if available (for models trained with new system)
+            if os.path.exists(field_types_path):
+                self.rf_field_types = joblib.load(field_types_path)
+                print("Loaded field types for consistent preprocessing")
+            else:
+                self.rf_field_types = None
+                print("Field types not found - using legacy preprocessing")
+
         except Exception as e:
             messagebox.showerror("Load Error", f"Failed to load RF model/encoders: {e}")
             self.rf_model = None
             self.rf_target_encoder = None
             self.rf_feature_encoder = None
+            self.rf_field_types = None
 
     def _load_image_classifier(self):
         try:
@@ -433,12 +480,31 @@ class MainApp:
         if not os.path.isdir(output_dir):
             messagebox.showerror("Error", "Invalid Output Directory", "Please specify a valid output directory containing classified data.")
             return
+
+        # Create callback for missing fields prompt
+        def prompt_update_missing_fields(num_csvs, missing_fields):
+            """Prompt user about updating CSVs with missing fields."""
+            fields_str = "\n  - ".join(missing_fields)
+            message = (
+                f"Found {num_csvs} classification CSV(s) that are missing "
+                f"the following DICOM header field(s):\n\n  - {fields_str}\n\n"
+                f"Would you like to extract these fields from the DICOM files "
+                f"and update the CSVs before training?\n\n"
+                f"This will ensure the model uses all configured fields."
+            )
+            response = messagebox.askyesno(
+                "Missing DICOM Header Fields",
+                message,
+                parent=self.master
+            )
+            return response
+
         self.start_button.config(state="disabled")
         self.train_button.config(state="disabled")
         training_gui = TrainClassifierGUI(self.master)
         training_thread = threading.Thread(
             target=TrainHeaderClassifierLogic,
-            args=(output_dir, training_gui),
+            args=(output_dir, training_gui, prompt_update_missing_fields),
             daemon=True
         )
         training_thread.start()
@@ -479,7 +545,30 @@ class MainApp:
         if thread.is_alive():
             self.master.after(100, self._poll_training_status, thread)
         else:
+            # Training completed
             self.start_button.config(state="normal")
+
+            # If auto-load flag is set, load the models
+            if self._auto_load_after_training:
+                self._auto_load_after_training = False  # Reset flag
+
+                # Load the models based on model type
+                model_type = self.model_type.get()
+                rf_needed = model_type in ["DICOM Header Model", "Header + Image Model"]
+                cnn_needed = model_type in ["Image-Based Model", "Header + Image Model"]
+
+                output_dir = self.output_dir.get()
+                rf_model_path = os.path.join(output_dir, "rf_classifier_model.joblib")
+                cnn_model_path = os.path.join(output_dir, "cnn_classifier_model.pth")
+
+                # Load RF model if needed and exists
+                if rf_needed and os.path.exists(rf_model_path):
+                    self._load_classifier_and_encoder()
+
+                # Load CNN model if needed and exists
+                if cnn_needed and os.path.exists(cnn_model_path):
+                    self._load_image_classifier()
+
             self._check_model_status()
 
     def start_classification(self):
@@ -709,6 +798,7 @@ class MainApp:
                     processing.full_auto_classify_study(
                         series_dict, mrn, study_uid, output_dir,
                         model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model, cnn_target_encoder,
+                        self.rf_field_types,  # Pass field types
                         convert=self.convert_to_nifti.get()
                     )
                 else:
@@ -719,6 +809,7 @@ class MainApp:
                         series_dict, mrn, study_uid, output_dir, self.stop_requested,
                         study_done_event, mode,
                         model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model, cnn_target_encoder,
+                        self.rf_field_types,  # Pass field types
                         convert=self.convert_to_nifti.get()
                     )
 
@@ -788,7 +879,7 @@ def load_image_worker(dicom_paths, panel_label_ref, root):
 
 def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, study_done_event, mode="Manual",
                        model_type=None, rf_model=None, rf_target_encoder=None, rf_feature_encoder=None, cnn_model=None,
-                       cnn_target_encoder=None, convert=True):
+                       cnn_target_encoder=None, rf_field_types=None, convert=True):
     """
     Per-study classification GUI. Creates a grid of series thumbnails and dropdowns.
     Signals completion via study_done_event.
@@ -828,7 +919,8 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
             study_dict,
             model_type,
             rf_model, rf_target_encoder, rf_feature_encoder,
-            cnn_model, cnn_target_encoder
+            cnn_model, cnn_target_encoder,
+            rf_field_types  # Pass field types for consistent preprocessing
         )
         # optimize_study_selections now returns (final_assignments, predictions_by_path)
         try:

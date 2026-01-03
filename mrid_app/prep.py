@@ -1,7 +1,8 @@
 import re
 import numpy as np
 import pandas as pd
-from .config import ARRAY_COLS_MAPPING, INITIAL_FEATURE_COLS, CATEGORICAL_COLS, TEXT_COLS, SEMANTIC_MODEL, SEMANTIC_MODEL_NAME
+from .config import SEMANTIC_MODEL, SEMANTIC_MODEL_NAME, DICOM_HEADER_FIELDS
+from .field_detection import analyze_dataframe_fields, preprocess_by_type
 
 
 def _get_semantic_model():
@@ -16,56 +17,43 @@ def _get_semantic_model():
     return SEMANTIC_MODEL
 
 
-def _extract_and_clean_array_features(df):
-    for col_name, size in ARRAY_COLS_MAPPING.items():
-        if col_name in df.columns:
-            def parse_array_string(val):
-                if pd.isna(val) or val is None or val == 'None':
-                    return [np.nan] * size
-                try:
-                    numbers = re.findall(r"[-+]?\d*\.\d+|\d+", str(val))
-                    float_list = [float(n) for n in numbers[:size]]
-                    float_list.extend([np.nan] * (size - len(float_list)))
-                    return float_list[:size]
-                except Exception:
-                    return [np.nan] * size
+def _preprocess_df(df, is_training=True, field_types=None):
+    """
+    Preprocess DICOM header DataFrame with automatic field type detection.
 
-            parsed_data = df[col_name].apply(parse_array_string).tolist()
-            parsed_df = pd.DataFrame(parsed_data, index=df.index,
-                                     columns=[f"{col_name}_{i}" for i in range(size)])
+    Args:
+        df: DataFrame with DICOM header fields
+        is_training: Whether this is training data (triggers type detection)
+        field_types: Pre-computed field types (used during inference)
 
-            df = df.drop(columns=[col_name])
-            df = pd.concat([df, parsed_df], axis=1)
+    Returns:
+        If is_training: (preprocessed_df, categorical_cols, text_cols, field_types)
+        If not is_training: preprocessed_df
+    """
+    # Get list of field names to use
+    field_names = [field[0] for field in DICOM_HEADER_FIELDS]
 
-    if 'TI (Inversion Time)' in df.columns:
-        df['TI (Inversion Time)'] = pd.to_numeric(df['TI (Inversion Time)'], errors='coerce')
-    if 'SpacingBetweenSlices (mm)' in df.columns:
-        df['SpacingBetweenSlices (mm)'] = pd.to_numeric(df['SpacingBetweenSlices (mm)'], errors='coerce')
+    # Select only the configured fields that exist in df
+    available_fields = [f for f in field_names if f in df.columns]
+    X = df[available_fields].copy()
 
-    return df
+    if is_training or field_types is None:
+        # Analyze and detect field types
+        print("Analyzing DICOM header field types...")
+        detected_field_types = analyze_dataframe_fields(X, available_fields)
 
+        # Preprocess based on detected types
+        X_processed, categorical_cols, text_cols = preprocess_by_type(X, detected_field_types)
 
-def _preprocess_df(df, is_training=True):
-    X = df[INITIAL_FEATURE_COLS].copy()
-    X = _extract_and_clean_array_features(X)
-    final_cols = X.columns.tolist()
-    final_cat_cols = [c for c in final_cols if c in CATEGORICAL_COLS]
-    final_text_cols = [c for c in final_cols if c in TEXT_COLS]
-    final_num_cols = [c for c in final_cols if c not in final_cat_cols + final_text_cols]
-
-    for col in final_num_cols:
-        X[col] = pd.to_numeric(X[col], errors='coerce').fillna(-1.0).astype(float)
-
-    for col in final_cat_cols:
-        X[col] = X[col].astype(str).fillna('MISSING').str.strip()
-
-    for col in final_text_cols:
-        X[col] = X[col].fillna('MISSING').astype(str).str.replace('_', ' ').str.strip()
-
-    if is_training:
-        return X, final_cat_cols, final_text_cols
+        if is_training:
+            return X_processed, categorical_cols, text_cols, detected_field_types
+        else:
+            return X_processed
     else:
-        return X
+        # Use pre-computed field types
+        X_processed, categorical_cols, text_cols = preprocess_by_type(X, field_types)
+        return X_processed
+
 
 
 def encode_text_features(feature_df, text_cols):
@@ -80,6 +68,12 @@ def encode_text_features(feature_df, text_cols):
         return embedded_features
 
     for col in text_cols:
+        if col not in feature_df.columns:
+            # Column doesn't exist, skip
+            emb_df = pd.DataFrame(index=feature_df.index)
+            embedded_features.append(emb_df)
+            continue
+
         text_data = feature_df[col].tolist()
         embeddings = model.encode(
             text_data,
