@@ -185,6 +185,16 @@ class MainApp:
         # Flag to indicate models should be loaded after training completes
         self._auto_load_after_training = False
 
+        # Create menu bar
+        menubar = tk.Menu(master)
+        master.config(menu=menubar)
+
+        # Other Options menu
+        other_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="File Options", menu=other_menu)
+        other_menu.add_command(label="Convert NIfTIs", command=self._convert_niftis_utility)
+        other_menu.add_command(label="Erase Data", command=self._erase_data_utility)
+
         # UI layout
         dir_frame = tk.LabelFrame(master, text="Directories", padx=10, pady=10)
         dir_frame.pack(padx=20, pady=10, fill="x")
@@ -830,6 +840,333 @@ class MainApp:
         except Exception as e:
             print(f"An error occurred in the classification process: {e}")
             self.classification_finished(aborted=True)
+
+    def _convert_niftis_utility(self):
+        """Utility to convert all classified studies to NIfTI format."""
+        if self.is_running:
+            messagebox.showwarning("Busy", "Cannot convert while classification is running.")
+            return
+
+        output_dir = self.output_dir.get()
+        if not os.path.isdir(output_dir):
+            messagebox.showerror("Error", "Please specify a valid output directory.")
+            return
+
+        # Ask user for confirmation
+        response = messagebox.askyesno(
+            "Convert NIfTIs",
+            "This will convert all classified studies to NIfTI format (if not already converted).\n\n"
+            "This may take a while depending on the number of studies.\n\n"
+            "Continue?",
+            parent=self.master
+        )
+
+        if not response:
+            return
+
+        # Check for dcm2niix
+        dcm2niix_path = shutil.which("dcm2niix")
+        if not dcm2niix_path:
+            messagebox.showerror(
+                "Missing dcm2niix",
+                "dcm2niix was not found in your PATH. Please install it to convert to NIfTI.",
+                parent=self.master
+            )
+            return
+
+        # Count studies to process
+        study_folders = []
+        for folder in os.listdir(output_dir):
+            folder_path = os.path.join(output_dir, folder)
+            if os.path.isdir(folder_path):
+                # Check if it looks like a study folder (has classification CSV)
+                study_id = os.path.basename(folder_path.rstrip(os.sep))
+                csv_path = os.path.join(folder_path, f"{study_id}_classification-results.csv")
+                if os.path.exists(csv_path):
+                    study_folders.append(folder_path)
+
+        if not study_folders:
+            messagebox.showinfo("No Studies", "No classified studies found in output directory.")
+            return
+
+        # Create progress window
+        progress_window = tk.Toplevel(self.master)
+        progress_window.title("Converting to NIfTI...")
+        progress_window.geometry("500x150")
+        progress_window.protocol("WM_DELETE_WINDOW", lambda: None)  # Disable close
+
+        status_label = tk.Label(progress_window, text=f"Converting {len(study_folders)} studies...")
+        status_label.pack(pady=10)
+
+        progress_bar = ttk.Progressbar(progress_window, orient="horizontal", length=400, mode="determinate", maximum=len(study_folders))
+        progress_bar.pack(pady=10)
+
+        current_label = tk.Label(progress_window, text="")
+        current_label.pack(pady=5)
+
+        # Convert in background thread
+        def convert_worker():
+            converted_count = 0
+            skipped_count = 0
+            error_count = 0
+
+            for idx, study_path in enumerate(study_folders):
+                study_id = os.path.basename(study_path.rstrip(os.sep))
+
+                # Update UI
+                progress_window.after(0, lambda i=idx, sid=study_id: current_label.config(text=f"Processing: {sid}"))
+                progress_window.after(0, lambda i=idx: progress_bar.config(value=i))
+
+                # Read classification CSV
+                csv_path = os.path.join(study_path, f"{study_id}_classification-results.csv")
+                try:
+                    import pandas as pd
+                    df = pd.read_csv(csv_path)
+
+                    for _, row in df.iterrows():
+                        classification = str(row.get('Classification', '')).strip()
+                        if classification.lower() in ['other', 'none', '']:
+                            continue
+
+                        path = row.get('Path', '')
+                        if not path or not os.path.exists(path):
+                            continue
+
+                        # Check if NIfTI already exists
+                        # convert_series_to_nifti creates files as: {study_id}_{label.lower()}.nii.gz
+                        series_dir = os.path.dirname(path)
+                        expected_nifti_name = f"{study_id}_{classification.lower()}.nii.gz"
+                        expected_nifti_path = os.path.join(study_path, expected_nifti_name)
+
+                        # Check if NIfTI file exists
+                        if os.path.exists(expected_nifti_path):
+                            skipped_count += 1
+                            continue
+
+                        # Convert to NIfTI using existing function
+                        try:
+                            processing.convert_series_to_nifti(
+                                series_dir=series_dir,
+                                output_path=study_path,
+                                label=classification
+                            )
+                            converted_count += 1
+                        except Exception as e:
+                            print(f"Error converting {series_dir}: {e}")
+                            error_count += 1
+
+                except Exception as e:
+                    print(f"Error processing {csv_path}: {e}")
+                    error_count += 1
+
+            # Update final progress
+            progress_window.after(0, lambda: progress_bar.config(value=len(study_folders)))
+            progress_window.after(0, lambda: current_label.config(text="Complete!"))
+
+            # Show summary
+            summary = f"Conversion Complete!\n\n"
+            summary += f"Converted: {converted_count}\n"
+            summary += f"Skipped (already exist): {skipped_count}\n"
+            if error_count > 0:
+                summary += f"Errors: {error_count}"
+
+            progress_window.after(0, lambda: messagebox.showinfo("Conversion Complete", summary, parent=self.master))
+            progress_window.after(0, progress_window.destroy)
+
+        thread = threading.Thread(target=convert_worker, daemon=True)
+        thread.start()
+
+    def _erase_data_utility(self):
+        """Utility to erase selected data from output directory."""
+        if self.is_running:
+            messagebox.showwarning("Busy", "Cannot erase data while classification is running.")
+            return
+
+        output_dir = self.output_dir.get()
+        if not os.path.isdir(output_dir):
+            messagebox.showerror("Error", "Please specify a valid output directory.")
+            return
+
+        # Create dialog with checkboxes
+        dialog = tk.Toplevel(self.master)
+        dialog.title("Erase Data")
+        dialog.geometry("550x280")
+        dialog.transient(self.master)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="Select data to erase:", font=("Arial", 12, "bold")).pack(pady=10)
+
+        # Checkboxes
+        delete_classifications = tk.BooleanVar(value=False)
+        delete_models = tk.BooleanVar(value=False)
+        delete_hierarchy = tk.BooleanVar(value=False)
+
+        tk.Checkbutton(
+            dialog,
+            text="Delete Classifications (study folders, NIfTIs, CSVs)",
+            variable=delete_classifications,
+            font=("Arial", 10),
+            wraplength=500,
+            justify="left"
+        ).pack(anchor="w", padx=20, pady=5)
+
+        tk.Checkbutton(
+            dialog,
+            text="Delete Models (trained models, encoders, results)",
+            variable=delete_models,
+            font=("Arial", 10),
+            wraplength=500,
+            justify="left"
+        ).pack(anchor="w", padx=20, pady=5)
+
+        tk.Checkbutton(
+            dialog,
+            text="Delete Hierarchy (hierarchy.yaml, temporary_files)",
+            variable=delete_hierarchy,
+            font=("Arial", 10),
+            wraplength=500,
+            justify="left"
+        ).pack(anchor="w", padx=20, pady=5)
+
+        tk.Label(
+            dialog,
+            text="⚠️ Warning: This action cannot be undone!",
+            fg="red",
+            font=("Arial", 10, "bold")
+        ).pack(pady=10)
+
+        # Button frame
+        button_frame = tk.Frame(dialog)
+        button_frame.pack(pady=10)
+
+        def confirm_delete():
+            if not any([delete_classifications.get(), delete_models.get(), delete_hierarchy.get()]):
+                messagebox.showwarning("No Selection", "Please select at least one option to delete.")
+                return
+
+            # Build confirmation message
+            items = []
+            if delete_classifications.get():
+                items.append("- All classification study folders")
+            if delete_models.get():
+                items.append("- All trained models and training data")
+            if delete_hierarchy.get():
+                items.append("- Hierarchy and temporary files")
+
+            confirm_msg = "Are you sure you want to DELETE:\n\n" + "\n".join(items) + "\n\nThis cannot be undone!"
+
+            response = messagebox.askyesno("Confirm Deletion", confirm_msg, parent=dialog, icon='warning')
+            if not response:
+                return
+
+            dialog.destroy()
+            self._perform_data_deletion(delete_classifications.get(), delete_models.get(), delete_hierarchy.get())
+
+        tk.Button(button_frame, text="Delete", command=confirm_delete, bg="#ff4444", fg="white", font=("Arial", 10, "bold"), width=10).pack(side="left", padx=5)
+        tk.Button(button_frame, text="Cancel", command=dialog.destroy, font=("Arial", 10), width=10).pack(side="left", padx=5)
+
+    def _perform_data_deletion(self, delete_classifications, delete_models, delete_hierarchy):
+        """Perform the actual data deletion."""
+        output_dir = self.output_dir.get()
+        deleted_items = []
+        errors = []
+
+        try:
+            # Delete classifications (study folders with CSVs)
+            if delete_classifications:
+                for folder in os.listdir(output_dir):
+                    folder_path = os.path.join(output_dir, folder)
+                    if os.path.isdir(folder_path):
+                        study_id = os.path.basename(folder_path.rstrip(os.sep))
+                        csv_path = os.path.join(folder_path, f"{study_id}_classification-results.csv")
+
+                        if os.path.exists(csv_path):
+                            try:
+                                shutil.rmtree(folder_path)
+                                deleted_items.append(f"Study folder: {study_id}")
+                            except Exception as e:
+                                errors.append(f"Failed to delete {folder_path}: {e}")
+
+            # Delete models
+            if delete_models:
+                model_files = [
+                    "rf_classifier_model.joblib",
+                    "cnn_classifier_model.pth",
+                    "label_encoder.joblib",
+                    "feature_encoder.joblib",
+                    "field_types.joblib",
+                    "classification_data.csv",
+                    "rf_model_training_summary.txt",
+                    "cnn_model_training_summary.txt"
+                ]
+
+                # Also check for CNN cache files
+                for item in os.listdir(output_dir):
+                    if item.startswith("cnn_preprocessed_data_") and item.endswith(".pkl"):
+                        model_files.append(item)
+
+                for filename in model_files:
+                    filepath = os.path.join(output_dir, filename)
+                    if os.path.exists(filepath):
+                        try:
+                            os.remove(filepath)
+                            deleted_items.append(f"Model file: {filename}")
+                        except Exception as e:
+                            errors.append(f"Failed to delete {filename}: {e}")
+
+                # Reset loaded models in GUI
+                self.rf_model = None
+                self.rf_target_encoder = None
+                self.rf_feature_encoder = None
+                self.rf_field_types = None
+                self.cnn_model = None
+                self.cnn_target_encoder = None
+                self._check_model_status()
+
+            # Delete hierarchy
+            if delete_hierarchy:
+                hierarchy_path = os.path.join(output_dir, "hierarchy.yaml")
+                temp_files_path = os.path.join(output_dir, "temporary_files")
+
+                if os.path.exists(hierarchy_path):
+                    try:
+                        os.remove(hierarchy_path)
+                        deleted_items.append("hierarchy.yaml")
+                    except Exception as e:
+                        errors.append(f"Failed to delete hierarchy.yaml: {e}")
+
+                if os.path.exists(temp_files_path):
+                    try:
+                        shutil.rmtree(temp_files_path)
+                        deleted_items.append("temporary_files directory")
+                    except Exception as e:
+                        errors.append(f"Failed to delete temporary_files: {e}")
+
+            # Show results
+            if deleted_items or errors:
+                # Create simplified messages based on what was deleted
+                messages = []
+                if delete_classifications and any('Study folder' in item for item in deleted_items):
+                    messages.append("Successfully deleted classification data")
+                if delete_models and any('Model file' in item for item in deleted_items):
+                    messages.append("Successfully deleted model data")
+                if delete_hierarchy and (any('hierarchy.yaml' in item for item in deleted_items) or
+                                        any('temporary_files' in item for item in deleted_items)):
+                    messages.append("Successfully deleted hierarchy data")
+
+                result_msg = "\n".join(messages) if messages else "Deletion completed"
+
+                if errors:
+                    result_msg += f"\n\nWarning: {len(errors)} error(s) occurred during deletion."
+                    if len(errors) <= 3:
+                        result_msg += "\n" + "\n".join(errors)
+
+                messagebox.showinfo("Deletion Complete", result_msg, parent=self.master)
+            else:
+                messagebox.showinfo("Nothing Deleted", "No matching files found to delete.", parent=self.master)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"An error occurred during deletion: {e}", parent=self.master)
 
 
 # At end of file, add asynchronous image loader and per-study classification GUI
