@@ -13,28 +13,141 @@ import pydicom
 from PIL import Image, ImageTk
 import shutil
 import colorsys
+import platform
+import sys
 
 
-# Small helper to enable Tk autoscaling
-def enable_tkinter_autoscaling(root):
+# Global scaling factor to be calculated once
+_SCALE_FACTOR = None
+
+
+def _calculate_scale_factor(window):
+    """Calculate the appropriate scaling factor based on DPI and platform."""
     try:
-        dpi = root.winfo_fpixels('1i')
-        scaling_factor = dpi / 72.0
-        root.tk.call('tk', 'scaling', scaling_factor)
+        # Get DPI from the window
+        dpi = window.winfo_fpixels('1i')
+
+        # Base DPI reference (standard 96 DPI for Windows, 72 for Mac)
+        if platform.system() == 'Darwin':  # macOS
+            base_dpi = 72.0
+        else:  # Windows/Linux
+            base_dpi = 96.0
+
+        # Calculate scaling factor
+        scale = dpi / base_dpi
+
+        # Clamp the scaling factor to reasonable bounds
+        scale = max(0.75, min(scale, 3.0))
+
+        return scale
+    except Exception:
+        return 1.0
+
+
+def _enable_dpi_awareness():
+    """Enable DPI awareness for Windows to get correct DPI values."""
+    if platform.system() == 'Windows':
+        try:
+            from ctypes import windll
+            # Try SetProcessDpiAwareness first (Windows 8.1+)
+            try:
+                windll.shcore.SetProcessDpiAwareness(1)
+            except Exception:
+                # Fall back to SetProcessDPIAware (Windows Vista+)
+                try:
+                    windll.user32.SetProcessDPIAware()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
+def enable_tkinter_autoscaling(window):
+    """
+    Enable DPI-aware autoscaling for tkinter windows.
+    Call this once on the root window, and once on each Toplevel window.
+    """
+    global _SCALE_FACTOR
+
+    # Enable DPI awareness on Windows (only needs to be done once)
+    if _SCALE_FACTOR is None:
+        _enable_dpi_awareness()
+
+    # Calculate scale factor if not already done
+    if _SCALE_FACTOR is None:
+        _SCALE_FACTOR = _calculate_scale_factor(window)
+
+    # Apply tk scaling
+    try:
+        window.tk.call('tk', 'scaling', _SCALE_FACTOR * 1.33)
     except Exception:
         pass
+
+    # Scale fonts
     try:
         import tkinter.font as tkfont
-        for name in ("TkDefaultFont", "TkTextFont", "TkFixedFont", "TkMenuFont",
-                     "TkHeadingFont", "TkCaptionFont", "TkSmallCaptionFont",
-                     "TkIconFont", "TkTooltipFont"):
+
+        # Default font sizes at 96 DPI
+        default_sizes = {
+            "TkDefaultFont": 9,
+            "TkTextFont": 9,
+            "TkFixedFont": 9,
+            "TkMenuFont": 9,
+            "TkHeadingFont": 9,
+            "TkCaptionFont": 9,
+            "TkSmallCaptionFont": 8,
+            "TkIconFont": 9,
+            "TkTooltipFont": 8,
+        }
+
+        for name, default_size in default_sizes.items():
             try:
-                f = tkfont.nametofont(name)
-                f.configure(size=int(f.cget("size") * 1.3))
+                font = tkfont.nametofont(name)
+                # Scale the default size, not the current size
+                new_size = int(default_size * _SCALE_FACTOR)
+                # Ensure minimum readable size
+                new_size = max(8, new_size)
+                font.configure(size=new_size)
             except Exception:
                 continue
     except Exception:
         pass
+
+
+def scale_geometry(geometry_string):
+    """
+    Scale a geometry string (e.g., "500x300") by the global scale factor.
+    Returns the scaled geometry string.
+    """
+    global _SCALE_FACTOR
+    if _SCALE_FACTOR is None:
+        return geometry_string
+
+    try:
+        # Parse geometry string like "500x300" or "500x300+100+100"
+        parts = geometry_string.split('+')
+        size_part = parts[0]
+        position_parts = parts[1:] if len(parts) > 1 else []
+
+        width, height = map(int, size_part.split('x'))
+        scaled_width = int(width * _SCALE_FACTOR)
+        scaled_height = int(height * _SCALE_FACTOR)
+
+        result = f"{scaled_width}x{scaled_height}"
+        if position_parts:
+            result += '+' + '+'.join(position_parts)
+
+        return result
+    except Exception:
+        return geometry_string
+
+
+def scale_value(value):
+    """Scale a numeric value by the global scale factor."""
+    global _SCALE_FACTOR
+    if _SCALE_FACTOR is None:
+        return value
+    return int(value * _SCALE_FACTOR)
 
 
 def _generate_color_map(labels):
@@ -58,15 +171,16 @@ def _generate_color_map(labels):
 class TrainClassifierGUI:
     def __init__(self, master):
         self.root = tk.Toplevel(master)
+        enable_tkinter_autoscaling(self.root)
         self.root.title("Model Training In Progress...")
-        self.root.geometry("450x120")
+        self.root.geometry(scale_geometry("450x120"))
         self.root.protocol("WM_DELETE_WINDOW", self.do_nothing)
         self.root.grab_set()
         self.label = tk.StringVar(value="Initializing training process...")
-        tk.Label(self.root, textvariable=self.label).pack(pady=10)
+        tk.Label(self.root, textvariable=self.label).pack(pady=scale_value(10))
         self.progress = ttk.Progressbar(self.root, orient="horizontal",
-                                        length=400, mode="indeterminate")
-        self.progress.pack(pady=5, padx=20)
+                                        length=scale_value(400), mode="indeterminate")
+        self.progress.pack(pady=scale_value(5), padx=scale_value(20))
         self.progress.start(10)
         self.root.update()
 
@@ -138,18 +252,19 @@ class ProgressGUI:
             self.root = tk.Toplevel(tk._default_root)
         except AttributeError:
             self.root = tk.Toplevel()
+        enable_tkinter_autoscaling(self.root)
         try:
             self.root.title(title)
         except Exception:
             pass
-        self.root.geometry("500x160")
+        self.root.geometry(scale_geometry("500x160"))
         self.root.protocol("WM_DELETE_WINDOW", self.do_nothing)
         self.label = tk.Label(self.root, text=label_text)
-        self.label.pack(pady=10)
+        self.label.pack(pady=scale_value(10))
         self.progress = ttk.Progressbar(self.root, orient="horizontal",
-                                        length=400, mode="determinate",
+                                        length=scale_value(400), mode="determinate",
                                         maximum=total_files)
-        self.progress.pack(pady=10)
+        self.progress.pack(pady=scale_value(10))
         self.root.update()
 
     def update(self, value):
@@ -196,21 +311,21 @@ class MainApp:
         other_menu.add_command(label="Erase Data", command=self._erase_data_utility)
 
         # UI layout
-        dir_frame = tk.LabelFrame(master, text="Directories", padx=10, pady=10)
-        dir_frame.pack(padx=20, pady=10, fill="x")
-        tk.Label(dir_frame, text="Input DIR:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        tk.Entry(dir_frame, textvariable=self.input_dir, width=50).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        tk.Button(dir_frame, text="Browse", command=lambda: self.browse_dir(self.input_dir, "Select INPUT directory")).grid(row=0, column=2, padx=5, pady=5)
-        tk.Label(dir_frame, text="Output DIR:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        tk.Entry(dir_frame, textvariable=self.output_dir, width=50).grid(row=1, column=1, padx=5, pady=5, sticky="ew")
-        tk.Button(dir_frame, text="Browse", command=lambda: self.browse_dir(self.output_dir, "Select OUTPUT directory")).grid(row=1, column=2, padx=5, pady=5)
+        dir_frame = tk.LabelFrame(master, text="Directories", padx=scale_value(10), pady=scale_value(10))
+        dir_frame.pack(padx=scale_value(20), pady=scale_value(10), fill="x")
+        tk.Label(dir_frame, text="Input DIR:").grid(row=0, column=0, padx=scale_value(5), pady=scale_value(5), sticky="w")
+        tk.Entry(dir_frame, textvariable=self.input_dir, width=50).grid(row=0, column=1, padx=scale_value(5), pady=scale_value(5), sticky="ew")
+        tk.Button(dir_frame, text="Browse", command=lambda: self.browse_dir(self.input_dir, "Select INPUT directory")).grid(row=0, column=2, padx=scale_value(5), pady=scale_value(5))
+        tk.Label(dir_frame, text="Output DIR:").grid(row=1, column=0, padx=scale_value(5), pady=scale_value(5), sticky="w")
+        tk.Entry(dir_frame, textvariable=self.output_dir, width=50).grid(row=1, column=1, padx=scale_value(5), pady=scale_value(5), sticky="ew")
+        tk.Button(dir_frame, text="Browse", command=lambda: self.browse_dir(self.output_dir, "Select OUTPUT directory")).grid(row=1, column=2, padx=scale_value(5), pady=scale_value(5))
         dir_frame.columnconfigure(1, weight=1)
 
-        control_frame = tk.Frame(master, padx=20, pady=10)
+        control_frame = tk.Frame(master, padx=scale_value(20), pady=scale_value(10))
         control_frame.pack(fill="x")
         mode_frame = tk.Frame(control_frame)
-        mode_frame.pack(side="right", padx=5)
-        tk.Label(mode_frame, text="Mode:").pack(side="left", padx=5)
+        mode_frame.pack(side="right", padx=scale_value(5))
+        tk.Label(mode_frame, text="Mode:").pack(side="left", padx=scale_value(5))
         mode_options = ["Manual", "Semi-Auto", "Full-Auto"]
         # Replaced ttk.Combobox with tk.OptionMenu. Keep using the same
         # StringVar (self.classification_mode) and call _check_model_status via
@@ -221,10 +336,10 @@ class MainApp:
             mode_menu.config(width=12)
         except Exception:
             pass
-        mode_menu.pack(side="left", padx=5)
+        mode_menu.pack(side="left", padx=scale_value(5))
         model_type_frame = tk.Frame(control_frame)
-        model_type_frame.pack(side="right", padx=5)
-        tk.Label(model_type_frame, text="Model Type:").pack(side="left", padx=5)
+        model_type_frame.pack(side="right", padx=scale_value(5))
+        tk.Label(model_type_frame, text="Model Type:").pack(side="left", padx=scale_value(5))
         model_options = ["DICOM Header Model", "Image-Based Model", "Header + Image Model"]
         # Replace model-type Combobox with OptionMenu; preserve self.model_type
         # StringVar and call _check_model_status on selection changes.
@@ -233,12 +348,12 @@ class MainApp:
             model_menu.config(width=20)
         except Exception:
             pass
-        model_menu.pack(side="left", padx=5)
+        model_menu.pack(side="left", padx=scale_value(5))
 
         # New convert toggle (Yes/No)
         convert_frame = tk.Frame(control_frame)
-        convert_frame.pack(side="right", padx=10)
-        tk.Label(convert_frame, text="Convert to NIfTI:").pack(side="left", padx=(0,5))
+        convert_frame.pack(side="right", padx=scale_value(10))
+        tk.Label(convert_frame, text="Convert to NIfTI:").pack(side="left", padx=(0, scale_value(5)))
 
         # Single Button toggle showing Yes/No. Clicking flips the underlying BooleanVar
         def _convert_button_toggle():
@@ -255,14 +370,14 @@ class MainApp:
         self._convert_button = tk.Button(convert_frame, text=("Yes" if self.convert_to_nifti.get() else "No"), command=_convert_button_toggle, bd=1, relief='raised')
         self._convert_button.pack(side="left")
 
-        self.start_button = tk.Button(control_frame, text="▶ Start Classification", font=("Arial", 12, "bold"), command=self.start_classification, state="normal")
-        self.start_button.pack(side="left", padx=5)
-        self.stop_button = tk.Button(control_frame, text="Stop", font=("Arial", 12), command=self.stop_classification, state="disabled")
-        self.stop_button.pack(side="left", padx=5)
-        self.train_button = tk.Button(control_frame, text="Train Model(s)", font=("Arial", 12), command=self._train_model)
-        self.train_button.pack(side="right", padx=5)
-        self.load_button = tk.Button(control_frame, text="Load Model(s)", font=("Arial", 12), command=self._load_model_handler)
-        self.load_button.pack(side="right", padx=5)
+        self.start_button = tk.Button(control_frame, text="▶ Start Classification", font=("Arial", scale_value(12), "bold"), command=self.start_classification, state="normal")
+        self.start_button.pack(side="left", padx=scale_value(5))
+        self.stop_button = tk.Button(control_frame, text="Stop", font=("Arial", scale_value(12)), command=self.stop_classification, state="disabled")
+        self.stop_button.pack(side="left", padx=scale_value(5))
+        self.train_button = tk.Button(control_frame, text="Train Model(s)", font=("Arial", scale_value(12)), command=self._train_model)
+        self.train_button.pack(side="right", padx=scale_value(5))
+        self.load_button = tk.Button(control_frame, text="Load Model(s)", font=("Arial", scale_value(12)), command=self._load_model_handler)
+        self.load_button.pack(side="right", padx=scale_value(5))
         self._check_model_status()
 
     def browse_dir(self, var, title):
@@ -891,18 +1006,19 @@ class MainApp:
 
         # Create progress window
         progress_window = tk.Toplevel(self.master)
+        enable_tkinter_autoscaling(progress_window)
         progress_window.title("Converting to NIfTI...")
-        progress_window.geometry("500x150")
+        progress_window.geometry(scale_geometry("500x150"))
         progress_window.protocol("WM_DELETE_WINDOW", lambda: None)  # Disable close
 
         status_label = tk.Label(progress_window, text=f"Converting {len(study_folders)} studies...")
-        status_label.pack(pady=10)
+        status_label.pack(pady=scale_value(10))
 
-        progress_bar = ttk.Progressbar(progress_window, orient="horizontal", length=400, mode="determinate", maximum=len(study_folders))
-        progress_bar.pack(pady=10)
+        progress_bar = ttk.Progressbar(progress_window, orient="horizontal", length=scale_value(400), mode="determinate", maximum=len(study_folders))
+        progress_bar.pack(pady=scale_value(10))
 
         current_label = tk.Label(progress_window, text="")
-        current_label.pack(pady=5)
+        current_label.pack(pady=scale_value(5))
 
         # Convert in background thread
         def convert_worker():
@@ -989,12 +1105,13 @@ class MainApp:
 
         # Create dialog with checkboxes
         dialog = tk.Toplevel(self.master)
+        enable_tkinter_autoscaling(dialog)
         dialog.title("Erase Data")
-        dialog.geometry("550x280")
+        dialog.geometry(scale_geometry("550x280"))
         dialog.transient(self.master)
         dialog.grab_set()
 
-        tk.Label(dialog, text="Select data to erase:", font=("Arial", 12, "bold")).pack(pady=10)
+        tk.Label(dialog, text="Select data to erase:", font=("Arial", scale_value(12), "bold")).pack(pady=scale_value(10))
 
         # Checkboxes
         delete_classifications = tk.BooleanVar(value=False)
@@ -1005,39 +1122,39 @@ class MainApp:
             dialog,
             text="Delete Classifications (study folders, NIfTIs, CSVs)",
             variable=delete_classifications,
-            font=("Arial", 10),
-            wraplength=500,
+            font=("Arial", scale_value(10)),
+            wraplength=scale_value(500),
             justify="left"
-        ).pack(anchor="w", padx=20, pady=5)
+        ).pack(anchor="w", padx=scale_value(20), pady=scale_value(5))
 
         tk.Checkbutton(
             dialog,
             text="Delete Models (trained models, encoders, results)",
             variable=delete_models,
-            font=("Arial", 10),
-            wraplength=500,
+            font=("Arial", scale_value(10)),
+            wraplength=scale_value(500),
             justify="left"
-        ).pack(anchor="w", padx=20, pady=5)
+        ).pack(anchor="w", padx=scale_value(20), pady=scale_value(5))
 
         tk.Checkbutton(
             dialog,
             text="Delete Hierarchy (hierarchy.yaml, temporary_files)",
             variable=delete_hierarchy,
-            font=("Arial", 10),
-            wraplength=500,
+            font=("Arial", scale_value(10)),
+            wraplength=scale_value(500),
             justify="left"
-        ).pack(anchor="w", padx=20, pady=5)
+        ).pack(anchor="w", padx=scale_value(20), pady=scale_value(5))
 
         tk.Label(
             dialog,
             text="⚠️ Warning: This action cannot be undone!",
             fg="red",
-            font=("Arial", 10, "bold")
-        ).pack(pady=10)
+            font=("Arial", scale_value(10), "bold")
+        ).pack(pady=scale_value(10))
 
         # Button frame
         button_frame = tk.Frame(dialog)
-        button_frame.pack(pady=10)
+        button_frame.pack(pady=scale_value(10))
 
         def confirm_delete():
             if not any([delete_classifications.get(), delete_models.get(), delete_hierarchy.get()]):
@@ -1062,8 +1179,8 @@ class MainApp:
             dialog.destroy()
             self._perform_data_deletion(delete_classifications.get(), delete_models.get(), delete_hierarchy.get())
 
-        tk.Button(button_frame, text="Delete", command=confirm_delete, bg="#ff4444", fg="white", font=("Arial", 10, "bold"), width=10).pack(side="left", padx=5)
-        tk.Button(button_frame, text="Cancel", command=dialog.destroy, font=("Arial", 10), width=10).pack(side="left", padx=5)
+        tk.Button(button_frame, text="Delete", command=confirm_delete, bg="#ff4444", fg="white", font=("Arial", scale_value(10), "bold"), width=10).pack(side="left", padx=scale_value(5))
+        tk.Button(button_frame, text="Cancel", command=dialog.destroy, font=("Arial", scale_value(10)), width=10).pack(side="left", padx=scale_value(5))
 
     def _perform_data_deletion(self, delete_classifications, delete_models, delete_hierarchy):
         """Perform the actual data deletion."""
@@ -1178,16 +1295,19 @@ def load_image_worker(dicom_paths, panel_label_ref, root):
     of the PhotoImage on the main thread. The worker only does PIL work; the
     PhotoImage is constructed on the Tk main thread to avoid invisible images.
     """
+    # Calculate target size based on scale factor
+    target_size = scale_value(256)
+
     try:
         pil_img = processing.load_center_slice(dicom_paths)
     except Exception:
         pil_img = None
 
     if pil_img is None:
-        pil_img = Image.new('L', (256, 256), 128)
+        pil_img = Image.new('L', (target_size, target_size), 128)
 
     try:
-        pil_img = pil_img.resize((256, 256))
+        pil_img = pil_img.resize((target_size, target_size))
     except Exception:
         pass
 
@@ -1225,12 +1345,13 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         return
 
     root = tk.Toplevel()
+    enable_tkinter_autoscaling(root)
     root.title(f"Classify Study ({mode}): MRN {mrn} | Study {study_uid}")
     root.protocol("WM_DELETE_WINDOW", lambda: None)
     root.grab_set()
 
     content_frame = tk.Frame(root)
-    content_frame.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
+    content_frame.grid(row=0, column=0, padx=scale_value(20), pady=scale_value(20), sticky="nsew")
     root.grid_rowconfigure(0, weight=1)
     root.grid_columnconfigure(0, weight=1)
 
@@ -1246,7 +1367,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     except Exception:
         color_map = {k: (None, None) for k in dropdown_values}
 
-    placeholder_img = Image.new("RGB", (256, 256), (200, 200, 200))
+    placeholder_img = Image.new("RGB", (scale_value(256), scale_value(256)), (200, 200, 200))
     tk_placeholder = ImageTk.PhotoImage(placeholder_img)
 
     optimized_assignments = {}
@@ -1273,7 +1394,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     col_num = 0
 
     for series_desc, dicom_paths in study_dict.items():
-        series_frame = tk.Frame(content_frame, padx=5, pady=5)
+        series_frame = tk.Frame(content_frame, padx=scale_value(5), pady=scale_value(5))
         series_frame.grid(row=row_num, column=col_num, sticky="nsew")
         series_frame.grid_columnconfigure(0, weight=1)
 
@@ -1282,10 +1403,10 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
             col_num = 0
             row_num += 1
 
-        panel = tk.Label(series_frame, image=tk_placeholder, width=256, height=256)
+        panel = tk.Label(series_frame, image=tk_placeholder, width=scale_value(256), height=scale_value(256))
         panel.image = tk_placeholder
-        panel.grid(row=0, column=0, pady=(0, 5))
-        tk.Label(series_frame, text=series_desc, wraplength=250, justify="center").grid(row=1, column=0, pady=5)
+        panel.grid(row=0, column=0, pady=(0, scale_value(5)))
+        tk.Label(series_frame, text=series_desc, wraplength=scale_value(250), justify="center").grid(row=1, column=0, pady=scale_value(5))
 
         first_path = dicom_paths[0]
         initial_value = "Other"
@@ -1353,7 +1474,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 self.key = key
                 self.all_vars = all_vars
                 self.mode = mode
-                self.btn = tk.Button(parent, text=self.var.get(), width=20, relief='raised')
+                self.btn = tk.Button(parent, text=self.var.get(), width=scale_value(20), relief='raised')
                 self.menu = tk.Menu(parent, tearoff=0)
 
                 for opt in self.options:
@@ -1469,10 +1590,10 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 pass
 
         try:
-            control_row.grid(row=2, column=0, pady=(0, 5))
+            control_row.grid(row=2, column=0, pady=(0, scale_value(5)))
         except Exception:
             try:
-                control_row.pack(pady=(0,5))
+                control_row.pack(pady=(0, scale_value(5)))
             except Exception:
                 pass
 
@@ -1509,7 +1630,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         except Exception:
             pass
 
-    button_frame = tk.Frame(root, pady=10)
+    button_frame = tk.Frame(root, pady=scale_value(10))
     button_frame.grid(row=1, column=0, sticky="ew")
     button_frame.grid_columnconfigure(0, weight=1)
     button_frame.grid_columnconfigure(1, weight=0)
@@ -1563,14 +1684,14 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
             pass
 
     # make buttons
-    btn_stop = tk.Button(button_frame, bg="#e0a2a2", activebackground="#e0a2a2", text="Stop All (a)", font=("Arial", 14), command=on_stop)
-    btn_skip = tk.Button(button_frame, bg="#fff7a8", activebackground="#fff7a8", text="Skip (s)", font=("Arial", 14), command=on_skip)
-    btn_done = tk.Button(button_frame, bg="#a2e0b2", activebackground="#a2e0b2", text="Approve (d)", font=("Arial", 14), command=on_done)
+    btn_stop = tk.Button(button_frame, bg="#e0a2a2", activebackground="#e0a2a2", text="Stop All (a)", font=("Arial", scale_value(14)), command=on_stop)
+    btn_skip = tk.Button(button_frame, bg="#fff7a8", activebackground="#fff7a8", text="Skip (s)", font=("Arial", scale_value(14)), command=on_skip)
+    btn_done = tk.Button(button_frame, bg="#a2e0b2", activebackground="#a2e0b2", text="Approve (d)", font=("Arial", scale_value(14)), command=on_done)
 
     # grid buttons
-    btn_stop.grid(row=0, column=1, padx=10)
-    btn_skip.grid(row=0, column=2, padx=10)
-    btn_done.grid(row=0, column=3, padx=10)
+    btn_stop.grid(row=0, column=1, padx=scale_value(10))
+    btn_skip.grid(row=0, column=2, padx=scale_value(10))
+    btn_done.grid(row=0, column=3, padx=scale_value(10))
 
     # add hotkeys
     root.bind("<a>", lambda event: btn_stop.invoke())
