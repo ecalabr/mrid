@@ -11,10 +11,19 @@ def check_dicom_batch(filepaths, include_types=None, exclude_types=None):
 
     This reduces per-file overhead by importing and initializing pydicom once per worker
     process and then parsing many files sequentially.
+
+    Supports compressed DICOMs via python-gdcm.
     """
     results = []
     try:
         import pydicom
+        # Try to import gdcm for compressed DICOM support
+        try:
+            import gdcm
+            have_gdcm = True
+        except Exception:
+            have_gdcm = False
+
         try:
             from pydicom.tag import Tag
             have_tag = True
@@ -63,9 +72,24 @@ def check_dicom_batch(filepaths, include_types=None, exclude_types=None):
                             ds = pydicom.dcmread(fp, stop_before_pixels=True, force=True)
                     else:
                         ds = pydicom.dcmread(fp, stop_before_pixels=True, force=True)
-                except Exception:
-                    results.append(None)
-                    continue
+                except Exception as e:
+                    # If pydicom fails and gdcm is available, try using gdcm for compressed DICOMs
+                    if have_gdcm:
+                        try:
+                            reader = gdcm.ImageReader()
+                            reader.SetFileName(fp)
+                            if reader.Read():
+                                # Successfully read with gdcm, now use pydicom with gdcm handler
+                                ds = pydicom.dcmread(fp, stop_before_pixels=True, force=True)
+                            else:
+                                results.append(None)
+                                continue
+                        except Exception:
+                            results.append(None)
+                            continue
+                    else:
+                        results.append(None)
+                        continue
 
                 img_type = getattr(ds, "ImageType", [])
                 if not all([item in img_type for item in include_types]):
@@ -102,6 +126,43 @@ def convert_defaultdict_to_dict(obj):
     elif isinstance(obj, list):
         obj = [convert_defaultdict_to_dict(v) for v in obj]
     return obj
+
+
+def is_folder_organized(dicom_records):
+    """
+    Checks if DICOM files are already organized in separate folders per series.
+
+    Returns True if files are organized (each series in its own directory),
+    False if files are unorganized (multiple series mixed in same directories).
+    """
+    if not dicom_records:
+        return True
+
+    # Group by series_uid and check if each series has files in only one directory
+    from collections import defaultdict
+    series_dirs = defaultdict(set)
+
+    for rec in dicom_records:
+        series_uid = rec.get('series_uid')
+        file_path = rec.get('path')
+        if series_uid and file_path:
+            # Get the directory containing the DICOM file
+            dir_path = os.path.dirname(file_path)
+            series_dirs[series_uid].add(dir_path)
+
+    # If any series has files in multiple directories, folder is organized
+    # If multiple series share the same directory, folder is unorganized
+    dir_to_series = defaultdict(set)
+    for series_uid, dirs in series_dirs.items():
+        for d in dirs:
+            dir_to_series[d].add(series_uid)
+
+    # Check if any directory contains files from multiple series
+    for dir_path, series_set in dir_to_series.items():
+        if len(series_set) > 1:
+            return False  # Unorganized: multiple series in same folder
+
+    return True  # Organized: each series in separate folders
 
 
 def reorder_hierarchy(hierarchy: dict, truncate_desc=5) -> dict:
@@ -144,6 +205,11 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None):
         if os.path.isdir(temp_base):
             shutil.rmtree(temp_base)
         os.makedirs(temp_base, exist_ok=True)
+
+    # Check if folder is organized
+    folder_organized = is_folder_organized(dicom_records)
+    if not folder_organized and temp_base:
+        print("Detected unorganized DICOM folder. Organizing files with symlinks in temporary_files directory...")
 
     group_key = itemgetter('patient', 'study_uid', 'series_uid')
 
@@ -239,7 +305,30 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None):
 
         else:
             # NORMAL CASE: No duplicates or separation disabled
-            study_dict.setdefault(base_desc, []).append(first_rec['path'])
+            # If folder is unorganized, create organized symlinks
+            if not folder_organized and temp_base:
+                try:
+                    # Create organized directory structure using symlinks
+                    organized_dir = os.path.join(temp_base, f'{mrn}-{series_uid}')
+                    os.makedirs(organized_dir, exist_ok=True)
+
+                    first_link = None
+                    for item in files:
+                        link_path = os.path.join(organized_dir, os.path.basename(item['path']))
+                        if not os.path.exists(link_path):
+                            os.symlink(item['path'], link_path)
+                        if not first_link:
+                            first_link = link_path
+
+                    # Use symlink path in hierarchy
+                    study_dict.setdefault(base_desc, []).append(first_link)
+                except Exception as e:
+                    print(f"Error organizing series {base_desc} for patient {mrn}: {e}")
+                    # Fall back to original path if symlink creation fails
+                    study_dict.setdefault(base_desc, []).append(first_rec['path'])
+            else:
+                # Already organized or no temp_base - use original path
+                study_dict.setdefault(base_desc, []).append(first_rec['path'])
 
         # Notify progress for this group
         try:

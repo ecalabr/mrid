@@ -16,6 +16,7 @@ TEST_MODULES = [
     'tests.test_processing',
     'tests.test_csv_field_updater',
     'tests.test_scaling',
+    'tests.test_scanner',
 ]
 
 def run_module_tests(module_name):

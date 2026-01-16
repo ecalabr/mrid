@@ -50,6 +50,8 @@ MRID is a powerful tool designed to automate the classification and organization
 - ✅ **3D Preference**: Prioritize 3D acquisitions over 2D when configured
 - ✅ **NIfTI Conversion**: Integrated dcm2niix conversion with automatic organization
 - ✅ **Hierarchical Organization**: Study/Series hierarchy with metadata extraction
+- ✅ **Compressed DICOM Support**: Handles JPEG, JPEG2000, RLE compressed files via python-gdcm
+- ✅ **Automatic Folder Organization**: Detects and organizes unstructured DICOM folders using symlinks
 
 ### Machine Learning
 - ✅ **Random Forest Header Model**: configurable classifier using DICOM metadata
@@ -111,11 +113,14 @@ pandas>=1.3.0
 numpy>=1.21.0
 scikit-learn>=1.0.0
 pydicom>=2.3.0
+python-gdcm  # For compressed DICOM support
 Pillow>=9.0.0
 pyyaml>=6.0
 joblib>=1.1.0
 sentence-transformers>=2.2.0
 ```
+
+**Note on Compressed DICOMs:** The application uses `python-gdcm` to handle compressed DICOM files (JPEG, JPEG2000, RLE, etc.). This library provides native support for reading compressed transfer syntaxes that pydicom alone cannot handle.
 
 ### External Dependencies
 
@@ -158,7 +163,7 @@ python run_tests.py
 
 # Expected output:
 # ✓ All tests passed!
-# Passed: 32, Failed: 0, Errors: 0
+# Passed: 48, Failed: 0, Errors: 0
 ```
 
 ---
@@ -500,6 +505,56 @@ CNN preprocessing uses multiprocessing for speed:
 - **Speedup**: ~10-30x depending on system
 - **Progress**: Real-time updates during processing
 
+### Compressed DICOM Support
+
+The application automatically handles compressed DICOM files using **python-gdcm**:
+- **Supported Formats**: JPEG, JPEG2000, JPEG-LS, RLE, and other compressed transfer syntaxes
+- **Fallback Mechanism**: If pydicom cannot read a file, gdcm is automatically attempted
+- **Transparent Operation**: No user intervention needed - compressed files are processed seamlessly
+- **Performance**: Efficient decompression without creating temporary uncompressed files
+
+**Note**: python-gdcm is automatically installed with the application dependencies.
+
+### Automatic Folder Organization
+
+The application can automatically detect and organize unstructured DICOM folders:
+
+**Organized Folders** (no action needed):
+```
+input/
+  ├── Patient1/
+  │   ├── Study1/
+  │   │   ├── Series1/  # Each series in separate folder
+  │   │   │   ├── image1.dcm
+  │   │   │   └── image2.dcm
+  │   │   └── Series2/
+  │   │       ├── image1.dcm
+  │   │       └── image2.dcm
+```
+
+**Unorganized Folders** (automatically organized):
+```
+input/
+  ├── all_files_mixed/  # Multiple series in same folder
+  │   ├── series1_image1.dcm
+  │   ├── series1_image2.dcm
+  │   ├── series2_image1.dcm
+  │   └── series2_image2.dcm
+```
+
+When unorganized folders are detected:
+1. System creates `temporary_files/` directory in output folder
+2. Files are organized into series-specific subdirectories using **symlinks**
+3. Symlinks point to original files (no duplication)
+4. Processing continues with organized structure
+5. Message displayed: `"Detected unorganized DICOM folder. Organizing files with symlinks..."`
+
+**Benefits**:
+- Works with any folder structure (PACS exports, research datasets, etc.)
+- No disk space overhead (symlinks only)
+- Original files remain untouched
+- dcm2niix and other tools work properly with organized structure
+
 ### Model Caching
 
 Preprocessed training data cached for fast retraining:
@@ -544,6 +599,28 @@ BATCH_SIZE = 4  # or 2
 - `feature_encoder.joblib`
 - `cnn_classifier_model.pth` (for CNN)
 
+#### Compressed DICOMs not reading
+**Problem**: Files skipped or "Invalid DICOM" errors
+**Solution**: 
+1. Ensure python-gdcm is installed:
+   ```bash
+   pip install python-gdcm
+   ```
+2. Verify file is actually DICOM (check for DICM preamble)
+3. Check console for specific error messages
+4. Try opening file with pydicom directly to diagnose:
+   ```python
+   import pydicom
+   ds = pydicom.dcmread('path/to/file.dcm', force=True)
+   ```
+
+#### "Multiple series in same folder" warning
+**Not an Error**: This is informational - the application is organizing your files
+- System automatically creates symlinks in `temporary_files/`
+- Original files are not modified
+- Processing continues normally
+- To avoid this, organize DICOMs with one series per folder before input
+
 #### Slow CNN training
 **Solutions**:
 - Install PyTorch with CUDA support
@@ -577,8 +654,8 @@ python run_tests.py
 Expected output:
 ```
 ✓ All tests passed!
-Passed: 32, Failed: 0, Errors: 0
-Time: ~1.85s
+Passed: 48, Failed: 0, Errors: 0
+Time: ~2.2s
 ```
 ---
 

@@ -1,4 +1,5 @@
 pydicom
+python-gdcm    # For compressed DICOM support
 numpy
 pillow
 PyYAML
