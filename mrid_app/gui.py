@@ -1138,7 +1138,7 @@ class MainApp:
 
         tk.Checkbutton(
             dialog,
-            text="Delete Hierarchy (hierarchy.yaml, temporary_files)",
+            text="Delete Hierarchy (hierarchy.yaml, dicom_symlinks)",
             variable=delete_hierarchy,
             font=("Arial", scale_value(10)),
             wraplength=scale_value(500),
@@ -1243,7 +1243,7 @@ class MainApp:
             # Delete hierarchy
             if delete_hierarchy:
                 hierarchy_path = os.path.join(output_dir, "hierarchy.yaml")
-                temp_files_path = os.path.join(output_dir, "temporary_files")
+                temp_files_path = os.path.join(output_dir, "dicom_symlinks")
 
                 if os.path.exists(hierarchy_path):
                     try:
@@ -1255,9 +1255,9 @@ class MainApp:
                 if os.path.exists(temp_files_path):
                     try:
                         shutil.rmtree(temp_files_path)
-                        deleted_items.append("temporary_files directory")
+                        deleted_items.append("dicom_symlinks directory")
                     except Exception as e:
-                        errors.append(f"Failed to delete temporary_files: {e}")
+                        errors.append(f"Failed to delete dicom_symlinks: {e}")
 
             # Show results
             if deleted_items or errors:
@@ -1268,7 +1268,7 @@ class MainApp:
                 if delete_models and any('Model file' in item for item in deleted_items):
                     messages.append("Successfully deleted model data")
                 if delete_hierarchy and (any('hierarchy.yaml' in item for item in deleted_items) or
-                                        any('temporary_files' in item for item in deleted_items)):
+                                        any('dicom_symlinks' in item for item in deleted_items)):
                     messages.append("Successfully deleted hierarchy data")
 
                 result_msg = "\n".join(messages) if messages else "Deletion completed"

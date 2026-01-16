@@ -41,7 +41,7 @@ def test_is_folder_organized_empty():
 
 
 def test_build_hierarchy_creates_temp_dir():
-    """Test that build_hierarchy creates temporary_files directory when needed."""
+    """Test that build_hierarchy creates dicom_symlinks directory when needed."""
     from mrid_app.scanner import build_hierarchy
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -59,11 +59,11 @@ def test_build_hierarchy_creates_temp_dir():
             }
         ]
 
-        # Call build_hierarchy - it should create temporary_files
+        # Call build_hierarchy - it should create dicom_symlinks
         hierarchy = build_hierarchy(dicom_records, output_dir=tmpdir)
 
-        # Verify temporary_files directory exists
-        temp_dir = os.path.join(tmpdir, 'temporary_files')
+        # Verify dicom_symlinks directory exists
+        temp_dir = os.path.join(tmpdir, 'dicom_symlinks')
         assert os.path.isdir(temp_dir)
 
         # Verify hierarchy was created
@@ -118,8 +118,8 @@ def test_build_hierarchy_unorganized_creates_symlinks():
         # Build hierarchy
         hierarchy = build_hierarchy(dicom_records, output_dir=output_dir)
 
-        # Verify temporary_files directory exists
-        temp_dir = os.path.join(output_dir, 'temporary_files')
+        # Verify dicom_symlinks directory exists
+        temp_dir = os.path.join(output_dir, 'dicom_symlinks')
         assert os.path.isdir(temp_dir)
 
         # Check that organized directories were created

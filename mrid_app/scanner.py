@@ -201,7 +201,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None):
     # Pre-create temp directory if needed
     temp_base = None
     if output_dir:
-        temp_base = os.path.join(output_dir, 'temporary_files')
+        temp_base = os.path.join(output_dir, 'dicom_symlinks')
         if os.path.isdir(temp_base):
             shutil.rmtree(temp_base)
         os.makedirs(temp_base, exist_ok=True)
@@ -209,7 +209,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None):
     # Check if folder is organized
     folder_organized = is_folder_organized(dicom_records)
     if not folder_organized and temp_base:
-        print("Detected unorganized DICOM folder. Organizing files with symlinks in temporary_files directory...")
+        print("Detected unorganized DICOM folder. Organizing files with symlinks in dicom_symlinks directory...")
 
     group_key = itemgetter('patient', 'study_uid', 'series_uid')
 

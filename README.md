@@ -543,7 +543,7 @@ input/
 ```
 
 When unorganized folders are detected:
-1. System creates `temporary_files/` directory in output folder
+1. System creates `dicom_symlinks/` directory in output folder
 2. Files are organized into series-specific subdirectories using **symlinks**
 3. Symlinks point to original files (no duplication)
 4. Processing continues with organized structure
@@ -616,7 +616,7 @@ BATCH_SIZE = 4  # or 2
 
 #### "Multiple series in same folder" warning
 **Not an Error**: This is informational - the application is organizing your files
-- System automatically creates symlinks in `temporary_files/`
+- System automatically creates symlinks in `dicom_symlinks/`
 - Original files are not modified
 - Processing continues normally
 - To avoid this, organize DICOMs with one series per folder before input
