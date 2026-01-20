@@ -3,7 +3,8 @@ import threading
 import time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from .config import DATA_DIR, OUT_DIR, TARGET_SERIES, NUM_COLUMNS
+from . import config
+from .config import DATA_DIR, OUT_DIR, TARGET_SERIES, NUM_COLUMNS, ALLOW_DUPLICATE_LABELS
 from .utils import write_yaml_hierarchy
 from .header import TrainHeaderClassifierLogic
 from .cnn import train_cnn_model_logic, prepare_cnn_input_data, SimpleCNN
@@ -15,6 +16,8 @@ import shutil
 import colorsys
 import platform
 import sys
+import subprocess
+import importlib
 
 
 # Global scaling factor to be calculated once
@@ -310,6 +313,11 @@ class MainApp:
         other_menu.add_command(label="Convert NIfTIs", command=self._convert_niftis_utility)
         other_menu.add_command(label="Erase Data", command=self._erase_data_utility)
 
+        # Configuration menu
+        config_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Configuration", menu=config_menu)
+        config_menu.add_command(label="View Configuration", command=self._view_configuration_dialog)
+
         # UI layout
         dir_frame = tk.LabelFrame(master, text="Directories", padx=scale_value(10), pady=scale_value(10))
         dir_frame.pack(padx=scale_value(20), pady=scale_value(10), fill="x")
@@ -473,7 +481,7 @@ class MainApp:
         field_types_path = os.path.join(output_dir, "field_types.joblib")
 
         if not os.path.exists(model_path) or not os.path.exists(target_encoder_path) or not os.path.exists(feature_encoder_path):
-            messagebox.showwarning("Load Warning", "Header Model files not found. Skipping RF load.")
+            messagebox.showwarning("Load Warning", "Header Model files not found. Skipping RF load.", parent=self.master)
             return
         try:
             self.rf_model = joblib.load(model_path)
@@ -489,7 +497,7 @@ class MainApp:
                 print("Field types not found - using legacy preprocessing")
 
         except Exception as e:
-            messagebox.showerror("Load Error", f"Failed to load RF model/encoders: {e}")
+            messagebox.showerror("Load Error", f"Failed to load RF model/encoders: {e}", parent=self.master)
             self.rf_model = None
             self.rf_target_encoder = None
             self.rf_feature_encoder = None
@@ -499,16 +507,16 @@ class MainApp:
         try:
             import torch
             if torch is None:
-                messagebox.showwarning("Load Warning", "PyTorch is not installed. Skipping CNN load.")
+                messagebox.showwarning("Load Warning", "PyTorch is not installed. Skipping CNN load.", parent=self.master)
                 return
         except Exception:
-            messagebox.showwarning("Load Warning", "PyTorch is not installed. Skipping CNN load.")
+            messagebox.showwarning("Load Warning", "PyTorch is not installed. Skipping CNN load.", parent=self.master)
             return
         output_dir = self.output_dir.get()
         model_path = os.path.join(output_dir, "cnn_classifier_model.pth")
         target_encoder_path = os.path.join(output_dir, "label_encoder.joblib")
         if not os.path.exists(model_path) or not os.path.exists(target_encoder_path):
-            messagebox.showwarning("Load Warning", "Image Model files not found. Skipping CNN load.")
+            messagebox.showwarning("Load Warning", "Image Model files not found. Skipping CNN load.", parent=self.master)
             return
         try:
             from .utils import warn_if_no_gpu_for_cnn
@@ -537,7 +545,7 @@ class MainApp:
                 pass
             self.cnn_model.eval()
         except Exception as e:
-            messagebox.showerror("Load Error", f"Failed to load CNN model: {e}")
+            messagebox.showerror("Load Error", f"Failed to load CNN model: {e}", parent=self.master)
             self.cnn_model = None
             self.cnn_target_encoder = None
 
@@ -578,13 +586,13 @@ class MainApp:
 
     def _train_model(self):
         if self.is_running:
-            messagebox.showwarning("Busy", "Cannot start training while classification is running.")
+            messagebox.showwarning("Busy", "Cannot start training while classification is running.", parent=self.master)
             return
         model_type = self.model_type.get()
         rf_needed = model_type in ["DICOM Header Model", "Header + Image Model"]
         cnn_needed = model_type in ["Image-Based Model", "Header + Image Model"]
         if not rf_needed and not cnn_needed:
-            messagebox.showinfo("Info", "No model type selected for training. Please choose a Model Type.")
+            messagebox.showinfo("Info", "No model type selected for training. Please choose a Model Type.", parent=self.master)
             return
         if rf_needed:
             self.train_classifier_rf()
@@ -600,10 +608,10 @@ class MainApp:
             import joblib
             from sklearn.preprocessing import LabelEncoder, OrdinalEncoder
         except Exception:
-            messagebox.showerror("Error", "Missing Dependencies", "RF training requires pandas, scikit-learn, and joblib.")
+            messagebox.showerror("Error", "RF training requires pandas, scikit-learn, and joblib.", parent=self.master)
             return
         if not os.path.isdir(output_dir):
-            messagebox.showerror("Error", "Invalid Output Directory", "Please specify a valid output directory containing classified data.")
+            messagebox.showerror("Error", "Please specify a valid output directory containing classified data.", parent=self.master)
             return
 
         # Create callback for missing fields prompt
@@ -641,7 +649,7 @@ class MainApp:
         try:
             import torch
         except Exception:
-            messagebox.showerror("Error", "Missing PyTorch", "CNN training requires PyTorch (torch).")
+            messagebox.showerror("Error", "CNN training requires PyTorch (torch).", parent=self.master)
             return
         self.start_button.config(state="disabled")
         self.train_button.config(state="disabled")
@@ -706,12 +714,12 @@ class MainApp:
             rf_loaded = self.rf_model is not None and self.rf_target_encoder is not None
             cnn_loaded = self.cnn_model is not None and self.cnn_target_encoder is not None
             if (rf_needed and not rf_loaded) or (cnn_needed and not cnn_loaded):
-                messagebox.showerror("Model Error", "Cannot start classification. Required model(s) are not loaded.")
+                messagebox.showerror("Model Error", "Cannot start classification. Required model(s) are not loaded.", parent=self.master)
                 return
         input_dir = self.input_dir.get()
         output_dir = self.output_dir.get()
         if not os.path.isdir(input_dir):
-            messagebox.showerror("Error", "Invalid Input Directory", "Please specify a valid input directory.")
+            messagebox.showerror("Error", "Please specify a valid input directory.", parent=self.master)
             return
 
         # New: if hierarchy.yaml exists in output_dir, ask user whether to load it or rescan
@@ -723,14 +731,15 @@ class MainApp:
                     "Existing hierarchy found",
                     "A saved 'hierarchy.yaml' was found in the output directory.\n\n"
                     "Choose 'Yes' to load the existing hierarchy and skip scanning files,\n"
-                    "or 'No' to rescan all files.")
+                    "or 'No' to rescan all files.",
+                    parent=self.master)
                 if load_choice:
                     try:
                         import yaml
                         with open(hierarchy_path, 'r') as hf:
                             existing_hierarchy = yaml.safe_load(hf)
                     except Exception as e:
-                        messagebox.showwarning("Load Warning", f"Failed to load existing hierarchy.yaml: {e}\nWill rescan files instead.")
+                        messagebox.showwarning("Load Warning", f"Failed to load existing hierarchy.yaml: {e}\nWill rescan files instead.", parent=self.master)
                         existing_hierarchy = None
         except Exception:
             existing_hierarchy = None
@@ -959,12 +968,12 @@ class MainApp:
     def _convert_niftis_utility(self):
         """Utility to convert all classified studies to NIfTI format."""
         if self.is_running:
-            messagebox.showwarning("Busy", "Cannot convert while classification is running.")
+            messagebox.showwarning("Busy", "Cannot convert while classification is running.", parent=self.master)
             return
 
         output_dir = self.output_dir.get()
         if not os.path.isdir(output_dir):
-            messagebox.showerror("Error", "Please specify a valid output directory.")
+            messagebox.showerror("Error", "Please specify a valid output directory.", parent=self.master)
             return
 
         # Ask user for confirmation
@@ -1001,7 +1010,7 @@ class MainApp:
                     study_folders.append(folder_path)
 
         if not study_folders:
-            messagebox.showinfo("No Studies", "No classified studies found in output directory.")
+            messagebox.showinfo("No Studies", "No classified studies found in output directory.", parent=self.master)
             return
 
         # Create progress window
@@ -1095,12 +1104,12 @@ class MainApp:
     def _erase_data_utility(self):
         """Utility to erase selected data from output directory."""
         if self.is_running:
-            messagebox.showwarning("Busy", "Cannot erase data while classification is running.")
+            messagebox.showwarning("Busy", "Cannot erase data while classification is running.", parent=self.master)
             return
 
         output_dir = self.output_dir.get()
         if not os.path.isdir(output_dir):
-            messagebox.showerror("Error", "Please specify a valid output directory.")
+            messagebox.showerror("Error", "Please specify a valid output directory.", parent=self.master)
             return
 
         # Create dialog with checkboxes
@@ -1158,7 +1167,7 @@ class MainApp:
 
         def confirm_delete():
             if not any([delete_classifications.get(), delete_models.get(), delete_hierarchy.get()]):
-                messagebox.showwarning("No Selection", "Please select at least one option to delete.")
+                messagebox.showwarning("No Selection", "Please select at least one option to delete.", parent=dialog)
                 return
 
             # Build confirmation message
@@ -1284,6 +1293,229 @@ class MainApp:
 
         except Exception as e:
             messagebox.showerror("Error", f"An error occurred during deletion: {e}", parent=self.master)
+
+    def _view_configuration_dialog(self):
+        """Display configuration settings in a read-only dialog with edit and reload options."""
+        dialog = tk.Toplevel(self.master)
+        enable_tkinter_autoscaling(dialog)
+        dialog.title("Configuration Settings")
+        dialog.geometry(scale_geometry("700x600"))
+        dialog.transient(self.master)
+
+        # Header
+        header_frame = tk.Frame(dialog)
+        header_frame.pack(fill="x", padx=scale_value(10), pady=scale_value(10))
+        tk.Label(
+            header_frame,
+            text="Current Configuration Settings",
+            font=("Arial", scale_value(12), "bold")
+        ).pack()
+
+        # Text widget with scrollbar for configuration display
+        text_frame = tk.Frame(dialog)
+        text_frame.pack(fill="both", expand=True, padx=scale_value(10), pady=scale_value(5))
+
+        scrollbar = tk.Scrollbar(text_frame)
+        scrollbar.pack(side="right", fill="y")
+
+        text_widget = tk.Text(
+            text_frame,
+            wrap="none",
+            yscrollcommand=scrollbar.set,
+            font=("Courier", scale_value(9)),
+            state="normal"
+        )
+        text_widget.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=text_widget.yview)
+
+        # Get configuration values
+        config_text = self._get_config_text()
+        text_widget.insert("1.0", config_text)
+        text_widget.config(state="disabled")
+
+        # Button frame
+        button_frame = tk.Frame(dialog)
+        button_frame.pack(fill="x", padx=scale_value(10), pady=scale_value(10))
+
+        tk.Button(
+            button_frame,
+            text="Edit Config File",
+            command=self._edit_config_file,
+            font=("Arial", scale_value(10)),
+            width=15
+        ).pack(side="left", padx=scale_value(5))
+
+        tk.Button(
+            button_frame,
+            text="Reload Config",
+            command=lambda: self._reload_config(dialog),
+            font=("Arial", scale_value(10)),
+            width=15
+        ).pack(side="left", padx=scale_value(5))
+
+        tk.Button(
+            button_frame,
+            text="Close",
+            command=dialog.destroy,
+            font=("Arial", scale_value(10)),
+            width=15
+        ).pack(side="right", padx=scale_value(5))
+
+    def _get_config_text(self):
+        """Generate formatted text of all user-configurable settings from config.py."""
+        import pprint
+
+        lines = []
+        lines.append("=" * 70)
+        lines.append("CONFIGURATION SETTINGS")
+        lines.append("=" * 70)
+        lines.append("")
+
+        # Define configuration variables to display (user-configurable only)
+        config_vars = [
+            # Directories
+            ("DATA_DIR", "Input directory for DICOM files"),
+            ("OUT_DIR", "Output directory for processed data"),
+
+            # Classification settings
+            ("TARGET_SERIES", "Target series labels for classification"),
+            ("PREFER_3D", "Prefer 3D acquisitions for each series type"),
+            ("INCLUDE_TYPES", "DICOM ImageType values to include"),
+            ("EXCLUDE_TYPES", "DICOM ImageType values to exclude"),
+            ("IGNORE_MULTIPLE_ORIENTATIONS", "Ignore series with multiple orientations"),
+            ("SEPARATE_STACKED_SERIES", "Separate stacked series into components"),
+            ("MAX_SPLIT", "Maximum splits for stacked series"),
+
+            # Classification UI options
+            ("NUM_COLUMNS", "Number of columns in classification UI"),
+            ("OVERRIDE_THRESHOLD", "Probability threshold for auto-classification"),
+            ("ALLOW_DUPLICATE_LABELS", "Allow duplicate labels in manual classification"),
+
+            # CNN hyperparameters
+            ("IMAGE_SIZE", "Image size for CNN input"),
+            ("NUM_EPOCHS", "Number of training epochs for CNN"),
+            ("BATCH_SIZE", "Batch size for CNN training"),
+            ("LR", "Learning rate for CNN"),
+
+            # Random Forest hyperparameters
+            ("N_ESTIMATORS", "Number of trees in Random Forest"),
+
+            # DICOM header fields
+            ("DICOM_HEADER_FIELDS", "DICOM header fields for classification"),
+
+            # Advanced configuration
+            ("CATEGORICAL_UNIQUE_THRESHOLD", "Threshold for categorical field detection"),
+            ("TEXT_MIN_WORDS", "Minimum words for text field detection"),
+            ("ARRAY_SIZE_THRESHOLD", "Threshold for array field detection"),
+            ("SEMANTIC_MODEL_NAME", "Name of semantic model for text encoding"),
+        ]
+
+        for var_name, description in config_vars:
+            try:
+                value = getattr(config, var_name)
+                lines.append(f"# {description}")
+
+                # Use pprint for better formatting of complex structures
+                if isinstance(value, (list, dict, tuple)):
+                    # Check if it's a complex structure that needs multi-line formatting
+                    # Use a shorter threshold to trigger pretty printing more often
+                    str_len = len(repr(value))
+
+                    if str_len > 70 or (isinstance(value, list) and len(value) > 3):
+                        # Format complex structures with pprint for readability
+                        formatted_value = pprint.pformat(value, width=66, compact=False)
+                        lines.append(f"{var_name} = {formatted_value}")
+                    else:
+                        # Short lists/dicts can stay on one line
+                        lines.append(f"{var_name} = {repr(value)}")
+                else:
+                    # Simple values use repr
+                    lines.append(f"{var_name} = {repr(value)}")
+
+                lines.append("")
+            except AttributeError:
+                lines.append(f"# {description}")
+                lines.append(f"{var_name} = <not defined>")
+                lines.append("")
+
+        return "\n".join(lines)
+
+    def _edit_config_file(self):
+        """Open config.py in the system's default text editor."""
+        try:
+            # Get path to config.py
+            config_path = os.path.join(os.path.dirname(__file__), 'config.py')
+
+            if not os.path.exists(config_path):
+                messagebox.showerror(
+                    "Error",
+                    f"Config file not found at:\n{config_path}",
+                    parent=self.master
+                )
+                return
+
+            # Open in default editor based on platform
+            system = platform.system()
+            if system == 'Darwin':  # macOS
+                subprocess.Popen(['open', config_path])
+            elif system == 'Windows':
+                os.startfile(config_path)
+            else:  # Linux and others
+                subprocess.Popen(['xdg-open', config_path])
+
+            messagebox.showinfo(
+                "Config File Opened",
+                "The config file has been opened in your default text editor.\n\n"
+                "After making changes, save the file and click 'Reload Config' to apply them.",
+                parent=self.master
+            )
+
+        except Exception as e:
+            messagebox.showerror(
+                "Error",
+                f"Failed to open config file:\n{e}",
+                parent=self.master
+            )
+
+    def _reload_config(self, parent_dialog=None):
+        """Reload the config module to apply any changes."""
+        try:
+            # Reload the config module
+            importlib.reload(config)
+
+            # Re-import specific values that are used directly in this module
+            # Note: We use config.VARIABLE_NAME elsewhere, so those will automatically update
+            global DATA_DIR, OUT_DIR, TARGET_SERIES, NUM_COLUMNS, ALLOW_DUPLICATE_LABELS
+            DATA_DIR = config.DATA_DIR
+            OUT_DIR = config.OUT_DIR
+            TARGET_SERIES = config.TARGET_SERIES
+            NUM_COLUMNS = config.NUM_COLUMNS
+            ALLOW_DUPLICATE_LABELS = config.ALLOW_DUPLICATE_LABELS
+
+            # Update the UI elements if they need to reflect new values
+            # (input_dir and output_dir StringVars are set from these at startup)
+
+            # Show success message with warning
+            messagebox.showinfo(
+                "Config Reloaded",
+                "Configuration has been reloaded successfully.\n\n"
+                "⚠️ Note: Some settings (loaded models, running processes, and certain UI elements) "
+                "may require an application restart to fully take effect.",
+                parent=parent_dialog if parent_dialog else self.master
+            )
+
+            # If parent dialog exists, refresh its content
+            if parent_dialog:
+                parent_dialog.destroy()
+                self._view_configuration_dialog()
+
+        except Exception as e:
+            messagebox.showerror(
+                "Reload Failed",
+                f"Failed to reload configuration:\n\n{e}\n\n"
+                "Please check the config file for syntax errors.",
+                parent=parent_dialog if parent_dialog else self.master
+            )
 
 
 # At end of file, add asynchronous image loader and per-study classification GUI
@@ -1533,8 +1765,9 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                     pass
 
             def _handle_duplicates(self, val):
-                # Only enforce uniqueness when in Semi-Auto mode and a non-'Other' value was selected
-                if not self.all_vars or self.mode != 'Semi-Auto' or val == 'Other':
+                # Enforce uniqueness based on AUTO_CLEAR_DUPLICATE_LABELS config
+                # When enabled, selecting a non-'Other' label clears that label from all other dropdowns
+                if ALLOW_DUPLICATE_LABELS or not self.all_vars or val == 'Other':
                     return
                 try:
                     for k, other_var in list(self.all_vars.items()):
@@ -1604,10 +1837,10 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
 
         dropdown_vars[first_path] = variable
 
-        # Enforce uniqueness for initial semi-auto assignments: if this dropdown's
-        # initial value duplicates an existing assignment (earlier dropdowns), reset it to 'Other'.
+        # Enforce uniqueness for initial assignments based on ALLOW_DUPLICATE_LABELS config
+        # If enabled and this dropdown's initial value duplicates an existing assignment, reset it to 'Other'
         try:
-            if mode == 'Semi-Auto' and variable.get() != 'Other':
+            if not ALLOW_DUPLICATE_LABELS and variable.get() != 'Other':
                 for k, ov in dropdown_vars.items():
                     if k == first_path:
                         continue
@@ -1640,16 +1873,6 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
 
     def on_done():
         worker_args = (mrn, study_uid, output_root, dropdown_vars, study_dict)
-        seen = set()
-        duplicates = set()
-        for item in dropdown_vars.values():
-            if item.get() in seen and item.get() != "Other":
-                duplicates.add(item.get())
-            else:
-                seen.add(item.get())
-        if duplicates:
-            messagebox.showwarning("Duplicate Warning", f"Resolve duplicte labels: {', '.join(duplicates)}")
-            return
 
         conversion_thread = threading.Thread(
             target=processing.background_conversion_worker,

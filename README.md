@@ -357,6 +357,25 @@ OVERRIDE_THRESHOLD = 0.5  # Minimum probability for auto-selection
 - Range: 0.0 to 1.0
 - Recommended: 0.4 to 0.6
 
+### Label Uniqueness
+
+```python
+ALLOW_DUPLICATE_LABELS = True
+```
+
+Controls whether manually selecting a classification label for one series automatically clears that label from other series in the same study:
+
+- **`False` (Default)**: Enforces one series per label per study
+  - When you select a label (e.g., "T1") for a series, any other series with that label is automatically reset to "Other"
+  - Useful for standard classification workflows where each study should have only one series per type
+  - Applies to both Manual and Semi-Auto modes
+
+- **`True`**: Allows multiple series per label
+  - You can manually assign the same label to multiple series in a study
+  - Note that auto-selection in Semi-Auto mode will still only select one best match per label based on model probabilities
+  - Useful for creating training data with multiple examples per label from the same study
+  - Both Header and Image models support training on data with duplicate labels
+
 ### DICOM ImageType Filtering
 
 ```python

@@ -22,6 +22,7 @@ MAX_SPLIT = 5  # max number of splits for stacked series
 # Classification UI options
 NUM_COLUMNS = 6  # number of columns in classification UI
 OVERRIDE_THRESHOLD = 0.5  # probability threshold for auto-classification
+ALLOW_DUPLICATE_LABELS = False  # allow multiple series to have the same label for manual classification
 
 # CNN hyperparameters
 IMAGE_SIZE = 128
