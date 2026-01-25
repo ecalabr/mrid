@@ -6,7 +6,8 @@ import pydicom
 from PIL import Image
 from .header import get_series_probabilities
 from .cnn import prepare_cnn_input_data
-from .config import OVERRIDE_THRESHOLD, PREFER_3D
+from .config import OVERRIDE_THRESHOLD, PREFER_3D, DICOM_HEADER_FIELDS
+from .utils import safe_get_dicom_attribute
 
 
 def convert_series_to_nifti(series_dir, output_path, label):
@@ -111,22 +112,10 @@ def background_conversion_worker(*args, convert=True, **kwargs):
     os.makedirs(study_out_dir, exist_ok=True)
     csv_path = os.path.join(study_out_dir, f"{mrn}-{study_uid}_classification-results.csv")
 
-    def safe_get(ds, tag_name):
-        value = getattr(ds, tag_name, None)
-        if isinstance(value, pydicom.multival.MultiValue):
-            value = str(tuple(value))
-        return value if value is not None else "None"
-
     try:
-        fieldnames = [
-            "Classification", "Path", "SeriesDescription", "TR (Repetition Time)",
-            "TE (Echo Time)", "TI (Inversion Time)", "ScanningSequence",
-            "SequenceVariant", "ScanOptions", "SequenceName", "AcquisitionType",
-            "ImageType", "Rows", "Columns", "PixelSpacing (mm)",
-            "SliceThickness (mm)", "ImagePositionPatient (mm)", "ImageOrientationPatient",
-            "SliceLocation (mm)", "SpacingBetweenSlices (mm)",
-            "ContrastBolusAgent"
-        ]
+        # Build fieldnames dynamically from configuration
+        # Start with Classification and Path, then add all configured DICOM header fields
+        fieldnames = ["Classification", "Path"] + [display_name for display_name, _ in DICOM_HEADER_FIELDS]
 
         with open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
@@ -141,29 +130,16 @@ def background_conversion_worker(*args, convert=True, **kwargs):
                 else:
                     label = "Other"
                 ds = pydicom.dcmread(first_path, force=True)
+
+                # Build attributes_dict dynamically from configuration
                 attributes_dict = {
                     "Classification": label,
-                    "Path": first_path,
-                    "SeriesDescription": safe_get(ds, "SeriesDescription"),
-                    "TR (Repetition Time)": safe_get(ds, "RepetitionTime"),
-                    "TE (Echo Time)": safe_get(ds, "EchoTime"),
-                    "TI (Inversion Time)": safe_get(ds, "InversionTime"),
-                    "ScanningSequence": safe_get(ds, "ScanningSequence"),
-                    "SequenceVariant": safe_get(ds, "SequenceVariant"),
-                    "ScanOptions": safe_get(ds, "ScanOptions"),
-                    "SequenceName": safe_get(ds, "SequenceName"),
-                    "AcquisitionType": safe_get(ds, "AcquisitionType"),
-                    "ImageType": safe_get(ds, "ImageType"),
-                    "Rows": safe_get(ds, "Rows"),
-                    "Columns": safe_get(ds, "Columns"),
-                    "PixelSpacing (mm)": safe_get(ds, "PixelSpacing"),
-                    "SliceThickness (mm)": safe_get(ds, "SliceThickness"),
-                    "ImagePositionPatient (mm)": safe_get(ds, "ImagePositionPatient"),
-                    "ImageOrientationPatient": safe_get(ds, "ImageOrientationPatient"),
-                    "SliceLocation (mm)": safe_get(ds, "SliceLocation"),
-                    "SpacingBetweenSlices (mm)": safe_get(ds, "SpacingBetweenSlices"),
-                    "ContrastBolusAgent": safe_get(ds, "ContrastBolusAgent")
+                    "Path": first_path
                 }
+                # Add all configured DICOM header fields
+                for display_name, dicom_attr in DICOM_HEADER_FIELDS:
+                    attributes_dict[display_name] = safe_get_dicom_attribute(ds, dicom_attr)
+
                 row = [attributes_dict.get(field, "") for field in fieldnames]
                 writer.writerow(row)
 

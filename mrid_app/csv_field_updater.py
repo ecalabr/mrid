@@ -7,14 +7,8 @@ import os
 import pandas as pd
 import pydicom
 from .config import DICOM_HEADER_FIELDS
-
-
-def safe_get_dicom_attribute(ds, tag_name):
-    """Safely extract DICOM attribute value."""
-    value = getattr(ds, tag_name, None)
-    if isinstance(value, pydicom.multival.MultiValue):
-        value = str(tuple(value))
-    return value if value is not None else "None"
+from .config import DICOM_HEADER_FIELDS
+from .utils import safe_get_dicom_attribute
 
 
 def get_expected_field_names():

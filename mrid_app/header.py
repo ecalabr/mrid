@@ -8,6 +8,7 @@ import pandas as pd
 import pydicom
 from .prep import _preprocess_df, encode_text_features
 from .config import N_ESTIMATORS, DICOM_HEADER_FIELDS
+from .utils import safe_get_dicom_attribute
 from .csv_field_updater import (
     scan_for_missing_fields,
     update_all_csvs_with_missing_fields
@@ -181,13 +182,6 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
     finally:
         gui.close()
 
-
-# Helper: safely extract attribute values
-def safe_get_dicom_attribute(ds, tag_name):
-    value = getattr(ds, tag_name, None)
-    if isinstance(value, pydicom.multival.MultiValue):
-        value = str(tuple(value))
-    return value if value is not None else "None"
 
 
 def get_series_features(dicom_path):

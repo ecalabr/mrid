@@ -3,6 +3,7 @@ import yaml
 from collections import defaultdict
 from tkinter import messagebox
 from typing import Optional
+import pydicom
 
 
 def convert_defaultdict_to_dict(obj):
@@ -13,6 +14,23 @@ def convert_defaultdict_to_dict(obj):
     elif isinstance(obj, list):
         obj = [convert_defaultdict_to_dict(v) for v in obj]
     return obj
+
+
+def safe_get_dicom_attribute(ds, tag_name):
+    """
+    Safely extract DICOM attribute value from a dataset.
+
+    Args:
+        ds: pydicom Dataset object
+        tag_name: DICOM attribute name as string
+
+    Returns:
+        Attribute value (converted to string tuple if MultiValue), or "None" if not found
+    """
+    value = getattr(ds, tag_name, None)
+    if isinstance(value, pydicom.multival.MultiValue):
+        value = str(tuple(value))
+    return value if value is not None else "None"
 
 
 def write_yaml_hierarchy(hierarchy, output_dir):

@@ -69,7 +69,7 @@ DICOM_HEADER_FIELDS = [
     # Acquisition properties
     ("AcquisitionType", "AcquisitionType"),
     ("ImageType", "ImageType"),
-    ("MR AcquisitionType", "MRAcquisitionType"),
+    ("MR Acquisition Type", "MRAcquisitionType"),
 
     # Image dimensions
     ("Rows", "Rows"),
