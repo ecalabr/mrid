@@ -1,20 +1,18 @@
-import re
-import numpy as np
 import pandas as pd
-from .config import SEMANTIC_MODEL, SEMANTIC_MODEL_NAME, DICOM_HEADER_FIELDS
+from .config import SEMANTIC_MODEL_NAME, DICOM_HEADER_FIELDS
 from .field_detection import analyze_dataframe_fields, preprocess_by_type
 
 
 def _get_semantic_model():
-    global SEMANTIC_MODEL
-    if SEMANTIC_MODEL is None:
+    from . import config
+    if config.SEMANTIC_MODEL is None:
         try:
             from sentence_transformers import SentenceTransformer
-            SEMANTIC_MODEL = SentenceTransformer(SEMANTIC_MODEL_NAME)
+            config.SEMANTIC_MODEL = SentenceTransformer(SEMANTIC_MODEL_NAME)
             print("Loaded semantic model:", SEMANTIC_MODEL_NAME)
         except Exception:
-            SEMANTIC_MODEL = None
-    return SEMANTIC_MODEL
+            config.SEMANTIC_MODEL = None
+    return config.SEMANTIC_MODEL
 
 
 def _preprocess_df(df, is_training=True, field_types=None):

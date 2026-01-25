@@ -1,12 +1,11 @@
 import os
 import subprocess
 import csv
-import time
 import numpy as np
 import pydicom
 from PIL import Image
 from .header import get_series_probabilities
-from .cnn import prepare_cnn_input_data, train_cnn_model_logic
+from .cnn import prepare_cnn_input_data
 from .config import OVERRIDE_THRESHOLD, PREFER_3D
 
 
@@ -55,7 +54,6 @@ def convert_series_to_nifti(series_dir, output_path, label):
     else:
         selected_json = selected_nii.replace('.nii', '.json')
 
-    files_to_keep = {selected_nii, selected_json}
 
     if selected_nii != target_nii_name:
         try:
@@ -193,6 +191,10 @@ def background_conversion_worker(*args, convert=True, **kwargs):
 
 
 def load_center_slice(dicom_paths):
+    """
+    Load the center slice from a DICOM series.
+    This is the original full implementation that scans all files.
+    """
     if not dicom_paths:
         return None
     first_path = dicom_paths[0]
@@ -265,6 +267,101 @@ def load_center_slice(dicom_paths):
     arr = (arr * 255).astype(np.uint8)
 
     return Image.fromarray(arr)
+
+
+def load_center_slice_fast(dicom_path):
+    """
+    Fast version of load_center_slice that uses cached series information.
+    This version reads only the necessary files for better performance.
+
+    Args:
+        dicom_path: Path to a DICOM file from the series
+
+    Returns:
+        PIL Image of the center slice, or None on error
+    """
+    if not dicom_path or not os.path.exists(dicom_path):
+        return None
+
+    base_dir = os.path.dirname(dicom_path)
+
+    try:
+        # Read the reference file to get series UID
+        ref_ds = pydicom.dcmread(dicom_path, stop_before_pixels=True, force=True)
+        series_uid = getattr(ref_ds, "SeriesInstanceUID", None)
+
+        if series_uid is None:
+            # Fallback: just load the given file
+            return _load_single_slice(dicom_path)
+
+        # Quick scan to find all files in series
+        series_files = []
+        try:
+            for fname in os.listdir(base_dir):
+                fpath = os.path.join(base_dir, fname)
+                if not os.path.isfile(fpath):
+                    continue
+                try:
+                    # Quick header check
+                    ds = pydicom.dcmread(fpath, stop_before_pixels=True, force=True)
+                    if getattr(ds, "SeriesInstanceUID", None) == series_uid:
+                        instance_num = getattr(ds, "InstanceNumber", 0)
+                        series_files.append((instance_num, fpath))
+                except Exception:
+                    continue
+        except Exception:
+            # If directory scan fails, use the provided file
+            return _load_single_slice(dicom_path)
+
+        if not series_files:
+            return _load_single_slice(dicom_path)
+
+        # Sort by instance number and pick center
+        series_files.sort(key=lambda x: x[0])
+        center_idx = len(series_files) // 2
+        center_path = series_files[center_idx][1]
+
+        return _load_single_slice(center_path)
+
+    except Exception as e:
+        print(f"Error in load_center_slice_fast: {e}")
+        return None
+
+
+def _load_single_slice(dicom_path):
+    """
+    Helper to load and process a single DICOM slice into a PIL Image.
+
+    Args:
+        dicom_path: Path to DICOM file
+
+    Returns:
+        PIL Image or None
+    """
+    try:
+        ds = pydicom.dcmread(dicom_path, force=True)
+        arr = ds.pixel_array.astype(np.float32)
+
+        # Apply windowing if available
+        ww = getattr(ds, "WindowWidth", None)
+        wc = getattr(ds, "WindowCenter", None)
+
+        if ww and wc:
+            if isinstance(ww, pydicom.multival.MultiValue):
+                ww = float(ww[0])
+            if isinstance(wc, pydicom.multival.MultiValue):
+                wc = float(wc[0])
+            arr = np.clip(arr, wc - ww / 2, wc + ww / 2)
+
+        # Normalize to 0-255
+        arr -= arr.min()
+        arr /= max(arr.max(), 1e-6)
+        arr = (arr * 255).astype(np.uint8)
+
+        return Image.fromarray(arr)
+    except Exception as e:
+        print(f"Error loading slice {dicom_path}: {e}")
+        return None
 
 
 def load_image_tensor(dicom_path, load_center_slice_func=None, transforms_func=None):

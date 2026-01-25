@@ -1,6 +1,6 @@
 # Directories (can be overridden by UI)
-DATA_DIR = "/media/ecalabr/raid/justin-data/dicoms_copy"
-OUT_DIR = "/media/ecalabr/raid/justin-data/dcm_parse_out"
+DATA_DIR = "/media/ecalabr/raid/khasraw_data/2026-01-21-001"
+OUT_DIR = "/media/ecalabr/raid/khasraw_data/outputs"
 
 # Classification settings
 TARGET_SERIES = ["T1", "T2", "FLAIR", "T1c", "Other"]
@@ -20,9 +20,11 @@ SEPARATE_STACKED_SERIES = True
 MAX_SPLIT = 5  # max number of splits for stacked series
 
 # Classification UI options
-NUM_COLUMNS = 6  # number of columns in classification UI
+NUM_COLUMNS = 6  # max number of columns in classification/verification UI
+NUM_ROWS = 4  # max number of rows in verification UI
 OVERRIDE_THRESHOLD = 0.5  # probability threshold for auto-classification
 ALLOW_DUPLICATE_LABELS = False  # allow multiple series to have the same label for manual classification
+NUM_PARALLEL_WORKERS = 8  # number of parallel threads for loading thumbnails in classification/verification UI
 
 # CNN hyperparameters
 IMAGE_SIZE = 128

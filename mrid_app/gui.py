@@ -4,18 +4,14 @@ import time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from . import config
-from .config import DATA_DIR, OUT_DIR, TARGET_SERIES, NUM_COLUMNS, ALLOW_DUPLICATE_LABELS
-from .utils import write_yaml_hierarchy
+from .config import DATA_DIR, OUT_DIR, TARGET_SERIES, NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LABELS, NUM_PARALLEL_WORKERS
 from .header import TrainHeaderClassifierLogic
-from .cnn import train_cnn_model_logic, prepare_cnn_input_data, SimpleCNN
-from .prep import _preprocess_df, encode_text_features
+from .cnn import SimpleCNN
 import joblib
-import pydicom
 from PIL import Image, ImageTk
 import shutil
 import colorsys
 import platform
-import sys
 import subprocess
 import importlib
 
@@ -334,7 +330,7 @@ class MainApp:
         mode_frame = tk.Frame(control_frame)
         mode_frame.pack(side="right", padx=scale_value(5))
         tk.Label(mode_frame, text="Mode:").pack(side="left", padx=scale_value(5))
-        mode_options = ["Manual", "Semi-Auto", "Full-Auto"]
+        mode_options = ["Manual", "Semi-Auto", "Full-Auto", "Verify"]
         # Replaced ttk.Combobox with tk.OptionMenu. Keep using the same
         # StringVar (self.classification_mode) and call _check_model_status via
         # the OptionMenu 'command' so existing logic that relies on the
@@ -551,14 +547,20 @@ class MainApp:
 
     def _check_model_status(self, event=None):
         model_type = self.model_type.get()
+        mode = self.classification_mode.get()
         rf_loaded = self.rf_model is not None and self.rf_target_encoder is not None
         cnn_loaded = self.cnn_model is not None and self.cnn_target_encoder is not None
         can_start = False
         models_loaded = False
         mode_is_manual = False
-        if self.classification_mode.get() == "Manual":
+        mode_is_verify = False
+
+        if mode == "Manual":
             can_start = True
             mode_is_manual = True
+        elif mode == "Verify":
+            can_start = True
+            mode_is_verify = True
         elif model_type == "DICOM Header Model" and rf_loaded:
             can_start = True
             models_loaded = True
@@ -571,16 +573,24 @@ class MainApp:
             can_start = True
             models_loaded = True
             mode_is_manual = False
+
+        # Update start button
         if can_start:
-            self.start_button.config(state="normal", bg="#4fff5b", activebackground="#4fff5b")
+            if mode_is_verify:
+                self.start_button.config(text="▶ Start Verification", state="normal", bg="#4fff5b", activebackground="#4fff5b")
+            else:
+                self.start_button.config(text="▶ Start Classification", state="normal", bg="#4fff5b", activebackground="#4fff5b")
         else:
-            self.start_button.config(state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
+            self.start_button.config(text="▶ Start Classification", state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
+
+        # Update load button
         if models_loaded:
             self.load_button.config(text="Model(s) Loaded", state="disabled", bg="#4fff5b", activebackground="#4fff5b")
-        elif mode_is_manual:
+        elif mode_is_manual or mode_is_verify:
             self.load_button.config(text="Load Model(s)", state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
         else:
             self.load_button.config(text="Load Model(s)", state="normal", bg="#ff4f4f", activebackground="#ff4f4f")
+
         train_available = True
         self.train_button.config(state="normal" if train_available else "disabled")
 
@@ -707,6 +717,12 @@ class MainApp:
     def start_classification(self):
         if self.is_running: return
         current_mode = self.classification_mode.get()
+
+        # Handle Verify mode separately
+        if current_mode == "Verify":
+            self.start_verification()
+            return
+
         model_type = self.model_type.get()
         if current_mode in ["Semi-Auto", "Full-Auto"]:
             rf_needed = model_type in ["DICOM Header Model", "Header + Image Model"]
@@ -1089,7 +1105,7 @@ class MainApp:
             progress_window.after(0, lambda: current_label.config(text="Complete!"))
 
             # Show summary
-            summary = f"Conversion Complete!\n\n"
+            summary = "Conversion Complete!\n\n"
             summary += f"Converted: {converted_count}\n"
             summary += f"Skipped (already exist): {skipped_count}\n"
             if error_count > 0:
@@ -1517,9 +1533,457 @@ class MainApp:
                 parent=parent_dialog if parent_dialog else self.master
             )
 
+    def start_verification(self):
+        """Start the verification workflow to review already classified studies."""
+        output_dir = self.output_dir.get()
+        if not os.path.isdir(output_dir):
+            messagebox.showerror("Error", "Please specify a valid output directory.", parent=self.master)
+            return
+
+        self.is_running = True
+        self.stop_requested.clear()
+        self.start_button.config(state="disabled")
+        self.stop_button.config(state="normal")
+        self.train_button.config(state="disabled")
+
+        self.progress_frame = tk.Frame(self.master)
+        self.progress_frame.pack(padx=20, pady=10, fill='x')
+
+        self.progress_label = tk.StringVar(value="Starting verification...")
+        tk.Label(self.progress_frame, textvariable=self.progress_label).pack(side="top")
+
+        self.progress_bar = ttk.Progressbar(self.progress_frame, orient="horizontal", mode="determinate")
+        self.progress_bar.pack(fill='x', pady=5)
+
+        verification_thread = threading.Thread(
+            target=self.run_verification_main,
+            args=(output_dir,),
+            daemon=True
+        )
+        verification_thread.start()
+        self.master.after(100, self._poll_classification_status, verification_thread)
+
+    def run_verification_main(self, output_dir):
+        """Main verification workflow - aggregates classification results and displays for review."""
+        try:
+            import pandas as pd
+
+            # 1. Aggregate all classification-results.csv files
+            all_classifications = []
+            study_folders = []
+
+            for folder in os.listdir(output_dir):
+                folder_path = os.path.join(output_dir, folder)
+                if os.path.isdir(folder_path):
+                    study_id = os.path.basename(folder_path.rstrip(os.sep))
+                    csv_path = os.path.join(folder_path, f"{study_id}_classification-results.csv")
+                    if os.path.exists(csv_path):
+                        try:
+                            df = pd.read_csv(csv_path)
+                            df['study_folder'] = folder_path
+                            df['study_id'] = study_id
+                            all_classifications.append(df)
+                            study_folders.append(folder_path)
+                        except Exception as e:
+                            print(f"Error reading {csv_path}: {e}")
+
+            if not all_classifications:
+                self.master.after(0, lambda: messagebox.showinfo(
+                    "No Classifications Found",
+                    "No classified studies found in output directory.",
+                    parent=self.master
+                ))
+                self.classification_finished(aborted=False)
+                return
+
+            # Combine all classifications
+            all_df = pd.concat(all_classifications, ignore_index=True)
+
+            # 2. Group by TARGET_SERIES
+            series_groups = {}
+            for target in TARGET_SERIES:
+                if target == "Other":
+                    continue
+                target_df = all_df[all_df['Classification'] == target]
+                if len(target_df) > 0:
+                    series_groups[target] = target_df
+
+            if not series_groups:
+                self.master.after(0, lambda: messagebox.showinfo(
+                    "No Series Found",
+                    "No series found classified as any of the target series (excluding 'Other').",
+                    parent=self.master
+                ))
+                self.classification_finished(aborted=False)
+                return
+
+            # 3. Calculate total verification windows
+            max_per_window = NUM_COLUMNS * NUM_ROWS
+            total_windows = sum((len(df) + max_per_window - 1) // max_per_window for df in series_groups.values())
+
+            self.progress_bar.config(maximum=total_windows)
+            current_window = 0
+
+            # 4. Loop through each TARGET_SERIES
+            studies_to_delete = set()
+
+            for target_series in TARGET_SERIES:
+                if target_series == "Other" or target_series not in series_groups:
+                    continue
+
+                if self.stop_requested.is_set():
+                    self.classification_finished(aborted=True)
+                    return
+
+                target_df = series_groups[target_series]
+                total_series = len(target_df)
+
+                # Check if no series for this target
+                if total_series == 0:
+                    continue
+
+                self.progress_label.set(f"Verifying {target_series} series ({total_series} total)...")
+
+                # Split into batches
+                for batch_start in range(0, total_series, max_per_window):
+                    if self.stop_requested.is_set():
+                        self.classification_finished(aborted=True)
+                        return
+
+                    batch_end = min(batch_start + max_per_window, total_series)
+                    batch_df = target_df.iloc[batch_start:batch_end]
+
+                    # Create verification window and wait for result
+                    verification_done = threading.Event()
+                    incorrect_studies = []
+                    stop_all = [False]
+
+                    # Show verification GUI on main thread
+                    def show_verification():
+                        show_verification_gui(
+                            batch_df, target_series, batch_start, total_series,
+                            self.stop_requested, verification_done, incorrect_studies, stop_all
+                        )
+
+                    self.master.after(0, show_verification)
+
+                    # Wait for user to complete verification
+                    while not verification_done.is_set():
+                        time.sleep(0.1)
+                        if self.stop_requested.is_set():
+                            self.classification_finished(aborted=True)
+                            return
+
+                    # Check if user pressed Stop All
+                    if stop_all[0]:
+                        self.stop_requested.set()
+                        self.classification_finished(aborted=True)
+                        return
+
+                    # Add incorrect studies to deletion list
+                    studies_to_delete.update(incorrect_studies)
+
+                    # Update progress
+                    current_window += 1
+                    self.progress_bar.config(value=current_window)
+                    self.master.update_idletasks()
+
+            # 5. Handle deletion of incorrect studies
+            if studies_to_delete:
+                # Use a synchronous approach for confirmation dialog
+                confirm_result = [None]
+                confirm_event = threading.Event()
+
+                def ask_confirm():
+                    try:
+                        response = messagebox.askyesno(
+                            "Delete Incorrect Classifications",
+                            f"You marked {len(studies_to_delete)} study folder(s) as incorrect.\n\n"
+                            f"Are you sure you want to delete these entire study directories?\n\n"
+                            f"This action cannot be undone.",
+                            parent=self.master
+                        )
+                        confirm_result[0] = response
+                    finally:
+                        confirm_event.set()
+
+                self.master.after(0, ask_confirm)
+                confirm_event.wait()  # Wait for dialog to complete
+
+                if confirm_result[0]:
+                    deleted_count = 0
+                    for study_folder in studies_to_delete:
+                        try:
+                            if os.path.exists(study_folder):
+                                shutil.rmtree(study_folder)
+                                deleted_count += 1
+                                print(f"Deleted: {study_folder}")
+                        except Exception as e:
+                            print(f"Error deleting {study_folder}: {e}")
+
+                    self.master.after(0, lambda: messagebox.showinfo(
+                        "Deletion Complete",
+                        f"Successfully deleted {deleted_count} study folder(s).",
+                        parent=self.master
+                    ))
+
+            self.classification_finished(aborted=False)
+
+        except Exception as e:
+            print(f"Error in verification workflow: {e}")
+            import traceback
+            traceback.print_exc()
+            self.classification_finished(aborted=True)
+
 
 # At end of file, add asynchronous image loader and per-study classification GUI
 from . import processing
+from .processing import load_center_slice_fast
+
+
+def show_verification_gui(batch_df, target_series, batch_start, total_series,
+                         stop_event, done_event, incorrect_studies, stop_all):
+    """
+    Display a verification GUI window for a batch of series.
+    Shows middle slice thumbnails with Correct/Incorrect toggle buttons.
+
+    Args:
+        batch_df: DataFrame containing series to verify
+        target_series: Name of the target series being verified
+        batch_start: Starting index in the full series list
+        total_series: Total number of series for this target
+        stop_event: Event to signal stop requested
+        done_event: Event to signal this window is complete
+        incorrect_studies: List to append study folders marked as incorrect
+        stop_all: List with single boolean element to signal Stop All
+    """
+    root = tk.Toplevel()
+    enable_tkinter_autoscaling(root)
+
+    batch_end = batch_start + len(batch_df)
+    root.title(f"Verify {target_series} - Showing {batch_start+1}-{batch_end} of {total_series}")
+    root.protocol("WM_DELETE_WINDOW", lambda: None)
+    root.grab_set()
+
+    # Main content frame
+    content_frame = tk.Frame(root)
+    content_frame.grid(row=0, column=0, padx=scale_value(20), pady=scale_value(20), sticky="nsew")
+    root.grid_rowconfigure(0, weight=1)
+    root.grid_columnconfigure(0, weight=1)
+
+    # Configure grid columns
+    for i in range(NUM_COLUMNS):
+        content_frame.grid_columnconfigure(i, weight=1)
+
+    # Create placeholder image
+
+    # Create loading indicator image (with text)
+    loading_img = Image.new("RGB", (scale_value(256), scale_value(256)), (220, 220, 220))
+    tk_loading = ImageTk.PhotoImage(loading_img)
+
+    # Store toggle states and widgets
+    toggle_states = {}  # path -> BooleanVar (True = Incorrect, False = Correct)
+    toggle_buttons = {}  # path -> Button widget
+    panel_widgets = {}  # path -> Label widget
+
+    row_num = 0
+    col_num = 0
+
+    # Create grid of series thumbnails
+    for idx, row_data in batch_df.iterrows():
+        series_path = row_data['Path']
+        series_desc = row_data.get('SeriesDescription', 'Unknown')
+        study_folder = row_data['study_folder']
+
+        # Create frame for this series
+        series_frame = tk.Frame(content_frame, padx=scale_value(5), pady=scale_value(5))
+        series_frame.grid(row=row_num, column=col_num, sticky="nsew")
+        series_frame.grid_columnconfigure(0, weight=1)
+
+        col_num += 1
+        if col_num >= NUM_COLUMNS:
+            col_num = 0
+            row_num += 1
+
+        # Image panel with loading indicator
+        panel = tk.Label(series_frame, image=tk_loading, width=scale_value(256), height=scale_value(256))
+        panel.image = tk_loading
+        panel.grid(row=0, column=0, pady=(0, scale_value(5)))
+        panel_widgets[series_path] = panel
+
+        # Series description label
+        tk.Label(series_frame, text=series_desc, wraplength=scale_value(250), justify="center").grid(
+            row=1, column=0, pady=scale_value(5))
+
+        # Toggle button for Correct/Incorrect
+        toggle_var = tk.BooleanVar(value=False)  # False = Correct, True = Incorrect
+        toggle_states[series_path] = (toggle_var, study_folder)
+
+        def make_toggle_callback(var, btn, study_path, study_dir):
+            def toggle():
+                new_state = not var.get()
+                var.set(new_state)
+                if new_state:  # Incorrect
+                    btn.config(text="Incorrect", bg="#ff4f4f", activebackground="#ff4f4f")
+                else:  # Correct
+                    btn.config(text="Correct", bg="#f0f0f0", activebackground="#f0f0f0")
+            return toggle
+
+        toggle_btn = tk.Button(
+            series_frame,
+            text="Correct",
+            width=scale_value(15),
+            bg="#f0f0f0",
+            activebackground="#f0f0f0",
+            command=None  # Will set below
+        )
+        toggle_btn.config(command=make_toggle_callback(toggle_var, toggle_btn, series_path, study_folder))
+        toggle_btn.grid(row=2, column=0, pady=(0, scale_value(5)))
+        toggle_buttons[series_path] = toggle_btn
+
+    # Load all images in parallel using ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def load_single_thumbnail(series_path, panel):
+        """Load a single thumbnail - optimized version."""
+        try:
+            # Use the fast thumbnail loader
+            pil_img = load_center_slice_fast(series_path)
+
+            if pil_img is None:
+                return None
+
+            # Resize to target size
+            target_size = scale_value(256)
+            pil_img = pil_img.resize((target_size, target_size))
+
+            return pil_img
+        except Exception as e:
+            print(f"Error loading thumbnail for {series_path}: {e}")
+            return None
+
+    def update_thumbnail(series_path, pil_img):
+        """Update a panel with loaded image on main thread."""
+        try:
+            panel = panel_widgets.get(series_path)
+            if panel is None or not panel.winfo_exists():
+                return
+
+            if pil_img is not None:
+                pil_rgb = pil_img.convert('RGB') if hasattr(pil_img, 'convert') else pil_img
+                tk_img = ImageTk.PhotoImage(pil_rgb, master=panel)
+                panel.config(image=tk_img)
+                panel.image = tk_img
+        except Exception as e:
+            print(f"Error updating thumbnail: {e}")
+
+    # Start parallel loading in background
+    def load_all_thumbnails():
+        """Load all thumbnails in parallel."""
+        with ThreadPoolExecutor(max_workers=NUM_PARALLEL_WORKERS) as executor:
+            # Submit all loading tasks
+            future_to_path = {
+                executor.submit(load_single_thumbnail, row_data['Path'], panel_widgets[row_data['Path']]): row_data['Path']
+                for idx, row_data in batch_df.iterrows()
+            }
+
+            # Update as each completes
+            for future in as_completed(future_to_path):
+                series_path = future_to_path[future]
+                try:
+                    pil_img = future.result()
+                    if pil_img is not None:
+                        # Schedule update on main thread
+                        root.after(0, lambda p=series_path, img=pil_img: update_thumbnail(p, img))
+                except Exception as e:
+                    print(f"Error in parallel loading for {series_path}: {e}")
+
+    # Start loading thread
+    threading.Thread(target=load_all_thumbnails, daemon=True).start()
+
+    # Button frame at bottom
+    button_frame = tk.Frame(root, pady=scale_value(10))
+    button_frame.grid(row=1, column=0, sticky="ew")
+    button_frame.grid_columnconfigure(0, weight=1)
+    button_frame.grid_columnconfigure(1, weight=0)
+    button_frame.grid_columnconfigure(2, weight=0)
+    button_frame.grid_columnconfigure(3, weight=0)
+    button_frame.grid_columnconfigure(4, weight=1)
+
+    def on_stop_all():
+        stop_all[0] = True
+        stop_event.set()
+        root.grab_release()
+        root.destroy()
+        done_event.set()
+
+    def on_skip():
+        # Skip this batch without marking anything
+        root.grab_release()
+        root.destroy()
+        done_event.set()
+
+    def on_approve():
+        # Collect all studies marked as incorrect
+        marked_incorrect = set()
+        for series_path, (toggle_var, study_folder) in toggle_states.items():
+            if toggle_var.get():  # True = Incorrect
+                marked_incorrect.add(study_folder)
+
+        if marked_incorrect:
+            # Confirm deletion
+            response = messagebox.askyesno(
+                "Mark for Deletion",
+                f"{len(marked_incorrect)} series marked as incorrect.\n\n"
+                f"Delete the entire output directories for these studies?\n\nYou will be asked to confirm at the end of verification.",
+                parent=root
+            )
+            if response:
+                incorrect_studies.extend(marked_incorrect)
+            else:
+                return
+
+        root.grab_release()
+        root.destroy()
+        done_event.set()
+
+    # Create buttons
+    btn_stop = tk.Button(
+        button_frame,
+        bg="#e0a2a2",
+        activebackground="#e0a2a2",
+        text="Stop All (a)",
+        font=("Arial", scale_value(14)),
+        command=on_stop_all
+    )
+    btn_skip = tk.Button(
+        button_frame,
+        bg="#fff7a8",
+        activebackground="#fff7a8",
+        text="Skip (s)",
+        font=("Arial", scale_value(14)),
+        command=on_skip
+    )
+    btn_approve = tk.Button(
+        button_frame,
+        bg="#a2e0b2",
+        activebackground="#a2e0b2",
+        text="Approve (d)",
+        font=("Arial", scale_value(14)),
+        command=on_approve
+    )
+
+    # Grid buttons
+    btn_stop.grid(row=0, column=1, padx=scale_value(10))
+    btn_skip.grid(row=0, column=2, padx=scale_value(10))
+    btn_approve.grid(row=0, column=3, padx=scale_value(10))
+
+    # add hotkeys
+    root.bind("<a>", lambda event: btn_stop.invoke())
+    root.bind("<s>", lambda event: btn_skip.invoke())
+    root.bind("<d>", lambda event: btn_approve.invoke())
+
+    root.update()
 
 
 def load_image_worker(dicom_paths, panel_label_ref, root):
@@ -1579,6 +2043,30 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     root = tk.Toplevel()
     enable_tkinter_autoscaling(root)
     root.title(f"Classify Study ({mode}): MRN {mrn} | Study {study_uid}")
+
+    # Classification window appears fixed offset from main window
+    root.update_idletasks()
+
+    try:
+        # Get main window position
+        main_x = root.master.winfo_x()
+        main_y = root.master.winfo_y()
+
+        # Offset from main window
+        x = main_x + scale_value(50)
+        y = main_y + scale_value(50)
+
+        root.geometry(f"+{x}+{y}")
+    except Exception:
+        # Fallback to screen center
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        window_width = root.winfo_reqwidth()
+        window_height = root.winfo_reqheight()
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        root.geometry(f"+{x}+{y}")
+
     root.protocol("WM_DELETE_WINDOW", lambda: None)
     root.grab_set()
 
@@ -1592,6 +2080,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
 
     dropdown_values = TARGET_SERIES
     dropdown_vars = {}
+    panel_widgets = {}  # Store panel widgets for parallel loading
 
     # Precompute color map for the dropdown labels
     try:
@@ -1836,6 +2325,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
             pass
 
         dropdown_vars[first_path] = variable
+        panel_widgets[first_path] = (panel, dicom_paths)  # Store for parallel loading
 
         # Enforce uniqueness for initial assignments based on ALLOW_DUPLICATE_LABELS config
         # If enabled and this dropdown's initial value duplicates an existing assignment, reset it to 'Other'
@@ -1857,11 +2347,73 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         except Exception:
             pass
 
-        # Start background image loader to replace placeholder with center slice
+    # Load all images in parallel using ThreadPoolExecutor (same as verification mode)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def load_single_thumbnail(first_path, panel, dicom_paths):
+        """Load a single thumbnail - optimized version."""
         try:
-            threading.Thread(target=load_image_worker, args=(dicom_paths, panel, root), daemon=True).start()
-        except Exception:
-            pass
+            # Use the fast thumbnail loader
+            pil_img = load_center_slice_fast(first_path)
+
+            if pil_img is None:
+                # Fallback to original method
+                pil_img = processing.load_center_slice(dicom_paths)
+
+            if pil_img is None:
+                return None
+
+            # Resize to target size
+            target_size = scale_value(256)
+            pil_img = pil_img.resize((target_size, target_size))
+
+            return pil_img
+        except Exception as e:
+            print(f"Error loading thumbnail for {first_path}: {e}")
+            return None
+
+    def update_thumbnail(first_path, pil_img):
+        """Update a panel with loaded image on main thread."""
+        try:
+            panel_data = panel_widgets.get(first_path)
+            if panel_data is None:
+                return
+
+            panel = panel_data[0]
+            if not panel.winfo_exists():
+                return
+
+            if pil_img is not None:
+                pil_rgb = pil_img.convert('RGB') if hasattr(pil_img, 'convert') else pil_img
+                tk_img = ImageTk.PhotoImage(pil_rgb, master=panel)
+                panel.config(image=tk_img)
+                panel.image = tk_img
+        except Exception as e:
+            print(f"Error updating thumbnail: {e}")
+
+    # Start parallel loading in background
+    def load_all_thumbnails():
+        """Load all thumbnails in parallel."""
+        with ThreadPoolExecutor(max_workers=NUM_PARALLEL_WORKERS) as executor:
+            # Submit all loading tasks
+            future_to_path = {
+                executor.submit(load_single_thumbnail, path, panel_data[0], panel_data[1]): path
+                for path, panel_data in panel_widgets.items()
+            }
+
+            # Update as each completes
+            for future in as_completed(future_to_path):
+                series_path = future_to_path[future]
+                try:
+                    pil_img = future.result()
+                    if pil_img is not None:
+                        # Schedule update on main thread
+                        root.after(0, lambda p=series_path, img=pil_img: update_thumbnail(p, img))
+                except Exception as e:
+                    print(f"Error in parallel loading for {series_path}: {e}")
+
+    # Start loading thread
+    threading.Thread(target=load_all_thumbnails, daemon=True).start()
 
     button_frame = tk.Frame(root, pady=scale_value(10))
     button_frame.grid(row=1, column=0, sticky="ew")

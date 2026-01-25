@@ -3,7 +3,7 @@ from operator import itemgetter
 from itertools import groupby
 import os
 import shutil
-from .config import EXCLUDE_TYPES, INCLUDE_TYPES, IGNORE_MULTIPLE_ORIENTATIONS, SEPARATE_STACKED_SERIES, MAX_SPLIT
+from .config import IGNORE_MULTIPLE_ORIENTATIONS, SEPARATE_STACKED_SERIES, MAX_SPLIT
 
 
 def check_dicom_batch(filepaths, include_types=None, exclude_types=None):
@@ -58,10 +58,10 @@ def check_dicom_batch(filepaths, include_types=None, exclude_types=None):
                 try:
                     with open(fp, 'rb') as fh:
                         fh.seek(128)
-                        pre = fh.read(4)
-                        has_preamble = (pre == b'DICM')
+                        # Check for DICM preamble (validation only)
+                        fh.read(4)
                 except Exception:
-                    has_preamble = False
+                    pass
 
                 ds = None
                 try:
@@ -72,7 +72,7 @@ def check_dicom_batch(filepaths, include_types=None, exclude_types=None):
                             ds = pydicom.dcmread(fp, stop_before_pixels=True, force=True)
                     else:
                         ds = pydicom.dcmread(fp, stop_before_pixels=True, force=True)
-                except Exception as e:
+                except Exception:
                     # If pydicom fails and gdcm is available, try using gdcm for compressed DICOMs
                     if have_gdcm:
                         try:

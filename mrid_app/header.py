@@ -160,7 +160,7 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
         summary_path = os.path.join(output_dir, "rf_model_training_summary.txt")
         with open(summary_path, 'w') as f:
             f.write(final_message)
-            f.write(f"\n\nDetected Field Types:\n")
+            f.write("\n\nDetected Field Types:\n")
             for field_name, info in field_types.items():
                 f.write(f"  {field_name}: {info['type']}")
                 if info['type'] == 'array':
@@ -226,7 +226,6 @@ def get_series_probabilities(dicom_path, model, feature_encoder, field_types=Non
     if field_types is None:
         try:
             # Try to find field_types file in same directory as model
-            import os
             # Assuming model was loaded from a specific path, try to find field_types there
             # For now, we'll fall back to automatic detection if not found
             field_types = None

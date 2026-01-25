@@ -45,7 +45,7 @@ MRID is a powerful tool designed to automate the classification and organization
 
 ### Core Functionality
 - ✅ **Multi-Modal Classification**: DICOM header model, image-based CNN, or combined
-- ✅ **Three Classification Modes**: Manual, Semi-Auto, Full-Auto
+- ✅ **Four Classification Modes**: Manual, Semi-Auto, Full-Auto, Verify
 - ✅ **Smart Series Selection**: Automatic selection with configurable confidence thresholds
 - ✅ **3D Preference**: Prioritize 3D acquisitions over 2D when configured
 - ✅ **NIfTI Conversion**: Integrated dcm2niix conversion with automatic organization
@@ -187,6 +187,7 @@ python run.py
 - **Manual**: Review and classify each series manually
 - **Semi-Auto**: Pre-select best series matches based on model predictions, review before saving (requires trained models)
 - **Full-Auto**: Automatically classify and save without review (requires trained models)
+- **Verify**: Review and validate already-classified studies, mark incorrect classifications for deletion
 
 ### 4. Start Classification
 
@@ -233,6 +234,22 @@ python run.py
   2. Saves results without user review
   3. Processes all studies in queue
 - **Best For**: Large datasets, consistent imaging protocols
+
+#### Verify Mode
+- **Use Case**: Quality control and validation of classified studies
+- **Workflow**:
+  1. System scans output directory for all classified studies
+  2. Aggregates classifications by target series
+  3. Displays batches of thumbnails grouped by target series classification
+  4. User reviews and marks incorrect classifications
+  5. Option to delete entire output folders for incorrect classifications
+  6. Allows subsequent re-classification of incorrect studies
+- **Features**:
+  - Batch display (configurable grid size)
+  - Toggle buttons: "Correct" (default) → "Incorrect" (red)
+  - Confirmation before deletion
+- **Best For**: Post-processing validation, training data cleanup, quality assurance
+- **Note**: Does not require models - works with any classified data
 
 ### Model Types
 
@@ -375,6 +392,34 @@ Controls whether manually selecting a classification label for one series automa
   - Note that auto-selection in Semi-Auto mode will still only select one best match per label based on model probabilities
   - Useful for creating training data with multiple examples per label from the same study
   - Both Header and Image models support training on data with duplicate labels
+
+### UI Grid Layout
+
+```python
+NUM_COLUMNS = 6  # Number of columns in classification/verification grid
+NUM_ROWS = 4     # Max number of rows in verification mode grid
+```
+
+Controls the grid layout for classification and verification interfaces:
+
+- **NUM_COLUMNS**: Maximum number of series displayed horizontally (applies to all modes)
+- **NUM_ROWS**: Maximum number of series displayed vertically in Verify mode
+- **Grid Size**: In Verify mode, up to `NUM_COLUMNS × NUM_ROWS` images displayed per batch
+- **Recommendations**:
+  - Standard monitors: 6 columns × 3-4 rows (18-24 images)
+  - Large monitors: 8 columns × 5-6 rows (40-48 images)
+  - Adjust based on screen resolution and preference
+
+### Parallel Image Loading
+
+```python
+NUM_PARALLEL_WORKERS = 8  # Number of parallel threads for loading thumbnails
+```
+
+Controls the number of concurrent worker threads used to load image thumbnails in Semi-Auto and Verify modes:
+
+- **Purpose**: Optimizes thumbnail loading performance through parallel processing
+- **Default**: 8 workers (suitable for most modern systems, adjust as needed based on your system capabilities)
 
 ### DICOM ImageType Filtering
 
