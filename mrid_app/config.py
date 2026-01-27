@@ -32,7 +32,7 @@ NUM_COLUMNS = 6  # max number of columns in classification/verification UI
 NUM_ROWS = 4  # max number of rows in verification UI
 OVERRIDE_THRESHOLD = 0.5  # probability threshold for auto-classification
 ALLOW_DUPLICATE_LABELS = False  # allow multiple series to have the same label for manual classification
-NUM_PARALLEL_WORKERS = 16  # number of parallel threads for various file loading operations
+NUM_PARALLEL_WORKERS = 8  # number of parallel threads for various file loading operations
 
 # CNN hyperparameters
 IMAGE_SIZE = 128

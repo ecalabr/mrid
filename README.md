@@ -18,7 +18,8 @@ A comprehensive GUI application for automated classification and organization of
   - [Classification Modes](#classification-modes)
   - [Model Types](#model-types)
   - [Training Models](#training-models)
-- [Configuration](#configuration)
+- [Basic Configuration](#basic-configuration)
+- [Detailed Configuration Options](#detailed-configuration-options)
 - [Project Structure](#project-structure)
 - [Advanced Features](#advanced-features)
 - [Troubleshooting](#troubleshooting)
@@ -333,9 +334,19 @@ python run.py
 
 ---
 
-## Configuration
+## Basic Configuration
 
 Configuration is managed in `mrid_app/config.py`.
+
+### Configuration Recommendations
+You should adjust the following settings for each project:
+- TARGET_SERIES: Define series types relevant to your workflow
+- PREFER_3D: Set preferences for 3D acquisitions
+- STUDY_NAME_TEMPLATE: Customize output naming convention
+
+Everything else can be left at default values unless you have specific needs.
+
+## Detailed Configuration Options
 
 ### Default Directories
 Specify default input/output directories for the classification GUI. Note that these can be changed in the GUI at runtime.
@@ -364,6 +375,16 @@ Notes:
 - Ensure the template results in unique names for each study to avoid overwriting.
 - Use of MRN as the only identifier may lead to conflicts if multiple studies exist for the same patient.
 - Invalid characters will be replaced with hyphens.
+
+### Thumbnail options
+```python
+THUMBNAIL_FORMAT = 'JPEG'  # Format for generated thumbnails: 'JPEG' or 'PNG'
+THUMBNAIL_QUALITY = 75  # JPEG quality (1-100, only used if THUMBNAIL_FORMAT='JPEG')
+```
+- Controls thumbnail format for GUI display only (CNN model uses separate preprocessing).
+- Thumbnail format can be either 'JPEG' or 'PNG'.
+- Thumbnail quality applies only to JPEG format, ranges from 1-100, and controls compression level (higher = better quality, larger file size).
+- Recommended settings are JPEG format with quality of 75 for a good balance between quality and file size.
 
 ### Target Series
 
