@@ -1,6 +1,14 @@
-# Directories (can be overridden by UI)
+# ============================================================================
+# Filepath configuration options (modify only at beginning of project)
+# ============================================================================
+# Default directories (can be overridden by UI)
 DATA_DIR = "/media/ecalabr/raid/khasraw_data/2026-01-21-001"
 OUT_DIR = "/media/ecalabr/raid/khasraw_data/outputs"
+# Output naming template
+STUDY_NAME_TEMPLATE = "{mrn}-{accn}"
+# Thumbnail generation settings
+THUMBNAIL_FORMAT = 'JPEG'  # Format for generated thumbnails: 'JPEG' or 'PNG'
+THUMBNAIL_QUALITY = 75  # JPEG quality (1-100, only used if THUMBNAIL_FORMAT='JPEG')
 
 # Classification settings
 TARGET_SERIES = ["T1", "T2", "FLAIR", "T1c", "Other"]
@@ -24,7 +32,7 @@ NUM_COLUMNS = 6  # max number of columns in classification/verification UI
 NUM_ROWS = 4  # max number of rows in verification UI
 OVERRIDE_THRESHOLD = 0.5  # probability threshold for auto-classification
 ALLOW_DUPLICATE_LABELS = False  # allow multiple series to have the same label for manual classification
-NUM_PARALLEL_WORKERS = 8  # number of parallel threads for loading thumbnails in classification/verification UI
+NUM_PARALLEL_WORKERS = 16  # number of parallel threads for various file loading operations
 
 # CNN hyperparameters
 IMAGE_SIZE = 128

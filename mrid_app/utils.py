@@ -4,6 +4,187 @@ from collections import defaultdict
 from tkinter import messagebox
 from typing import Optional
 import pydicom
+import re
+
+# Import naming template from config
+try:
+    from .config import STUDY_NAME_TEMPLATE
+except ImportError:
+    # Fallback if config import fails
+    STUDY_NAME_TEMPLATE = "{mrn}-{study_uid}"
+
+
+# ============================================================================
+# Output Naming Functions
+# ============================================================================
+
+# function to sanitize the STUDY_NAME_TEMPLATE
+def sanitize_template(template, replacement='-'):
+    # First, protect valid fields by temporarily replacing them
+    protected = template
+    placeholders = {
+        '{mrn}': '__MRN_PLACEHOLDER__',
+        '{study_uid}': '__STUDY_UID_PLACEHOLDER__',
+        '{accn}': '__ACCN_PLACEHOLDER__'
+    }
+    for field, placeholder in placeholders.items():
+        protected = protected.replace(field, placeholder)
+    # Remove any remaining curly braces (invalid ones)
+    protected = re.sub(r'[{}]', '', protected)
+    # Keep only alphanumeric characters, hyphens, underscores, and the placeholder markers
+    sanitized = re.sub(r'[^a-zA-Z0-9_\-]', '', protected)
+    # Restore valid fields
+    for field, placeholder in placeholders.items():
+        sanitized = sanitized.replace(placeholder, field)
+    # Check for valid format fields
+    valid_fields = ['{mrn}', '{study_uid}', '{accn}']
+    if not any(item in sanitized for item in valid_fields):
+        print("Warning: STUDY_NAME_TEMPLATE does not contain any of the required fields. Reverting to default template.")
+        return "{mrn}-{study_uid}"
+    if not any(item in sanitized for item in valid_fields[1:]):
+        print("Warning: STUDY_NAME_TEMPLATE has only MRN as an identifier. This could lead to non-unique study directory names and potential file collisions.")
+    return sanitized
+
+
+# Sanitize the STUDY_NAME_TEMPLATE to ensure it's safe for file naming
+STUDY_NAME_TEMPLATE = sanitize_template(STUDY_NAME_TEMPLATE)
+
+
+def sanitize_target_series(target_series):
+    """
+    Sanitize TARGET_SERIES list to ensure all values are safe for filenames.
+    Only allows alphanumeric characters, hyphens, and underscores.
+    Ensures "Other" is always included in the list.
+
+    Args:
+        target_series: List of target series labels
+
+    Returns:
+        List of sanitized target series labels with "Other" guaranteed to be present
+    """
+    if not isinstance(target_series, list):
+        print("Warning: TARGET_SERIES is not a list. Using default ['Other'].")
+        return ["Other"]
+
+    sanitized = []
+    for label in target_series:
+        if not isinstance(label, str):
+            print(f"Warning: TARGET_SERIES contains non-string value: {label}. Skipping.")
+            continue
+        # Remove all characters except alphanumerics, hyphens, and underscores
+        cleaned = re.sub(r'[^a-zA-Z0-9_\-]', '', label)
+        if cleaned and cleaned not in sanitized:  # Skip empty strings and duplicates
+            sanitized.append(cleaned)
+        elif not cleaned:
+            print(f"Warning: TARGET_SERIES label '{label}' became empty after sanitization. Skipping.")
+
+    # Ensure "Other" is always present
+    if "Other" not in sanitized:
+        print("Warning: 'Other' not found in TARGET_SERIES. Adding it.")
+        sanitized.append("Other")
+
+    return sanitized
+
+
+def get_study_dir_name(mrn, study_uid, accn=None):
+    """
+    Generate study directory name from MRN, Study UID, and optional Accession Number.
+
+    Args:
+        mrn: Patient MRN/PatientID
+        study_uid: Study UID
+        accn: Optional Accession Number
+
+    Returns:
+        str: Study directory name based on STUDY_NAME_TEMPLATE
+    """
+    # Provide default empty string for missing accn to avoid KeyError
+    if accn is None:
+        accn = ""
+    return STUDY_NAME_TEMPLATE.format(mrn=mrn, study_uid=study_uid, accn=accn)
+
+
+def get_study_csv_name(study_id):
+    """
+    Generate classification results CSV filename for a study.
+
+    Args:
+        study_id: Study identifier (typically the study directory name)
+
+    Returns:
+        str: CSV filename
+    """
+    return f"{study_id}_classification-results.csv"
+
+
+def get_nifti_name(study_id, label):
+    """
+    Generate NIfTI filename for a classified series.
+
+    Args:
+        study_id: Study identifier (typically the study directory name)
+        label: Classification label (e.g., "T1", "T2", "FLAIR")
+
+    Returns:
+        str: NIfTI filename (without directory path)
+    """
+    return f"{study_id}_{label.lower()}.nii.gz"
+
+
+def get_nifti_prefix(study_id, label):
+    """
+    Generate NIfTI file prefix for dcm2niix conversion.
+
+    Args:
+        study_id: Study identifier (typically the study directory name)
+        label: Classification label (e.g., "T1", "T2", "FLAIR")
+
+    Returns:
+        str: NIfTI prefix for dcm2niix naming
+    """
+    return f"{study_id}_{label.lower()}"
+
+
+def get_symlink_dir_name(mrn, study_uid, series_uid, accn="", split_index=None):
+    """
+    Generate symlink directory name for organizing DICOM files.
+    Uses STUDY_NAME_TEMPLATE to maintain consistency with study directory naming.
+
+    Args:
+        mrn: Patient MRN/PatientID
+        study_uid: Study UID
+        series_uid: Series UID
+        accn: Optional Accession Number (default: "")
+        split_index: Optional split index for multi-volume series (0-based integer)
+
+    Returns:
+        str: Symlink directory name
+    """
+    # Use the same template as study directories for consistency
+    base_name = STUDY_NAME_TEMPLATE.format(mrn=mrn, study_uid=study_uid, accn=accn)
+
+    # Append series UID to make it unique per series
+    dir_name = f"{base_name}-{series_uid}"
+
+    # Append split index if provided
+    if split_index is not None:
+        dir_name = f"{dir_name}-{split_index:02d}"
+
+    return dir_name
+
+
+def extract_study_id_from_path(study_path):
+    """
+    Extract study ID from study directory path.
+
+    Args:
+        study_path: Full or relative path to study directory
+
+    Returns:
+        str: Study ID (directory basename)
+    """
+    return os.path.basename(study_path.rstrip(os.sep))
+
 
 
 def convert_defaultdict_to_dict(obj):

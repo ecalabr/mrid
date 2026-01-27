@@ -4,9 +4,11 @@ import time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from . import config
-from .config import DATA_DIR, OUT_DIR, TARGET_SERIES, NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LABELS, NUM_PARALLEL_WORKERS
+from .config import DATA_DIR, OUT_DIR, NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LABELS, NUM_PARALLEL_WORKERS
 from .header import TrainHeaderClassifierLogic
 from .cnn import SimpleCNN
+from .utils import (extract_study_id_from_path, get_study_csv_name, get_study_dir_name,
+                     get_nifti_name, get_nifti_prefix, sanitize_target_series)
 import joblib
 from PIL import Image, ImageTk
 import shutil
@@ -14,6 +16,10 @@ import colorsys
 import platform
 import subprocess
 import importlib
+
+
+# Sanitize TARGET_SERIES to ensure safe filenames
+TARGET_SERIES = sanitize_target_series(config.TARGET_SERIES)
 
 
 # Global scaling factor to be calculated once
@@ -256,18 +262,73 @@ class ProgressGUI:
             self.root.title(title)
         except Exception:
             pass
-        self.root.geometry(scale_geometry("500x160"))
+        self.root.geometry(scale_geometry("500x320"))
         self.root.protocol("WM_DELETE_WINDOW", self.do_nothing)
+
+        # First progress bar: Scanning files
         self.label = tk.Label(self.root, text=label_text)
-        self.label.pack(pady=scale_value(10))
+        self.label.pack(pady=scale_value(5))
         self.progress = ttk.Progressbar(self.root, orient="horizontal",
                                         length=scale_value(400), mode="determinate",
                                         maximum=total_files)
-        self.progress.pack(pady=scale_value(10))
+        self.progress.pack(pady=scale_value(3))
+        self.count_label = tk.Label(self.root, text="0 / 0")
+        self.count_label.pack(pady=scale_value(3))
+
+        # Second progress bar: Organizing series (initially hidden)
+        self.organize_label = tk.Label(self.root, text="")
+        self.organize_progress = ttk.Progressbar(self.root, orient="horizontal",
+                                                  length=scale_value(400), mode="determinate",
+                                                  maximum=100)
+        self.organize_count_label = tk.Label(self.root, text="")
+
+        # Third progress bar: Generating thumbnails (initially hidden)
+        self.thumbnail_label = tk.Label(self.root, text="")
+        self.thumbnail_progress = ttk.Progressbar(self.root, orient="horizontal",
+                                                  length=scale_value(400), mode="determinate",
+                                                  maximum=100)
+        self.thumbnail_count_label = tk.Label(self.root, text="")
+
         self.root.update()
 
-    def update(self, value):
+    def update(self, value, total=None):
+        """Update first progress bar with counter text."""
         self.progress["value"] = value
+        if total is None:
+            total = self.progress["maximum"]
+        self.count_label.config(text=f"{value} / {int(total)}")
+        self.root.update_idletasks()
+
+    def show_organize_progress(self, label_text="Organizing series...", total=1):
+        """Show the second progress bar for organizing series."""
+        self.organize_label.config(text=label_text)
+        self.organize_label.pack(pady=scale_value(5))
+        self.organize_progress["maximum"] = total
+        self.organize_progress.pack(pady=scale_value(3))
+        self.organize_count_label.pack(pady=scale_value(3))
+        self.root.update_idletasks()
+
+    def update_organize_progress(self, current, total):
+        """Update organizing progress bar and count text."""
+        self.organize_progress["maximum"] = total
+        self.organize_progress["value"] = current
+        self.organize_count_label.config(text=f"{current} / {total}")
+        self.root.update_idletasks()
+
+    def show_thumbnail_progress(self, label_text="Generating thumbnails...", total=1):
+        """Show the third progress bar for thumbnail generation."""
+        self.thumbnail_label.config(text=label_text)
+        self.thumbnail_label.pack(pady=scale_value(5))
+        self.thumbnail_progress["maximum"] = total
+        self.thumbnail_progress.pack(pady=scale_value(3))
+        self.thumbnail_count_label.pack(pady=scale_value(3))
+        self.root.update_idletasks()
+
+    def update_thumbnail_progress(self, current, total):
+        """Update thumbnail progress bar and count text."""
+        self.thumbnail_progress["maximum"] = total
+        self.thumbnail_progress["value"] = current
+        self.thumbnail_count_label.config(text=f"{current} / {total}")
         self.root.update_idletasks()
 
     def close(self):
@@ -835,7 +896,8 @@ class MainApp:
                 print(f"Found {len(all_files)} files. Scanning for DICOM...")
 
                 # 2. Setup progress window
-                gui = ProgressGUI(total_files=len(all_files))
+                total_files = len(all_files)
+                gui = ProgressGUI(total_files=total_files)
 
                 # 3. Parallel processing (scan) — use batched workers to reduce per-file overhead
                 pool = mp.Pool(mp.cpu_count())
@@ -859,9 +921,9 @@ class MainApp:
                             # if a worker returned None or failed, assume the corresponding chunk files yielded None
                             processed += batch_size
                         # clamp processed to total files
-                        if processed > len(all_files):
-                            processed = len(all_files)
-                        gui.update(processed)
+                        if processed > total_files:
+                            processed = total_files
+                        gui.update(processed, total_files)
 
                         if self.stop_requested.is_set():
                             gui.close()
@@ -870,7 +932,6 @@ class MainApp:
                             self.classification_finished(aborted=True)
                             return
                 finally:
-                    gui.close()
                     pool.close()
                     pool.join()
 
@@ -878,25 +939,47 @@ class MainApp:
                 dicom_records = [r for r in results if r is not None]
                 print(f"Identified {len(dicom_records)} valid DICOM files.")
 
-                # Show a progress window while building the hierarchy: count unique groups
+                # Count unique groups for hierarchy building
                 try:
                     groups = set((r['patient'], r['study_uid'], r['series_uid']) for r in dicom_records)
                     total_groups = max(1, len(groups))
                 except Exception:
                     total_groups = max(1, len(dicom_records))
 
-                build_gui = None
+                # Reuse the same GUI window for hierarchy building and thumbnail generation
+                organize_started = False
+                thumbnail_started = False
                 try:
-                    build_gui = ProgressGUI(total_files=total_groups, title="Building hierarchy...", label_text="Organizing series/groups...")
-                    # pass a callback that updates the progress GUI
+                    # Callback for hierarchy building progress
                     def _build_progress_cb(n):
+                        nonlocal organize_started
                         try:
-                            if build_gui:
-                                build_gui.update(n)
+                            if gui:
+                                if not organize_started:
+                                    gui.show_organize_progress("Organizing series...", total_groups)
+                                    organize_started = True
+                                gui.update_organize_progress(n, total_groups)
                         except Exception:
                             pass
 
-                    hierarchy = build_hierarchy(dicom_records, output_dir, progress_callback=_build_progress_cb)
+                    # Callback for thumbnail generation progress
+                    def _thumbnail_progress_cb(current, total):
+                        nonlocal thumbnail_started
+                        try:
+                            if gui:
+                                if not thumbnail_started:
+                                    gui.show_thumbnail_progress("Generating thumbnails...", total)
+                                    thumbnail_started = True
+                                gui.update_thumbnail_progress(current, total)
+                        except Exception:
+                            pass
+
+                    hierarchy = build_hierarchy(
+                        dicom_records,
+                        output_dir,
+                        progress_callback=_build_progress_cb,
+                        thumbnail_progress_callback=_thumbnail_progress_cb
+                    )
                     # save hierarchy to YAML
                     try:
                         write_yaml_hierarchy(hierarchy, output_dir)
@@ -904,8 +987,8 @@ class MainApp:
                         print(f"Failed to write hierarchy.yaml: {e}")
                 finally:
                     try:
-                        if build_gui:
-                            build_gui.close()
+                        if gui:
+                            gui.close()
                     except Exception:
                         pass
 
@@ -913,8 +996,11 @@ class MainApp:
             # 5. Loop through each study and classify
             all_studies = []
             for mrn, studies in hierarchy.items():
-                for study_uid, series_dict in studies.items():
-                    all_studies.append((mrn, study_uid, series_dict))
+                for study_uid, study_data in studies.items():
+                    # Extract accession number and series from the new hierarchy structure
+                    accn = study_data.get("accn", "")
+                    series_dict = study_data.get("series", {})
+                    all_studies.append((mrn, study_uid, accn, series_dict))
 
             total_studies = len(all_studies)
             try:
@@ -926,16 +1012,18 @@ class MainApp:
             rf_model, rf_target_encoder, rf_feature_encoder = self.rf_model, self.rf_target_encoder, self.rf_feature_encoder
             cnn_model, cnn_target_encoder = self.cnn_model, self.cnn_target_encoder
 
-            for i, (mrn, study_uid, series_dict) in enumerate(all_studies):
+            for i, (mrn, study_uid, accn, series_dict) in enumerate(all_studies):
                 if self.stop_requested.is_set():
                     print("Classification loop aborted by user.")
                     self.classification_finished(aborted=True)
                     return
 
+
                 self.progress_label.set(
                     f"Classifying Study {i + 1} of {total_studies} ({mode}/{model_type}): {mrn} / {study_uid}")
 
-                classification_csv = os.path.join(output_dir, f"{mrn}-{study_uid}", f"{mrn}-{study_uid}_classification-results.csv")
+                study_dir_name = get_study_dir_name(mrn, study_uid, accn)
+                classification_csv = os.path.join(output_dir, study_dir_name, get_study_csv_name(study_dir_name))
                 if os.path.exists(classification_csv):
                     try:
                         self.progress_bar.config(value=i + 1)
@@ -949,7 +1037,8 @@ class MainApp:
                         series_dict, mrn, study_uid, output_dir,
                         model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model, cnn_target_encoder,
                         self.rf_field_types,  # Pass field types
-                        convert=self.convert_to_nifti.get()
+                        convert=self.convert_to_nifti.get(),
+                        accn=accn
                     )
                 else:
                     study_done_event = threading.Event()
@@ -960,7 +1049,8 @@ class MainApp:
                         study_done_event, mode,
                         model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model, cnn_target_encoder,
                         self.rf_field_types,  # Pass field types
-                        convert=self.convert_to_nifti.get()
+                        convert=self.convert_to_nifti.get(),
+                        accn=accn
                     )
 
                     while not study_done_event.is_set():
@@ -1020,8 +1110,8 @@ class MainApp:
             folder_path = os.path.join(output_dir, folder)
             if os.path.isdir(folder_path):
                 # Check if it looks like a study folder (has classification CSV)
-                study_id = os.path.basename(folder_path.rstrip(os.sep))
-                csv_path = os.path.join(folder_path, f"{study_id}_classification-results.csv")
+                study_id = extract_study_id_from_path(folder_path)
+                csv_path = os.path.join(folder_path, get_study_csv_name(study_id))
                 if os.path.exists(csv_path):
                     study_folders.append(folder_path)
 
@@ -1052,14 +1142,14 @@ class MainApp:
             error_count = 0
 
             for idx, study_path in enumerate(study_folders):
-                study_id = os.path.basename(study_path.rstrip(os.sep))
+                study_id = extract_study_id_from_path(study_path)
 
                 # Update UI
                 progress_window.after(0, lambda i=idx, sid=study_id: current_label.config(text=f"Processing: {sid}"))
                 progress_window.after(0, lambda i=idx: progress_bar.config(value=i))
 
                 # Read classification CSV
-                csv_path = os.path.join(study_path, f"{study_id}_classification-results.csv")
+                csv_path = os.path.join(study_path, get_study_csv_name(study_id))
                 try:
                     import pandas as pd
                     df = pd.read_csv(csv_path)
@@ -1074,9 +1164,8 @@ class MainApp:
                             continue
 
                         # Check if NIfTI already exists
-                        # convert_series_to_nifti creates files as: {study_id}_{label.lower()}.nii.gz
                         series_dir = os.path.dirname(path)
-                        expected_nifti_name = f"{study_id}_{classification.lower()}.nii.gz"
+                        expected_nifti_name = get_nifti_name(study_id, classification)
                         expected_nifti_path = os.path.join(study_path, expected_nifti_name)
 
                         # Check if NIfTI file exists
@@ -1172,7 +1261,7 @@ class MainApp:
 
         tk.Label(
             dialog,
-            text="⚠️ Warning: This action cannot be undone!",
+            text="Warning: This action cannot be undone!",
             fg="red",
             font=("Arial", scale_value(10), "bold")
         ).pack(pady=scale_value(10))
@@ -1219,8 +1308,8 @@ class MainApp:
                 for folder in os.listdir(output_dir):
                     folder_path = os.path.join(output_dir, folder)
                     if os.path.isdir(folder_path):
-                        study_id = os.path.basename(folder_path.rstrip(os.sep))
-                        csv_path = os.path.join(folder_path, f"{study_id}_classification-results.csv")
+                        study_id = extract_study_id_from_path(folder_path)
+                        csv_path = os.path.join(folder_path, get_study_csv_name(study_id))
 
                         if os.path.exists(csv_path):
                             try:
@@ -1269,6 +1358,7 @@ class MainApp:
             if delete_hierarchy:
                 hierarchy_path = os.path.join(output_dir, "hierarchy.yaml")
                 temp_files_path = os.path.join(output_dir, "dicom_symlinks")
+                thumbnails_path = os.path.join(output_dir, "series_thumbnails")
 
                 if os.path.exists(hierarchy_path):
                     try:
@@ -1284,6 +1374,13 @@ class MainApp:
                     except Exception as e:
                         errors.append(f"Failed to delete dicom_symlinks: {e}")
 
+                if os.path.exists(thumbnails_path):
+                    try:
+                        shutil.rmtree(thumbnails_path)
+                        deleted_items.append("series_thumbnails directory")
+                    except Exception as e:
+                        errors.append(f"Failed to delete series_thumbnails: {e}")
+
             # Show results
             if deleted_items or errors:
                 # Create simplified messages based on what was deleted
@@ -1293,7 +1390,8 @@ class MainApp:
                 if delete_models and any('Model file' in item for item in deleted_items):
                     messages.append("Successfully deleted model data")
                 if delete_hierarchy and (any('hierarchy.yaml' in item for item in deleted_items) or
-                                        any('dicom_symlinks' in item for item in deleted_items)):
+                                        any('dicom_symlinks' in item for item in deleted_items) or
+                                        any('series_thumbnails' in item for item in deleted_items)):
                     messages.append("Successfully deleted hierarchy data")
 
                 result_msg = "\n".join(messages) if messages else "Deletion completed"
@@ -1504,7 +1602,7 @@ class MainApp:
             global DATA_DIR, OUT_DIR, TARGET_SERIES, NUM_COLUMNS, ALLOW_DUPLICATE_LABELS
             DATA_DIR = config.DATA_DIR
             OUT_DIR = config.OUT_DIR
-            TARGET_SERIES = config.TARGET_SERIES
+            TARGET_SERIES = sanitize_target_series(config.TARGET_SERIES)
             NUM_COLUMNS = config.NUM_COLUMNS
             ALLOW_DUPLICATE_LABELS = config.ALLOW_DUPLICATE_LABELS
 
@@ -1575,8 +1673,8 @@ class MainApp:
             for folder in os.listdir(output_dir):
                 folder_path = os.path.join(output_dir, folder)
                 if os.path.isdir(folder_path):
-                    study_id = os.path.basename(folder_path.rstrip(os.sep))
-                    csv_path = os.path.join(folder_path, f"{study_id}_classification-results.csv")
+                    study_id = extract_study_id_from_path(folder_path)
+                    csv_path = os.path.join(folder_path, get_study_csv_name(study_id))
                     if os.path.exists(csv_path):
                         try:
                             df = pd.read_csv(csv_path)
@@ -1662,7 +1760,7 @@ class MainApp:
                     def show_verification():
                         show_verification_gui(
                             batch_df, target_series, batch_start, total_series,
-                            self.stop_requested, verification_done, incorrect_studies, stop_all
+                            self.stop_requested, verification_done, incorrect_studies, stop_all, output_dir
                         )
 
                     self.master.after(0, show_verification)
@@ -1741,8 +1839,96 @@ from . import processing
 from .processing import load_center_slice_fast
 
 
+def _extract_dicom_path(path_entry):
+    """
+    Extract DICOM path from hierarchy entry, supporting both old and new formats.
+
+    Args:
+        path_entry: Either a string (old format) or dict with 'dicom_path' key (new format)
+
+    Returns:
+        str: DICOM file path
+    """
+    if isinstance(path_entry, dict):
+        return path_entry.get('dicom_path', '')
+    return path_entry
+
+
+def _extract_thumbnail_path(path_entry):
+    """
+    Extract thumbnail path from hierarchy entry if available.
+
+    Args:
+        path_entry: Either a string (old format) or dict with 'thumbnail_path' key (new format)
+
+    Returns:
+        str or None: Thumbnail file path if available, None otherwise
+    """
+    if isinstance(path_entry, dict):
+        return path_entry.get('thumbnail_path')
+    return None
+
+
+def _derive_thumbnail_path_from_dicom(dicom_path, output_dir):
+    """
+    Derive the thumbnail path from a DICOM file path.
+
+    This function attempts to find the pre-generated thumbnail by parsing the DICOM path
+    and looking for the corresponding image file (JPEG or PNG) in the series_thumbnails directory.
+    Checks JPEG first (current default), then falls back to PNG (legacy format).
+
+    Args:
+        dicom_path: Path to DICOM file
+        output_dir: Output directory containing series_thumbnails folder
+
+    Returns:
+        str or None: Path to thumbnail image if it exists, None otherwise
+    """
+    if not dicom_path or not output_dir:
+        return None
+
+    try:
+        import pydicom
+
+        # Read DICOM header to get series identifiers
+        ds = pydicom.dcmread(dicom_path, stop_before_pixels=True, force=True)
+        mrn = getattr(ds, "PatientID", None)
+        study_uid = getattr(ds, "StudyInstanceUID", None)
+        series_uid = getattr(ds, "SeriesInstanceUID", None)
+
+        if not all([mrn, study_uid, series_uid]):
+            return None
+
+        # Construct thumbnail filename (without split index - most common case)
+        thumbnail_dir = os.path.join(output_dir, "series_thumbnails")
+        if not os.path.isdir(thumbnail_dir):
+            return None
+
+        # Try both formats (JPEG first, then PNG for backward compatibility)
+        for extension in ['.jpg', '.png']:
+            # Try without split index first
+            thumbnail_filename = f"{mrn}_{study_uid}_{series_uid}{extension}"
+            thumbnail_path = os.path.join(thumbnail_dir, thumbnail_filename)
+
+            if os.path.exists(thumbnail_path):
+                return thumbnail_path
+
+            # Try with split indices (00-99)
+            for split_idx in range(100):
+                thumbnail_filename = f"{mrn}_{study_uid}_{series_uid}_{split_idx:02d}{extension}"
+                thumbnail_path = os.path.join(thumbnail_dir, thumbnail_filename)
+                if os.path.exists(thumbnail_path):
+                    return thumbnail_path
+
+        return None
+
+    except Exception as e:
+        # Silent failure - will fall back to runtime extraction
+        return None
+
+
 def show_verification_gui(batch_df, target_series, batch_start, total_series,
-                         stop_event, done_event, incorrect_studies, stop_all):
+                         stop_event, done_event, incorrect_studies, stop_all, output_dir):
     """
     Display a verification GUI window for a batch of series.
     Shows middle slice thumbnails with Correct/Incorrect toggle buttons.
@@ -1756,6 +1942,7 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         done_event: Event to signal this window is complete
         incorrect_studies: List to append study folders marked as incorrect
         stop_all: List with single boolean element to signal Stop All
+        output_dir: Output directory containing series_thumbnails folder
     """
     root = tk.Toplevel()
     enable_tkinter_autoscaling(root)
@@ -1844,11 +2031,24 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
     # Load all images in parallel using ThreadPoolExecutor
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    def load_single_thumbnail(series_path, panel):
-        """Load a single thumbnail - optimized version."""
+    def load_single_thumbnail(series_path, panel, output_dir):
+        """Load a single thumbnail - optimized version with pre-generated thumbnail support (JPEG/PNG)."""
         try:
-            # Use the fast thumbnail loader
-            pil_img = load_center_slice_fast(series_path)
+            pil_img = None
+
+            # Try to load pre-generated thumbnail first
+            thumbnail_path = _derive_thumbnail_path_from_dicom(series_path, output_dir)
+            if thumbnail_path and os.path.exists(thumbnail_path):
+                try:
+                    from PIL import Image
+                    pil_img = Image.open(thumbnail_path)
+                except Exception as e:
+                    print(f"Failed to load pre-generated thumbnail {thumbnail_path}: {e}")
+
+            # Fall back to runtime extraction if thumbnail not available
+            if pil_img is None:
+                # Use the fast thumbnail loader
+                pil_img = load_center_slice_fast(series_path)
 
             if pil_img is None:
                 return None
@@ -1883,7 +2083,7 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         with ThreadPoolExecutor(max_workers=NUM_PARALLEL_WORKERS) as executor:
             # Submit all loading tasks
             future_to_path = {
-                executor.submit(load_single_thumbnail, row_data['Path'], panel_widgets[row_data['Path']]): row_data['Path']
+                executor.submit(load_single_thumbnail, row_data['Path'], panel_widgets[row_data['Path']], output_dir): row_data['Path']
                 for idx, row_data in batch_df.iterrows()
             }
 
@@ -2032,7 +2232,7 @@ def load_image_worker(dicom_paths, panel_label_ref, root):
 
 def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, study_done_event, mode="Manual",
                        model_type=None, rf_model=None, rf_target_encoder=None, rf_feature_encoder=None, cnn_model=None,
-                       cnn_target_encoder=None, rf_field_types=None, convert=True):
+                       cnn_target_encoder=None, rf_field_types=None, convert=True, accn=""):
     """
     Per-study classification GUI. Creates a grid of series thumbnails and dropdowns.
     Signals completion via study_done_event.
@@ -2042,7 +2242,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
 
     root = tk.Toplevel()
     enable_tkinter_autoscaling(root)
-    root.title(f"Classify Study ({mode}): MRN {mrn} | Study {study_uid}")
+    root.title(f"Classify Study ({mode}): MRN {mrn} | Accn {accn}")
 
     # Classification window appears fixed offset from main window
     root.update_idletasks()
@@ -2129,7 +2329,10 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         panel.grid(row=0, column=0, pady=(0, scale_value(5)))
         tk.Label(series_frame, text=series_desc, wraplength=scale_value(250), justify="center").grid(row=1, column=0, pady=scale_value(5))
 
-        first_path = dicom_paths[0]
+        # Extract DICOM and thumbnail paths (support both old and new formats)
+        first_entry = dicom_paths[0]
+        first_path = _extract_dicom_path(first_entry)
+        thumbnail_path = _extract_thumbnail_path(first_entry)
         initial_value = "Other"
         if mode == "Semi-Auto" and first_path in optimized_assignments:
             initial_value = optimized_assignments[first_path]
@@ -2325,7 +2528,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
             pass
 
         dropdown_vars[first_path] = variable
-        panel_widgets[first_path] = (panel, dicom_paths)  # Store for parallel loading
+        panel_widgets[first_path] = (panel, dicom_paths, thumbnail_path)  # Store for parallel loading
 
         # Enforce uniqueness for initial assignments based on ALLOW_DUPLICATE_LABELS config
         # If enabled and this dropdown's initial value duplicates an existing assignment, reset it to 'Other'
@@ -2350,15 +2553,32 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     # Load all images in parallel using ThreadPoolExecutor (same as verification mode)
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    def load_single_thumbnail(first_path, panel, dicom_paths):
-        """Load a single thumbnail - optimized version."""
+    def load_single_thumbnail(first_path, panel, dicom_paths, thumbnail_path):
+        """Load a single thumbnail - optimized version with pre-generated thumbnail support (JPEG/PNG)."""
         try:
-            # Use the fast thumbnail loader
-            pil_img = load_center_slice_fast(first_path)
+            pil_img = None
 
+            # Try to load pre-generated thumbnail first
+            if thumbnail_path and os.path.exists(thumbnail_path):
+                try:
+                    from PIL import Image
+                    pil_img = Image.open(thumbnail_path)
+                except Exception as e:
+                    print(f"Failed to load pre-generated thumbnail {thumbnail_path}: {e}")
+
+            # Fall back to runtime extraction if thumbnail not available
             if pil_img is None:
-                # Fallback to original method
-                pil_img = processing.load_center_slice(dicom_paths)
+                # Extract DICOM paths (support both old and new formats)
+                dicom_path_list = []
+                for entry in dicom_paths:
+                    dicom_path_list.append(_extract_dicom_path(entry))
+
+                # Use the fast thumbnail loader
+                pil_img = load_center_slice_fast(first_path)
+
+                if pil_img is None:
+                    # Fallback to original method
+                    pil_img = processing.load_center_slice(dicom_path_list)
 
             if pil_img is None:
                 return None
@@ -2397,7 +2617,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         with ThreadPoolExecutor(max_workers=NUM_PARALLEL_WORKERS) as executor:
             # Submit all loading tasks
             future_to_path = {
-                executor.submit(load_single_thumbnail, path, panel_data[0], panel_data[1]): path
+                executor.submit(load_single_thumbnail, path, panel_data[0], panel_data[1], panel_data[2]): path
                 for path, panel_data in panel_widgets.items()
             }
 
@@ -2424,7 +2644,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     button_frame.grid_columnconfigure(4, weight=1)
 
     def on_done():
-        worker_args = (mrn, study_uid, output_root, dropdown_vars, study_dict)
+        worker_args = (mrn, study_uid, output_root, dropdown_vars, study_dict, accn)
 
         conversion_thread = threading.Thread(
             target=processing.background_conversion_worker,

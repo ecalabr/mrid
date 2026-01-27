@@ -8,7 +8,7 @@ import pandas as pd
 import pydicom
 from .config import DICOM_HEADER_FIELDS
 from .config import DICOM_HEADER_FIELDS
-from .utils import safe_get_dicom_attribute
+from .utils import safe_get_dicom_attribute, extract_study_id_from_path, get_study_csv_name
 
 
 def get_expected_field_names():
@@ -59,8 +59,8 @@ def scan_for_missing_fields(output_dir):
     for study_folder in os.listdir(output_dir):
         study_path = os.path.join(output_dir, study_folder)
         if os.path.isdir(study_path):
-            study_id = os.path.basename(study_path.rstrip(os.sep))
-            csv_path = os.path.join(study_path, f"{study_id}_classification-results.csv")
+            study_id = extract_study_id_from_path(study_path)
+            csv_path = os.path.join(study_path, get_study_csv_name(study_id))
 
             if os.path.exists(csv_path):
                 missing = check_missing_fields(csv_path)

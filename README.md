@@ -337,15 +337,46 @@ python run.py
 
 Configuration is managed in `mrid_app/config.py`.
 
+### Default Directories
+Specify default input/output directories for the classification GUI. Note that these can be changed in the GUI at runtime.
+```python
+DATA_DIR = "/path/to/my/dicoms/"
+OUT_DIR = "/path/to/my/outputs/"
+```
+
+### Output Naming Convention
+Outputs are named using the following template:
+```python
+STUDY_NAME_TEMPLATE = "{mrn}-{study_uid}"
+```
+Customize the output naming convention using any combination of MRN, Accession Number, and Study Instance UID as follows:
+- {mrn} = Medical Record Number
+- {study_uid} = Study Instance UID
+- {accn} = Accession Number
+
+Examples:
+```python
+STUDY_NAME_TEMPLATE = "MyProject-{mrn}-{study_uid}-{accn}"
+STUDY_NAME_TEMPLATE = "{mrn}_{accn}"
+STUDY_NAME_TEMPLATE = "{study_uid}"
+```
+Notes:
+- Ensure the template results in unique names for each study to avoid overwriting.
+- Use of MRN as the only identifier may lead to conflicts if multiple studies exist for the same patient.
+- Invalid characters will be replaced with hyphens.
+
 ### Target Series
 
 Define which series types to classify:
 
 ```python
-TARGET_SERIES = ["T1", "T2", "FLAIR", "T1c", "Other"]
+TARGET_SERIES = ["T1", "T2", "FLAIR", "T1c", "Other"] # always include "Other"
 ```
 
-Add or remove series as needed. "Other" should always be included.
+- You can use whatever series names you want as long as there are no special characters.
+- These are just labels and don't need to match the series description.
+- Add or remove series as needed.
+- "Other" should always be included (it's the default for unclassified series).
 
 ### 3D Preference
 

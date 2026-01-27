@@ -7,12 +7,13 @@ from PIL import Image
 from .header import get_series_probabilities
 from .cnn import prepare_cnn_input_data
 from .config import OVERRIDE_THRESHOLD, PREFER_3D, DICOM_HEADER_FIELDS
-from .utils import safe_get_dicom_attribute
+from .utils import (safe_get_dicom_attribute, get_nifti_prefix, extract_study_id_from_path,
+                     get_study_dir_name, get_study_csv_name)
 
 
 def convert_series_to_nifti(series_dir, output_path, label):
-    study_id = os.path.basename(output_path)
-    dcm2niix_prefix = f"{study_id}_{label.lower()}"
+    study_id = extract_study_id_from_path(output_path)
+    dcm2niix_prefix = get_nifti_prefix(study_id, label)
     target_nii_name = f"{dcm2niix_prefix}.nii.gz"
     target_json_name = f"{dcm2niix_prefix}.json"
 
@@ -83,7 +84,7 @@ def convert_series_to_nifti(series_dir, output_path, label):
 def background_conversion_worker(*args, convert=True, **kwargs):
     """Backward-compatible wrapper. Supports both old signature
     background_conversion_worker(mrn, study_uid, output_root, dropdown_vars, series_dict)
-    and new signature with convert flag as positional or keyword.
+    and new signature with accn parameter.
     """
     # Unpack positional args
     mrn = None
@@ -91,11 +92,18 @@ def background_conversion_worker(*args, convert=True, **kwargs):
     output_root = None
     dropdown_vars = None
     series_dict = None
+    accn = ""
 
     if len(args) >= 5:
         mrn, study_uid, output_root, dropdown_vars, series_dict = args[:5]
         if len(args) >= 6:
-            convert = args[5]
+            # Check if 6th arg is convert flag (bool) or accn (str)
+            if isinstance(args[5], bool):
+                convert = args[5]
+            else:
+                accn = args[5]
+        if len(args) >= 7:
+            convert = args[6]
     else:
         # Attempt to get values from kwargs (unlikely in current codepaths)
         mrn = kwargs.get('mrn')
@@ -103,14 +111,17 @@ def background_conversion_worker(*args, convert=True, **kwargs):
         output_root = kwargs.get('output_root')
         dropdown_vars = kwargs.get('dropdown_vars')
         series_dict = kwargs.get('series_dict')
+        accn = kwargs.get('accn', '')
 
     # Validate required parameters
     if any(v is None for v in (mrn, study_uid, output_root, dropdown_vars, series_dict)):
         raise TypeError("background_conversion_worker requires (mrn, study_uid, output_root, dropdown_vars, series_dict) as the first five arguments")
 
-    study_out_dir = os.path.join(output_root, f"{mrn}-{study_uid}")
+
+    study_out_dir = os.path.join(output_root, get_study_dir_name(mrn, study_uid, accn))
     os.makedirs(study_out_dir, exist_ok=True)
-    csv_path = os.path.join(study_out_dir, f"{mrn}-{study_uid}_classification-results.csv")
+    study_id = get_study_dir_name(mrn, study_uid, accn)
+    csv_path = os.path.join(study_out_dir, get_study_csv_name(study_id))
 
     try:
         # Build fieldnames dynamically from configuration
@@ -121,7 +132,13 @@ def background_conversion_worker(*args, convert=True, **kwargs):
             writer = csv.writer(f)
             writer.writerow(fieldnames)
             for series_desc, dicom_paths in series_dict.items():
-                first_path = dicom_paths[0]
+                # Extract DICOM path from new format (support both old and new)
+                first_entry = dicom_paths[0]
+                if isinstance(first_entry, dict):
+                    first_path = first_entry.get('dicom_path', '')
+                else:
+                    first_path = first_entry
+
                 label_val = dropdown_vars.get(first_path)
                 if hasattr(label_val, 'get'):
                     label = label_val.get()
@@ -143,13 +160,19 @@ def background_conversion_worker(*args, convert=True, **kwargs):
                 row = [attributes_dict.get(field, "") for field in fieldnames]
                 writer.writerow(row)
 
-        print(f"Saved classification CSV for {mrn}-{study_uid} → {csv_path}")
+        print(f"Saved classification CSV for {get_study_dir_name(mrn, study_uid, accn)} → {csv_path}")
     except Exception as e:
-        print(f"❌ Failed to save CSV for {mrn}-{study_uid}: {e}")
+        print(f"❌ Failed to save CSV for {get_study_dir_name(mrn, study_uid, accn)}: {e}")
 
     if convert:
         for series_desc, dicom_paths in series_dict.items():
-            first_path = dicom_paths[0]
+            # Extract DICOM path from new format (support both old and new)
+            first_entry = dicom_paths[0]
+            if isinstance(first_entry, dict):
+                first_path = first_entry.get('dicom_path', '')
+            else:
+                first_path = first_entry
+
             label_val = dropdown_vars.get(first_path)
             if hasattr(label_val, 'get'):
                 label = label_val.get()
@@ -412,7 +435,13 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
     target_encoder = rf_target_encoder if rf_target_encoder is not None else cnn_target_encoder
     if target_encoder is None:
         # No encoder available; fallback to 'Other' for first path of each series
-        simple = {list(paths)[0]: "Other" for paths in study_dict.values()}
+        # Extract DICOM paths from new format (support both old and new)
+        def _get_first_path(paths):
+            first_entry = paths[0] if paths else None
+            if isinstance(first_entry, dict):
+                return first_entry.get('dicom_path', '')
+            return first_entry or ''
+        simple = {_get_first_path(paths): "Other" for paths in study_dict.values()}
         return simple, {}
 
     all_labels = target_encoder.classes_
@@ -421,7 +450,12 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
     # Step 1: Get predictions for all series
     temp_predictions = {}
     for series_desc, dicom_paths in study_dict.items():
-        first_path = dicom_paths[0]
+        # Extract DICOM path from new format (support both old and new)
+        first_entry = dicom_paths[0]
+        if isinstance(first_entry, dict):
+            first_path = first_entry.get('dicom_path', '')
+        else:
+            first_path = first_entry
         rf_proba = None
         cnn_proba = None
 
@@ -561,7 +595,7 @@ def check_is_3d_acquisition(dicom_path):
 
 def full_auto_classify_study(study_dict, mrn, study_uid, output_root,
                              model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model,
-                             cnn_target_encoder, rf_field_types=None, convert=True):
+                             cnn_target_encoder, rf_field_types=None, convert=True, accn=""):
     final_assignments, predictions_by_path = optimize_study_selections(
         study_dict,
         model_type,
@@ -578,5 +612,6 @@ def full_auto_classify_study(study_dict, mrn, study_uid, output_root,
         output_root,
         final_assignments,
         study_dict,
-        convert=convert
+        accn,
+        convert
     )

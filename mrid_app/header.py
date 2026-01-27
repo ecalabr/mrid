@@ -8,7 +8,7 @@ import pandas as pd
 import pydicom
 from .prep import _preprocess_df, encode_text_features
 from .config import N_ESTIMATORS, DICOM_HEADER_FIELDS
-from .utils import safe_get_dicom_attribute
+from .utils import safe_get_dicom_attribute, extract_study_id_from_path, get_study_csv_name
 from .csv_field_updater import (
     scan_for_missing_fields,
     update_all_csvs_with_missing_fields
@@ -80,8 +80,8 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
         for study_folder in os.listdir(output_dir):
             study_path = os.path.join(output_dir, study_folder)
             if os.path.isdir(study_path):
-                study_id = os.path.basename(study_path.rstrip(os.sep))
-                csv_path = os.path.join(study_path, f"{study_id}_classification-results.csv")
+                study_id = extract_study_id_from_path(study_path)
+                csv_path = os.path.join(study_path, get_study_csv_name(study_id))
                 if os.path.exists(csv_path):
                     try:
                         df = pd.read_csv(csv_path)

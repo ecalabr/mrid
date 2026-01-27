@@ -4,6 +4,7 @@ import numpy as np
 import pickle
 import hashlib
 import multiprocessing as mp
+from .utils import extract_study_id_from_path, get_study_csv_name
 
 try:
     import torch
@@ -434,8 +435,8 @@ def TrainImageClassifierLogic(output_dir, gui):
         for study_folder in os.listdir(output_dir):
             study_path = os.path.join(output_dir, study_folder)
             if os.path.isdir(study_path):
-                study_id = os.path.basename(study_path.rstrip(os.sep))
-                csv_path = os.path.join(study_path, f"{study_id}_classification-results.csv")
+                study_id = extract_study_id_from_path(study_path)
+                csv_path = os.path.join(study_path, get_study_csv_name(study_id))
                 if os.path.exists(csv_path):
                     try:
                         df = pd.read_csv(csv_path)
