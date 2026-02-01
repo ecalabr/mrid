@@ -67,7 +67,7 @@ def test_build_hierarchy_creates_temp_dir():
         temp_dir = os.path.join(tmpdir, 'dicom_symlinks')
         assert os.path.isdir(temp_dir)
 
-        # Verify hierarchy was created with new structure
+        # Verify hierarchy was created with expected structure
         assert 'patient1' in hierarchy
         assert 'study1' in hierarchy['patient1']
         assert 'accn' in hierarchy['patient1']['study1']
@@ -130,7 +130,7 @@ def test_build_hierarchy_unorganized_creates_symlinks():
         assert os.path.isdir(temp_dir)
 
         # Check that organized directories were created
-        # New naming format uses get_symlink_dir_name: {mrn}-{accn}-{series_uid}
+        # Naming format uses get_symlink_dir_name: {mrn}-{accn}-{series_uid}
         organized_dir1 = os.path.join(temp_dir, 'patient1-ACC456-series1')
         organized_dir2 = os.path.join(temp_dir, 'patient1-ACC456-series2')
 

@@ -107,3 +107,14 @@ ARRAY_SIZE_THRESHOLD = 1  # Fields with values containing > 1 number are arrays
 # NOTE: The sentence-transformers model is large and should be loaded lazily.
 SEMANTIC_MODEL_NAME = 'all-MiniLM-L6-v2'
 SEMANTIC_MODEL = None  # always None initially
+
+# ============================================================================
+# Logging configuration
+# ============================================================================
+# Log level: DEBUG, INFO, WARNING, ERROR, or CRITICAL
+# DEBUG: Most verbose, includes subprocess commands and detailed diagnostics
+# INFO: General operational messages (default)
+# WARNING: Potential issues that don't prevent operation
+# ERROR: Failures that may affect functionality
+# CRITICAL: Severe errors that may cause program termination
+LOG_LEVEL = "INFO"

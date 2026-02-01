@@ -7,8 +7,10 @@ import os
 import pandas as pd
 import pydicom
 from .config import DICOM_HEADER_FIELDS
-from .config import DICOM_HEADER_FIELDS
 from .utils import safe_get_dicom_attribute, extract_study_id_from_path, get_study_csv_name
+from .logging_config import get_logger
+
+logger = get_logger()
 
 
 def get_expected_field_names():
@@ -37,7 +39,7 @@ def check_missing_fields(csv_path):
 
         return sorted(list(missing_fields))
     except Exception as e:
-        print(f"Error checking fields in {csv_path}: {e}")
+        logger.warning(f"Error checking fields in {csv_path}: {e}")
         return []
 
 
@@ -95,7 +97,7 @@ def extract_dicom_field_value(dicom_path, field_name):
         ds = pydicom.dcmread(dicom_path, force=True)
         return safe_get_dicom_attribute(ds, dicom_attr)
     except Exception as e:
-        print(f"Error reading {dicom_path}: {e}")
+        logger.warning(f"Error reading {dicom_path}: {e}")
         return "None"
 
 
@@ -117,10 +119,10 @@ def update_csv_with_missing_fields(csv_path, missing_fields, progress_callback=N
         total_rows = len(df)
 
         if 'Path' not in df.columns:
-            print(f"Error: 'Path' column not found in {csv_path}")
+            logger.error(f"'Path' column not found in {csv_path}")
             return False
 
-        # Initialize new columns with "None"
+        # Initialize missing columns with "None"
         for field in missing_fields:
             df[field] = "None"
 
@@ -140,13 +142,11 @@ def update_csv_with_missing_fields(csv_path, missing_fields, progress_callback=N
 
         # Save updated CSV
         df.to_csv(csv_path, index=False)
-        print(f"Successfully updated {csv_path} with {len(missing_fields)} new field(s)")
+        logger.info(f"Successfully updated {csv_path} with {len(missing_fields)} field(s)")
         return True
 
     except Exception as e:
-        print(f"Error updating {csv_path}: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Error updating {csv_path}: {e}")
         return False
 
 

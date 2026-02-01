@@ -1,8 +1,7 @@
 """mrid_app package
 
-This package contains modules split out from the original single-file
-`mrid.py` script for better organization: config, cnn, header model,
-preprocessing, GUI, and utilities.
+This package contains the MRID (MRI DICOM) classification application modules:
+config, cnn, header model, preprocessing, GUI, and utilities.
 
 Import the application entrypoint with:
 

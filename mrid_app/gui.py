@@ -9,6 +9,7 @@ from .header import TrainHeaderClassifierLogic
 from .cnn import SimpleCNN
 from .utils import (extract_study_id_from_path, get_study_csv_name, get_study_dir_name,
                      get_nifti_name, get_nifti_prefix, sanitize_target_series)
+from .logging_config import get_logger, setup_logging, update_log_file_location
 import joblib
 from PIL import Image, ImageTk
 import shutil
@@ -16,6 +17,8 @@ import colorsys
 import platform
 import subprocess
 import importlib
+
+logger = get_logger()
 
 
 # Sanitize TARGET_SERIES to ensure safe filenames
@@ -469,7 +472,7 @@ class MainApp:
                 try:
                     messagebox.showerror("Missing dcm2niix", "dcm2niix was not found in your PATH. Please install it or ensure it's available in PATH.", parent=self.master)
                 except Exception:
-                    print("dcm2niix was not found in PATH. Please install or add to PATH.")
+                    logger.error("dcm2niix was not found in PATH. Please install or add to PATH.")
                 # revert toggle
                 self.convert_to_nifti.set(False)
                 try:
@@ -538,22 +541,27 @@ class MainApp:
         field_types_path = os.path.join(output_dir, "field_types.joblib")
 
         if not os.path.exists(model_path) or not os.path.exists(target_encoder_path) or not os.path.exists(feature_encoder_path):
+            logger.info("Header Model files not found - skipping RF model load")
             messagebox.showwarning("Load Warning", "Header Model files not found. Skipping RF load.", parent=self.master)
             return
         try:
+            logger.info(f"Loading DICOM Header Model from {output_dir}")
             self.rf_model = joblib.load(model_path)
             self.rf_target_encoder = joblib.load(target_encoder_path)
             self.rf_feature_encoder = joblib.load(feature_encoder_path)
 
-            # Load field types if available (for models trained with new system)
+            # Load field types if available for consistent preprocessing
             if os.path.exists(field_types_path):
                 self.rf_field_types = joblib.load(field_types_path)
-                print("Loaded field types for consistent preprocessing")
+                logger.info("Loaded field types for consistent preprocessing")
             else:
                 self.rf_field_types = None
-                print("Field types not found - using legacy preprocessing")
+                logger.info("Field types not found - preprocessing will use automatic type detection")
+
+            logger.info("DICOM Header Model loaded successfully")
 
         except Exception as e:
+            logger.error(f"Failed to load RF model/encoders: {e}")
             messagebox.showerror("Load Error", f"Failed to load RF model/encoders: {e}", parent=self.master)
             self.rf_model = None
             self.rf_target_encoder = None
@@ -564,22 +572,27 @@ class MainApp:
         try:
             import torch
             if torch is None:
+                logger.info("PyTorch not installed - skipping CNN model load")
                 messagebox.showwarning("Load Warning", "PyTorch is not installed. Skipping CNN load.", parent=self.master)
                 return
         except Exception:
+            logger.info("PyTorch not installed - skipping CNN model load")
             messagebox.showwarning("Load Warning", "PyTorch is not installed. Skipping CNN load.", parent=self.master)
             return
         output_dir = self.output_dir.get()
         model_path = os.path.join(output_dir, "cnn_classifier_model.pth")
         target_encoder_path = os.path.join(output_dir, "label_encoder.joblib")
         if not os.path.exists(model_path) or not os.path.exists(target_encoder_path):
+            logger.info("Image Model files not found - skipping CNN model load")
             messagebox.showwarning("Load Warning", "Image Model files not found. Skipping CNN load.", parent=self.master)
             return
         try:
+            logger.info(f"Loading Image-Based Model (CNN) from {output_dir}")
             from .utils import warn_if_no_gpu_for_cnn
             # Show a warning/confirmation dialog if no GPU is available. If the user chooses not
             # to proceed (or PyTorch missing), skip loading.
             if not warn_if_no_gpu_for_cnn(gui_parent=self.master):
+                logger.info("User chose not to load CNN model without GPU")
                 return
 
             self.cnn_target_encoder = joblib.load(target_encoder_path)
@@ -593,6 +606,7 @@ class MainApp:
                 cuda_avail = False
 
             map_loc = torch.device('cuda') if cuda_avail else torch.device('cpu')
+            logger.info(f"Loading CNN model on device: {map_loc}")
             state_dict = torch.load(model_path, map_location=map_loc)
             self.cnn_model.load_state_dict(state_dict)
             # Move model to the appropriate device
@@ -601,7 +615,9 @@ class MainApp:
             except Exception:
                 pass
             self.cnn_model.eval()
+            logger.info("Image-Based Model (CNN) loaded successfully")
         except Exception as e:
+            logger.error(f"Failed to load CNN model: {e}")
             messagebox.showerror("Load Error", f"Failed to load CNN model: {e}", parent=self.master)
             self.cnn_model = None
             self.cnn_target_encoder = None
@@ -679,11 +695,15 @@ class MainApp:
             import joblib
             from sklearn.preprocessing import LabelEncoder, OrdinalEncoder
         except Exception:
+            logger.error("RF training dependencies not found (pandas, scikit-learn, joblib)")
             messagebox.showerror("Error", "RF training requires pandas, scikit-learn, and joblib.", parent=self.master)
             return
         if not os.path.isdir(output_dir):
+            logger.error(f"Invalid output directory for training: {output_dir}")
             messagebox.showerror("Error", "Please specify a valid output directory containing classified data.", parent=self.master)
             return
+
+        logger.info("Starting DICOM Header Model training")
 
         # Create callback for missing fields prompt
         def prompt_update_missing_fields(num_csvs, missing_fields):
@@ -720,8 +740,10 @@ class MainApp:
         try:
             import torch
         except Exception:
+            logger.error("CNN training dependency not found (PyTorch)")
             messagebox.showerror("Error", "CNN training requires PyTorch (torch).", parent=self.master)
             return
+        logger.info("Starting Image-Based Model (CNN) training")
         self.start_button.config(state="disabled")
         self.train_button.config(state="disabled")
         training_gui = TrainClassifierGUI(self.master)
@@ -791,13 +813,19 @@ class MainApp:
             rf_loaded = self.rf_model is not None and self.rf_target_encoder is not None
             cnn_loaded = self.cnn_model is not None and self.cnn_target_encoder is not None
             if (rf_needed and not rf_loaded) or (cnn_needed and not cnn_loaded):
+                logger.error("Cannot start classification - required model(s) not loaded")
                 messagebox.showerror("Model Error", "Cannot start classification. Required model(s) are not loaded.", parent=self.master)
                 return
         input_dir = self.input_dir.get()
         output_dir = self.output_dir.get()
         if not os.path.isdir(input_dir):
+            logger.error(f"Invalid input directory: {input_dir}")
             messagebox.showerror("Error", "Please specify a valid input directory.", parent=self.master)
             return
+
+        logger.info(f"Starting classification - Mode: {current_mode}, Model: {model_type}")
+        logger.info(f"Input directory: {input_dir}")
+        logger.info(f"Output directory: {output_dir}")
 
         # New: if hierarchy.yaml exists in output_dir, ask user whether to load it or rescan
         existing_hierarchy = None
@@ -815,9 +843,13 @@ class MainApp:
                         import yaml
                         with open(hierarchy_path, 'r') as hf:
                             existing_hierarchy = yaml.safe_load(hf)
+                        logger.info("Loaded existing hierarchy.yaml - skipping DICOM scan")
                     except Exception as e:
+                        logger.warning(f"Failed to load existing hierarchy.yaml: {e} - will rescan files")
                         messagebox.showwarning("Load Warning", f"Failed to load existing hierarchy.yaml: {e}\nWill rescan files instead.", parent=self.master)
                         existing_hierarchy = None
+                else:
+                    logger.info("User chose to rescan files instead of using existing hierarchy")
         except Exception:
             existing_hierarchy = None
 
@@ -862,6 +894,12 @@ class MainApp:
         self.start_button.config(state="normal")
         self.stop_button.config(text="Stop", state="disabled")
         self.train_button.config(state="normal")
+
+        if aborted:
+            logger.info("Classification workflow stopped by user")
+        else:
+            logger.info("Classification workflow completed successfully")
+
         if hasattr(self, 'progress_frame') and self.progress_frame.winfo_exists():
             self.progress_frame.destroy()
         self._check_model_status()
@@ -881,6 +919,11 @@ class MainApp:
             from .utils import write_yaml_hierarchy
             from . import processing
 
+            # Set up file logging now that we have the output directory
+            # This will flush any buffered log records to the file
+            os.makedirs(output_dir, exist_ok=True)
+            update_log_file_location(output_dir)
+
             # If an existing hierarchy was supplied, use it and skip scanning
             if existing_hierarchy:
                 hierarchy = existing_hierarchy
@@ -893,7 +936,7 @@ class MainApp:
                         if not f.startswith(".") and os.path.splitext(f)[1] in ["", ".dcm", ".dicom"]:
                             all_files.append(os.path.join(dcm_root, f))
 
-                print(f"Found {len(all_files)} files. Scanning for DICOM...")
+                logger.info(f"Found {len(all_files)} files. Scanning for DICOM...")
 
                 # 2. Setup progress window
                 total_files = len(all_files)
@@ -937,7 +980,7 @@ class MainApp:
 
                 # 4. Process results
                 dicom_records = [r for r in results if r is not None]
-                print(f"Identified {len(dicom_records)} valid DICOM files.")
+                logger.info(f"Identified {len(dicom_records)} valid DICOM files.")
 
                 # Count unique groups for hierarchy building
                 try:
@@ -984,7 +1027,7 @@ class MainApp:
                     try:
                         write_yaml_hierarchy(hierarchy, output_dir)
                     except Exception as e:
-                        print(f"Failed to write hierarchy.yaml: {e}")
+                        logger.warning(f"Failed to write hierarchy.yaml: {e}")
                 finally:
                     try:
                         if gui:
@@ -997,7 +1040,7 @@ class MainApp:
             all_studies = []
             for mrn, studies in hierarchy.items():
                 for study_uid, study_data in studies.items():
-                    # Extract accession number and series from the new hierarchy structure
+                    # Extract accession number and series from the hierarchy structure
                     accn = study_data.get("accn", "")
                     series_dict = study_data.get("series", {})
                     all_studies.append((mrn, study_uid, accn, series_dict))
@@ -1014,7 +1057,7 @@ class MainApp:
 
             for i, (mrn, study_uid, accn, series_dict) in enumerate(all_studies):
                 if self.stop_requested.is_set():
-                    print("Classification loop aborted by user.")
+                    logger.info("Classification loop aborted by user.")
                     self.classification_finished(aborted=True)
                     return
 
@@ -1068,7 +1111,7 @@ class MainApp:
             self.classification_finished(aborted=False)
 
         except Exception as e:
-            print(f"An error occurred in the classification process: {e}")
+            logger.exception(f"An error occurred in the classification process: {e}")
             self.classification_finished(aborted=True)
 
     def _convert_niftis_utility(self):
@@ -1079,6 +1122,7 @@ class MainApp:
 
         output_dir = self.output_dir.get()
         if not os.path.isdir(output_dir):
+            logger.error(f"Invalid output directory for NIfTI conversion: {output_dir}")
             messagebox.showerror("Error", "Please specify a valid output directory.", parent=self.master)
             return
 
@@ -1092,11 +1136,15 @@ class MainApp:
         )
 
         if not response:
+            logger.info("User cancelled NIfTI conversion")
             return
+
+        logger.info("Starting NIfTI conversion utility")
 
         # Check for dcm2niix
         dcm2niix_path = shutil.which("dcm2niix")
         if not dcm2niix_path:
+            logger.error("dcm2niix not found in PATH")
             messagebox.showerror(
                 "Missing dcm2niix",
                 "dcm2niix was not found in your PATH. Please install it to convert to NIfTI.",
@@ -1182,11 +1230,11 @@ class MainApp:
                             )
                             converted_count += 1
                         except Exception as e:
-                            print(f"Error converting {series_dir}: {e}")
+                            logger.error(f"Error converting {series_dir}: {e}")
                             error_count += 1
 
                 except Exception as e:
-                    print(f"Error processing {csv_path}: {e}")
+                    logger.error(f"Error processing {csv_path}: {e}")
                     error_count += 1
 
             # Update final progress
@@ -1199,6 +1247,8 @@ class MainApp:
             summary += f"Skipped (already exist): {skipped_count}\n"
             if error_count > 0:
                 summary += f"Errors: {error_count}"
+
+            logger.info(f"NIfTI conversion complete - Converted: {converted_count}, Skipped: {skipped_count}, Errors: {error_count}")
 
             progress_window.after(0, lambda: messagebox.showinfo("Conversion Complete", summary, parent=self.master))
             progress_window.after(0, progress_window.destroy)
@@ -1288,8 +1338,10 @@ class MainApp:
 
             response = messagebox.askyesno("Confirm Deletion", confirm_msg, parent=dialog, icon='warning')
             if not response:
+                logger.info("User cancelled data deletion")
                 return
 
+            logger.info(f"User confirmed data deletion - Classifications: {delete_classifications.get()}, Models: {delete_models.get()}, Hierarchy: {delete_hierarchy.get()}")
             dialog.destroy()
             self._perform_data_deletion(delete_classifications.get(), delete_models.get(), delete_hierarchy.get())
 
@@ -1395,6 +1447,8 @@ class MainApp:
                     messages.append("Successfully deleted hierarchy data")
 
                 result_msg = "\n".join(messages) if messages else "Deletion completed"
+
+                logger.info(f"Data deletion complete - {len(deleted_items)} items deleted, {len(errors)} errors")
 
                 if errors:
                     result_msg += f"\n\nWarning: {len(errors)} error(s) occurred during deletion."
@@ -1606,7 +1660,7 @@ class MainApp:
             NUM_COLUMNS = config.NUM_COLUMNS
             ALLOW_DUPLICATE_LABELS = config.ALLOW_DUPLICATE_LABELS
 
-            # Update the UI elements if they need to reflect new values
+            # Update the UI elements if they need to reflect updated values
             # (input_dir and output_dir StringVars are set from these at startup)
 
             # Show success message with warning
@@ -1635,8 +1689,12 @@ class MainApp:
         """Start the verification workflow to review already classified studies."""
         output_dir = self.output_dir.get()
         if not os.path.isdir(output_dir):
+            logger.error(f"Invalid output directory for verification: {output_dir}")
             messagebox.showerror("Error", "Please specify a valid output directory.", parent=self.master)
             return
+
+        logger.info("Starting verification workflow")
+        logger.info(f"Output directory: {output_dir}")
 
         self.is_running = True
         self.stop_requested.clear()
@@ -1666,6 +1724,10 @@ class MainApp:
         try:
             import pandas as pd
 
+            # Set up file logging now that we have the output directory
+            os.makedirs(output_dir, exist_ok=True)
+            update_log_file_location(output_dir)
+
             # 1. Aggregate all classification-results.csv files
             all_classifications = []
             study_folders = []
@@ -1683,7 +1745,7 @@ class MainApp:
                             all_classifications.append(df)
                             study_folders.append(folder_path)
                         except Exception as e:
-                            print(f"Error reading {csv_path}: {e}")
+                            logger.warning(f"Error reading {csv_path}: {e}")
 
             if not all_classifications:
                 self.master.after(0, lambda: messagebox.showinfo(
@@ -1815,9 +1877,9 @@ class MainApp:
                             if os.path.exists(study_folder):
                                 shutil.rmtree(study_folder)
                                 deleted_count += 1
-                                print(f"Deleted: {study_folder}")
+                                logger.debug(f"Deleted: {study_folder}")
                         except Exception as e:
-                            print(f"Error deleting {study_folder}: {e}")
+                            logger.error(f"Error deleting {study_folder}: {e}")
 
                     self.master.after(0, lambda: messagebox.showinfo(
                         "Deletion Complete",
@@ -1828,9 +1890,7 @@ class MainApp:
             self.classification_finished(aborted=False)
 
         except Exception as e:
-            print(f"Error in verification workflow: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception(f"Error in verification workflow: {e}")
             self.classification_finished(aborted=True)
 
 
@@ -1841,10 +1901,10 @@ from .processing import load_center_slice_fast
 
 def _extract_dicom_path(path_entry):
     """
-    Extract DICOM path from hierarchy entry, supporting both old and new formats.
+    Extract DICOM path from hierarchy entry.
 
     Args:
-        path_entry: Either a string (old format) or dict with 'dicom_path' key (new format)
+        path_entry: Either a string path or dict with 'dicom_path' key
 
     Returns:
         str: DICOM file path
@@ -1859,7 +1919,7 @@ def _extract_thumbnail_path(path_entry):
     Extract thumbnail path from hierarchy entry if available.
 
     Args:
-        path_entry: Either a string (old format) or dict with 'thumbnail_path' key (new format)
+        path_entry: Either a string path or dict with 'thumbnail_path' key
 
     Returns:
         str or None: Thumbnail file path if available, None otherwise
@@ -1874,8 +1934,8 @@ def _derive_thumbnail_path_from_dicom(dicom_path, output_dir):
     Derive the thumbnail path from a DICOM file path.
 
     This function attempts to find the pre-generated thumbnail by parsing the DICOM path
-    and looking for the corresponding image file (JPEG or PNG) in the series_thumbnails directory.
-    Checks JPEG first (current default), then falls back to PNG (legacy format).
+    and looking for the corresponding image file in the series_thumbnails directory.
+    Checks JPEG first, then PNG.
 
     Args:
         dicom_path: Path to DICOM file
@@ -1904,7 +1964,7 @@ def _derive_thumbnail_path_from_dicom(dicom_path, output_dir):
         if not os.path.isdir(thumbnail_dir):
             return None
 
-        # Try both formats (JPEG first, then PNG for backward compatibility)
+        # Try both thumbnail formats (JPEG first, then PNG)
         for extension in ['.jpg', '.png']:
             # Try without split index first
             thumbnail_filename = f"{mrn}_{study_uid}_{series_uid}{extension}"
@@ -2043,7 +2103,7 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
                     from PIL import Image
                     pil_img = Image.open(thumbnail_path)
                 except Exception as e:
-                    print(f"Failed to load pre-generated thumbnail {thumbnail_path}: {e}")
+                    logger.debug(f"Failed to load pre-generated thumbnail {thumbnail_path}: {e}")
 
             # Fall back to runtime extraction if thumbnail not available
             if pil_img is None:
@@ -2059,7 +2119,7 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
 
             return pil_img
         except Exception as e:
-            print(f"Error loading thumbnail for {series_path}: {e}")
+            logger.debug(f"Error loading thumbnail for {series_path}: {e}")
             return None
 
     def update_thumbnail(series_path, pil_img):
@@ -2075,7 +2135,7 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
                 panel.config(image=tk_img)
                 panel.image = tk_img
         except Exception as e:
-            print(f"Error updating thumbnail: {e}")
+            logger.debug(f"Error updating thumbnail: {e}")
 
     # Start parallel loading in background
     def load_all_thumbnails():
@@ -2096,7 +2156,7 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
                         # Schedule update on main thread
                         root.after(0, lambda p=series_path, img=pil_img: update_thumbnail(p, img))
                 except Exception as e:
-                    print(f"Error in parallel loading for {series_path}: {e}")
+                    logger.debug(f"Error in parallel loading for {series_path}: {e}")
 
     # Start loading thread
     threading.Thread(target=load_all_thumbnails, daemon=True).start()
@@ -2301,15 +2361,15 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
             cnn_model, cnn_target_encoder,
             rf_field_types  # Pass field types for consistent preprocessing
         )
-        # optimize_study_selections now returns (final_assignments, predictions_by_path)
+        # optimize_study_selections returns (final_assignments, predictions_by_path)
         try:
             optimized_assignments, predictions_by_path = optimized_result
         except Exception:
-            # backward compatibility: if an older version returned just dict
+            # Handle unexpected return format
             optimized_assignments = optimized_result if optimized_result else {}
             predictions_by_path = {}
         if not optimized_assignments:
-            print("Warning: Optimization failed, falling back to 'Other'.")
+            logger.warning("Optimization failed, falling back to 'Other'.")
 
     row_num = 0
     col_num = 0
@@ -2329,7 +2389,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         panel.grid(row=0, column=0, pady=(0, scale_value(5)))
         tk.Label(series_frame, text=series_desc, wraplength=scale_value(250), justify="center").grid(row=1, column=0, pady=scale_value(5))
 
-        # Extract DICOM and thumbnail paths (support both old and new formats)
+        # Extract DICOM and thumbnail paths from hierarchy entry
         first_entry = dicom_paths[0]
         first_path = _extract_dicom_path(first_entry)
         thumbnail_path = _extract_thumbnail_path(first_entry)
@@ -2375,7 +2435,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                     prob_parts.append(f"best={top_label}, combined={top_p:.2f}")
 
             prob_str = (" (" + ", ".join(prob_parts) + ")") if prob_parts else ""
-            print(f"  -> Series '{series_desc}' semi-auto pre-selected as: {initial_value}{prob_str}")
+            logger.info(f"  -> Series '{series_desc}' semi-auto pre-selected as: {initial_value}{prob_str}")
         elif mode == "Manual":
             initial_value = "Other"
 
@@ -2564,11 +2624,11 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                     from PIL import Image
                     pil_img = Image.open(thumbnail_path)
                 except Exception as e:
-                    print(f"Failed to load pre-generated thumbnail {thumbnail_path}: {e}")
+                    logger.debug(f"Failed to load pre-generated thumbnail {thumbnail_path}: {e}")
 
             # Fall back to runtime extraction if thumbnail not available
             if pil_img is None:
-                # Extract DICOM paths (support both old and new formats)
+                # Extract DICOM paths from hierarchy entries
                 dicom_path_list = []
                 for entry in dicom_paths:
                     dicom_path_list.append(_extract_dicom_path(entry))
@@ -2589,7 +2649,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
 
             return pil_img
         except Exception as e:
-            print(f"Error loading thumbnail for {first_path}: {e}")
+            logger.debug(f"Error loading thumbnail for {first_path}: {e}")
             return None
 
     def update_thumbnail(first_path, pil_img):
@@ -2609,7 +2669,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 panel.config(image=tk_img)
                 panel.image = tk_img
         except Exception as e:
-            print(f"Error updating thumbnail: {e}")
+            logger.debug(f"Error updating thumbnail: {e}")
 
     # Start parallel loading in background
     def load_all_thumbnails():
@@ -2630,7 +2690,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                         # Schedule update on main thread
                         root.after(0, lambda p=series_path, img=pil_img: update_thumbnail(p, img))
                 except Exception as e:
-                    print(f"Error in parallel loading for {series_path}: {e}")
+                    logger.debug(f"Error in parallel loading for {series_path}: {e}")
 
     # Start loading thread
     threading.Thread(target=load_all_thumbnails, daemon=True).start()

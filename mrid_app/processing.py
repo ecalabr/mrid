@@ -9,6 +9,9 @@ from .cnn import prepare_cnn_input_data
 from .config import OVERRIDE_THRESHOLD, PREFER_3D, DICOM_HEADER_FIELDS
 from .utils import (safe_get_dicom_attribute, get_nifti_prefix, extract_study_id_from_path,
                      get_study_dir_name, get_study_csv_name)
+from .logging_config import get_logger
+
+logger = get_logger()
 
 
 def convert_series_to_nifti(series_dir, output_path, label):
@@ -20,7 +23,7 @@ def convert_series_to_nifti(series_dir, output_path, label):
     try:
         files_before = set(os.listdir(output_path))
     except FileNotFoundError:
-        print(f"Output directory not found: {output_path}")
+        logger.error(f"Output directory not found: {output_path}")
         return
 
     cmd = [
@@ -32,11 +35,12 @@ def convert_series_to_nifti(series_dir, output_path, label):
         series_dir
     ]
 
+    logger.debug(f"Running dcm2niix command: {' '.join(cmd)}")
     result = subprocess.run(cmd, check=False, capture_output=True, text=True)
     if result.returncode != 0:
-        print(f"❌ dcm2niix failed with return code {result.returncode}")
-        print("Stdout:", result.stdout)
-        print("Stderr:", result.stderr)
+        logger.error(f"dcm2niix failed with return code {result.returncode}")
+        logger.debug(f"Stdout: {result.stdout}")
+        logger.debug(f"Stderr: {result.stderr}")
 
     files_after = set(os.listdir(output_path))
     new_files = list(files_after - files_before)
@@ -47,7 +51,7 @@ def convert_series_to_nifti(series_dir, output_path, label):
     ])
 
     if not nifti_files:
-        print(f"❌ No NIfTI files created by dcm2niix for prefix: {dcm2niix_prefix}")
+        logger.error(f"No NIfTI files created by dcm2niix for prefix: {dcm2niix_prefix}")
         return
 
     selected_nii = nifti_files[0]
@@ -61,7 +65,7 @@ def convert_series_to_nifti(series_dir, output_path, label):
         try:
             os.rename(os.path.join(output_path, selected_nii), os.path.join(output_path, target_nii_name))
         except OSError as e:
-            print(f"❌ Error renaming NIfTI file {selected_nii}: {e}")
+            logger.error(f"Error renaming NIfTI file {selected_nii}: {e}")
             return
 
     old_json_path = os.path.join(output_path, selected_json)
@@ -69,16 +73,16 @@ def convert_series_to_nifti(series_dir, output_path, label):
         try:
             os.rename(old_json_path, os.path.join(output_path, target_json_name))
         except OSError as e:
-            print(f"❌ Error renaming JSON file {selected_json}: {e}")
+            logger.error(f"Error renaming JSON file {selected_json}: {e}")
 
     for f in new_files:
         if f.startswith(dcm2niix_prefix) and f not in {target_nii_name, target_json_name}:
             try:
                 if os.path.exists(os.path.join(output_path, f)):
                     os.remove(os.path.join(output_path, f))
-                    print(f"Removed extra file: {f}")
+                    logger.debug(f"Removed extra file: {f}")
             except OSError as e:
-                print(f"Warning: Could not remove extra file {f}: {e}")
+                logger.warning(f"Could not remove extra file {f}: {e}")
 
 
 def background_conversion_worker(*args, convert=True, **kwargs):
@@ -132,7 +136,7 @@ def background_conversion_worker(*args, convert=True, **kwargs):
             writer = csv.writer(f)
             writer.writerow(fieldnames)
             for series_desc, dicom_paths in series_dict.items():
-                # Extract DICOM path from new format (support both old and new)
+                # Extract DICOM path from hierarchy entry
                 first_entry = dicom_paths[0]
                 if isinstance(first_entry, dict):
                     first_path = first_entry.get('dicom_path', '')
@@ -160,13 +164,13 @@ def background_conversion_worker(*args, convert=True, **kwargs):
                 row = [attributes_dict.get(field, "") for field in fieldnames]
                 writer.writerow(row)
 
-        print(f"Saved classification CSV for {get_study_dir_name(mrn, study_uid, accn)} → {csv_path}")
+        logger.info(f"Saved classification CSV for {get_study_dir_name(mrn, study_uid, accn)} → {csv_path}")
     except Exception as e:
-        print(f"❌ Failed to save CSV for {get_study_dir_name(mrn, study_uid, accn)}: {e}")
+        logger.error(f"Failed to save CSV for {get_study_dir_name(mrn, study_uid, accn)}: {e}")
 
     if convert:
         for series_desc, dicom_paths in series_dict.items():
-            # Extract DICOM path from new format (support both old and new)
+            # Extract DICOM path from hierarchy entry
             first_entry = dicom_paths[0]
             if isinstance(first_entry, dict):
                 first_path = first_entry.get('dicom_path', '')
@@ -186,7 +190,7 @@ def background_conversion_worker(*args, convert=True, **kwargs):
                 series_dir = os.path.dirname(first_path)
                 convert_series_to_nifti(series_dir=series_dir, output_path=study_out_dir, label=label)
             except Exception as e:
-                print(f"❌ Failed to convert {first_path}: {e}")
+                logger.error(f"Failed to convert {first_path}: {e}")
 
 
 def load_center_slice(dicom_paths):
@@ -323,7 +327,7 @@ def load_center_slice_fast(dicom_path):
         return _load_single_slice(center_path)
 
     except Exception as e:
-        print(f"Error in load_center_slice_fast: {e}")
+        logger.debug(f"Error in load_center_slice_fast: {e}")
         return None
 
 
@@ -359,7 +363,7 @@ def _load_single_slice(dicom_path):
 
         return Image.fromarray(arr)
     except Exception as e:
-        print(f"Error loading slice {dicom_path}: {e}")
+        logger.debug(f"Error loading slice {dicom_path}: {e}")
         return None
 
 
@@ -378,7 +382,7 @@ def load_image_tensor(dicom_path, load_center_slice_func=None, transforms_func=N
         tensor = prepare_cnn_input_data([dicom_path], load_center_slice_func=load_center)
         return tensor
     except Exception as e:
-        print(f"Error applying image transform: {e}")
+        logger.debug(f"Error applying image transform: {e}")
         return None
 
 
@@ -409,7 +413,7 @@ def get_image_probabilities(dicom_path, model, target_encoder):
             probabilities = torch.nn.functional.softmax(outputs, dim=1).cpu().numpy()[0]
             return probabilities
     except Exception as e:
-        print(f"CNN Prediction probability failed: {e}")
+        logger.debug(f"CNN Prediction probability failed: {e}")
         return None
 
 
@@ -435,7 +439,6 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
     target_encoder = rf_target_encoder if rf_target_encoder is not None else cnn_target_encoder
     if target_encoder is None:
         # No encoder available; fallback to 'Other' for first path of each series
-        # Extract DICOM paths from new format (support both old and new)
         def _get_first_path(paths):
             first_entry = paths[0] if paths else None
             if isinstance(first_entry, dict):
@@ -450,7 +453,7 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
     # Step 1: Get predictions for all series
     temp_predictions = {}
     for series_desc, dicom_paths in study_dict.items():
-        # Extract DICOM path from new format (support both old and new)
+        # Extract DICOM path from hierarchy entry
         first_entry = dicom_paths[0]
         if isinstance(first_entry, dict):
             first_path = first_entry.get('dicom_path', '')
@@ -589,7 +592,7 @@ def check_is_3d_acquisition(dicom_path):
         if acq_type is not None:
             return str(acq_type).strip().upper() == '3D'
     except Exception as e:
-        print(f"Error checking 3D acquisition for {dicom_path}: {e}")
+        logger.debug(f"Error checking 3D acquisition for {dicom_path}: {e}")
     return False
 
 
@@ -604,7 +607,7 @@ def full_auto_classify_study(study_dict, mrn, study_uid, output_root,
         rf_field_types
     )
     for path, label in final_assignments.items():
-        print(f"  -> Series starting with '{path}' auto-selected as: {label}")
+        logger.info(f"  -> Series starting with '{path}' auto-selected as: {label}")
 
     background_conversion_worker(
         mrn,

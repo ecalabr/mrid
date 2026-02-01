@@ -13,6 +13,9 @@ from .csv_field_updater import (
     scan_for_missing_fields,
     update_all_csvs_with_missing_fields
 )
+from .logging_config import get_logger
+
+logger = get_logger()
 
 
 def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=None):
@@ -24,6 +27,12 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
         gui: Training GUI for status updates
         update_missing_fields_callback: Optional callback that returns True if user wants to update CSVs
     """
+    from .logging_config import update_log_file_location
+
+    # Set up file logging now that we have the output directory
+    os.makedirs(output_dir, exist_ok=True)
+    update_log_file_location(output_dir)
+
     if not all([pd, RandomForestClassifier, joblib, LabelEncoder, OrdinalEncoder]):
         gui.update_status("❌ Error: Missing required dependencies for Header Model.")
         time.sleep(2)
@@ -87,7 +96,7 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
                         df = pd.read_csv(csv_path)
                         all_data.append(df)
                     except Exception as e:
-                        print(f"Error reading {csv_path}: {e}")
+                        logger.warning(f"Error reading {csv_path}: {e}")
 
         if not all_data:
             gui.update_status("❌ Error: No classification CSV files found to train on.")
@@ -107,7 +116,7 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
             gui.close()
             return
 
-        # Use new preprocessing with automatic field detection
+        # Preprocess with automatic field type detection
         X_clean, categorical_cols, text_cols, field_types = _preprocess_df(
             master_df.drop(columns=['Classification', 'Path']),
             is_training=True
@@ -172,11 +181,9 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
         time.sleep(5)
 
     except Exception as e:
-        error_msg = f"❌ An unexpected error occurred during Header Model training: {type(e).__name__}: {str(e)}"
-        print(error_msg)
-        import traceback
-        traceback.print_exc()
-        gui.update_status(error_msg)
+        error_msg = f"An unexpected error occurred during Header Model training: {type(e).__name__}: {str(e)}"
+        logger.exception(error_msg)
+        gui.update_status(f"❌ {error_msg}")
         time.sleep(3)
 
     finally:
@@ -209,9 +216,10 @@ def get_series_probabilities(dicom_path, model, feature_encoder, field_types=Non
         dicom_path: Path to DICOM file
         model: Trained RandomForest model
         feature_encoder: Trained OrdinalEncoder for categorical features
-        field_types: Dictionary of field types from training (optional, will try to load)
+        field_types: Dictionary of field types from training (optional)
 
-    Accepts optional extra arguments for backward compatibility (they are ignored).
+    Returns:
+        np.ndarray: Probability scores for each class, or None if prediction fails
     """
     if not all([model, feature_encoder]):
         return None
@@ -268,7 +276,5 @@ def get_series_probabilities(dicom_path, model, feature_encoder, field_types=Non
         y_pred_proba = model.predict_proba(X_final)[0]
         return y_pred_proba
     except Exception as e:
-        print(f"RF Prediction probability failed: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.debug(f"RF Prediction probability failed: {e}")
         return None

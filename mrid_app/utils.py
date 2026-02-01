@@ -5,6 +5,7 @@ from tkinter import messagebox
 from typing import Optional
 import pydicom
 import re
+import logging
 
 # Import naming template from config
 try:
@@ -12,6 +13,9 @@ try:
 except ImportError:
     # Fallback if config import fails
     STUDY_NAME_TEMPLATE = "{mrn}-{study_uid}"
+
+# Get logger - use standard logging here to avoid circular import with logging_config
+logger = logging.getLogger('mrid')
 
 
 # ============================================================================
@@ -39,10 +43,10 @@ def sanitize_template(template, replacement='-'):
     # Check for valid format fields
     valid_fields = ['{mrn}', '{study_uid}', '{accn}']
     if not any(item in sanitized for item in valid_fields):
-        print("Warning: STUDY_NAME_TEMPLATE does not contain any of the required fields. Reverting to default template.")
+        logger.warning("STUDY_NAME_TEMPLATE does not contain any of the required fields. Reverting to default template.")
         return "{mrn}-{study_uid}"
     if not any(item in sanitized for item in valid_fields[1:]):
-        print("Warning: STUDY_NAME_TEMPLATE has only MRN as an identifier. This could lead to non-unique study directory names and potential file collisions.")
+        logger.warning("STUDY_NAME_TEMPLATE has only MRN as an identifier. This could lead to non-unique study directory names and potential file collisions.")
     return sanitized
 
 
@@ -63,24 +67,24 @@ def sanitize_target_series(target_series):
         List of sanitized target series labels with "Other" guaranteed to be present
     """
     if not isinstance(target_series, list):
-        print("Warning: TARGET_SERIES is not a list. Using default ['Other'].")
+        logger.warning("TARGET_SERIES is not a list. Using default ['Other'].")
         return ["Other"]
 
     sanitized = []
     for label in target_series:
         if not isinstance(label, str):
-            print(f"Warning: TARGET_SERIES contains non-string value: {label}. Skipping.")
+            logger.warning(f"TARGET_SERIES contains non-string value: {label}. Skipping.")
             continue
         # Remove all characters except alphanumerics, hyphens, and underscores
         cleaned = re.sub(r'[^a-zA-Z0-9_\-]', '', label)
         if cleaned and cleaned not in sanitized:  # Skip empty strings and duplicates
             sanitized.append(cleaned)
         elif not cleaned:
-            print(f"Warning: TARGET_SERIES label '{label}' became empty after sanitization. Skipping.")
+            logger.warning(f"TARGET_SERIES label '{label}' became empty after sanitization. Skipping.")
 
     # Ensure "Other" is always present
     if "Other" not in sanitized:
-        print("Warning: 'Other' not found in TARGET_SERIES. Adding it.")
+        logger.warning("'Other' not found in TARGET_SERIES. Adding it.")
         sanitized.append("Other")
 
     return sanitized
@@ -225,7 +229,7 @@ def write_yaml_hierarchy(hierarchy, output_dir):
             sort_keys=False,
             allow_unicode=True
         )
-    print(f"YAML hierarchy saved to:\n{yaml_path}")
+    logger.info(f"YAML hierarchy saved to: {yaml_path}")
 
 
 def warn_if_no_gpu_for_cnn(gui_parent: Optional[object] = None) -> bool:
@@ -248,7 +252,7 @@ def warn_if_no_gpu_for_cnn(gui_parent: Optional[object] = None) -> bool:
                 parent=gui_parent,
             )
         except Exception:
-            print("PyTorch is not installed. CNN operations require PyTorch.")
+            logger.warning("PyTorch is not installed. CNN operations require PyTorch.")
         return False
 
     try:
@@ -269,7 +273,7 @@ def warn_if_no_gpu_for_cnn(gui_parent: Optional[object] = None) -> bool:
             return bool(proceed)
         except Exception:
             # Non-GUI environment or messagebox failed -> default to not proceeding
-            print("No CUDA-capable GPU detected. Operation cancelled by default in non-GUI context.")
+            logger.warning("No CUDA-capable GPU detected. Operation cancelled by default in non-GUI context.")
             return False
 
     return True

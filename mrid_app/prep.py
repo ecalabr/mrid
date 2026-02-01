@@ -1,6 +1,9 @@
 import pandas as pd
 from .config import SEMANTIC_MODEL_NAME, DICOM_HEADER_FIELDS
 from .field_detection import analyze_dataframe_fields, preprocess_by_type
+from .logging_config import get_logger
+
+logger = get_logger()
 
 
 def _get_semantic_model():
@@ -9,7 +12,7 @@ def _get_semantic_model():
         try:
             from sentence_transformers import SentenceTransformer
             config.SEMANTIC_MODEL = SentenceTransformer(SEMANTIC_MODEL_NAME)
-            print("Loaded semantic model:", SEMANTIC_MODEL_NAME)
+            logger.info(f"Loaded semantic model: {SEMANTIC_MODEL_NAME}")
         except Exception:
             config.SEMANTIC_MODEL = None
     return config.SEMANTIC_MODEL
@@ -37,7 +40,7 @@ def _preprocess_df(df, is_training=True, field_types=None):
 
     if is_training or field_types is None:
         # Analyze and detect field types
-        print("Analyzing DICOM header field types...")
+        logger.info("Analyzing DICOM header field types...")
         detected_field_types = analyze_dataframe_fields(X, available_fields)
 
         # Preprocess based on detected types

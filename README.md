@@ -160,7 +160,7 @@ dcm2niix -version
 conda activate mrid
 
 # Run tests
-python run_tests.py
+python tests.py
 
 # Expected output:
 # ✓ All tests passed!
@@ -764,7 +764,7 @@ BATCH_SIZE = 4  # or 2
 Run the test suite:
 
 ```bash
-python run_tests.py
+python tests.py
 ```
 
 Expected output:

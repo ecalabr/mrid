@@ -8,6 +8,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from .config import (IGNORE_MULTIPLE_ORIENTATIONS, SEPARATE_STACKED_SERIES, MAX_SPLIT,
                      NUM_PARALLEL_WORKERS, THUMBNAIL_FORMAT, THUMBNAIL_QUALITY)
 from .utils import get_symlink_dir_name
+from .logging_config import get_logger
+
+logger = get_logger()
 
 
 def check_dicom_batch(filepaths, include_types=None, exclude_types=None):
@@ -349,7 +352,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
     # Check if folder is organized
     folder_organized = is_folder_organized(dicom_records)
     if not folder_organized and temp_base:
-        print("Detected unorganized DICOM folder. Organizing files with symlinks in dicom_symlinks directory...")
+        logger.info("Detected unorganized DICOM folder. Organizing files with symlinks in dicom_symlinks directory...")
 
     group_key = itemgetter('patient', 'study_uid', 'series_uid')
 
@@ -377,7 +380,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
         if IGNORE_MULTIPLE_ORIENTATIONS:
             unique_orientations = {tuple(f['image_orientation']) for f in files if f['image_orientation']}
             if len(unique_orientations) > 1:
-                print(f"Warning: Skipping series {first_rec['series_desc']} for patient {mrn}: Multiple orientations")
+                logger.warning(f"Skipping series {first_rec['series_desc']} for patient {mrn}: Multiple orientations")
                 try:
                     if progress_callback:
                         progress_callback(processed_groups)
@@ -422,7 +425,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
 
                 # Process Buckets (Create symlinks)
                 if len(subseries_buckets) > MAX_SPLIT:
-                    print(f"Warning: Series {base_desc} for patient {mrn} exceeded max splits ({MAX_SPLIT}). Skipping.")
+                    logger.warning(f"Series {base_desc} for patient {mrn} exceeded max splits ({MAX_SPLIT}). Skipping.")
                     try:
                         if progress_callback:
                             progress_callback(processed_groups)
@@ -465,7 +468,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
                             'entry_dict': entry_dict  # Reference to update later
                         })
             except Exception as e:
-                print(f"Error during splitting series {base_desc} for patient {mrn}: {e}")
+                logger.warning(f"Error during splitting series {base_desc} for patient {mrn}: {e}")
                 try:
                     if progress_callback:
                         progress_callback(processed_groups)
@@ -511,7 +514,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
                             'entry_dict': entry_dict  # Reference to update later
                         })
                 except Exception as e:
-                    print(f"Error organizing series {base_desc} for patient {mrn}: {e}")
+                    logger.warning(f"Error organizing series {base_desc} for patient {mrn}: {e}")
                     # Fall back to original path if symlink creation fails
                     entry_dict = {
                         'dicom_path': first_rec['path'],
@@ -562,7 +565,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
     # =========================================================================
     if thumbnail_tasks and thumbnail_base:
         total_thumbnails = len(thumbnail_tasks)
-        print(f"Generating {total_thumbnails} thumbnails in parallel...")
+        logger.info(f"Generating {total_thumbnails} thumbnails in parallel...")
 
         def generate_thumbnail_task(task):
             """Worker function to generate a single thumbnail."""
@@ -604,6 +607,6 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
                     if thumbnail_progress_callback:
                         thumbnail_progress_callback(completed_thumbnails, total_thumbnails)
 
-        print(f"✓ Generated {completed_thumbnails} thumbnails")
+        logger.info(f"Generated {completed_thumbnails} thumbnails")
 
     return hierarchy

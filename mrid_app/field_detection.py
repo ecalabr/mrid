@@ -12,6 +12,9 @@ whether they should be treated as:
 import re
 import numpy as np
 import pandas as pd
+from .logging_config import get_logger
+
+logger = get_logger()
 
 
 def detect_field_type(series, field_name):
@@ -134,7 +137,7 @@ def analyze_dataframe_fields(df, field_names):
             field_info['size'] = array_size
 
         field_types[field_name] = field_info
-        print(f"  {field_name}: {field_type}" + (f" (size={field_info.get('size')})" if field_type == 'array' else ""))
+        logger.debug(f"  {field_name}: {field_type}" + (f" (size={field_info.get('size')})" if field_type == 'array' else ""))
 
     return field_types
 

@@ -5,6 +5,9 @@ import pickle
 import hashlib
 import multiprocessing as mp
 from .utils import extract_study_id_from_path, get_study_csv_name
+from .logging_config import get_logger
+
+logger = get_logger()
 
 try:
     import torch
@@ -103,7 +106,7 @@ def prepare_cnn_input_data(filepaths, load_center_slice_func):
             tensor = transforms(img)
             processed_images.append(tensor)
         except Exception as e:
-            print(f"Error processing {path}: {e}")
+            logger.debug(f"Error processing {path}: {e}")
     if not processed_images:
         return None
     X = torch.stack(processed_images)
@@ -141,7 +144,7 @@ def _process_single_image(args):
 
         return (idx, tensor, label)
     except Exception as e:
-        print(f"Error processing {path}: {e}")
+        logger.debug(f"Error processing {path}: {e}")
         return (idx, None, None)
 
 
@@ -161,7 +164,7 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output
     """
     transforms = _get_transforms()
     if transforms is None:
-        print("PyTorch torchvision.transforms unavailable")
+        logger.warning("PyTorch torchvision.transforms unavailable")
         return None
 
     # Generate cache filename based on data hash and save directly to output_dir
@@ -170,7 +173,7 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output
 
     # Check if cache exists
     if os.path.exists(cache_path):
-        print(f"Loading preprocessed data from cache: {cache_path}")
+        logger.info(f"Loading preprocessed data from cache: {cache_path}")
         if progress_callback:
             progress_callback(0, 1, "Loading from cache...")
         try:
@@ -180,11 +183,11 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output
                 progress_callback(1, 1, "Cache loaded successfully")
             return cache_path
         except Exception as e:
-            print(f"Error loading cache, will regenerate: {e}")
+            logger.warning(f"Error loading cache, will regenerate: {e}")
 
     # Preprocess all images using parallel processing
     total_files = len(filepaths)
-    print(f"Preprocessing {total_files} images using parallel processing...")
+    logger.info(f"Preprocessing {total_files} images using parallel processing...")
     if progress_callback:
         progress_callback(0, total_files, f"Preprocessing 0/{total_files} images...")
 
@@ -219,9 +222,9 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output
                     progress_callback(completed, total_files, f"Preprocessing {completed}/{total_files} images...")
 
     except Exception as e:
-        print(f"Error during parallel processing: {e}")
+        logger.warning(f"Error during parallel processing: {e}")
         # Fall back to sequential processing
-        print("Falling back to sequential processing...")
+        logger.info("Falling back to sequential processing...")
         processed_results = []
         for idx, path in enumerate(filepaths):
             slice_img = load_center_slice_func([path])
@@ -232,14 +235,14 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output
                 tensor = transforms(img)
                 processed_results.append((idx, tensor, labels[idx]))
             except Exception as e:
-                print(f"Error processing {path}: {e}")
+                logger.debug(f"Error processing {path}: {e}")
 
             # Update progress every 10 images or on last image
             if progress_callback and (idx % 10 == 0 or idx == total_files - 1):
                 progress_callback(idx + 1, total_files, f"Preprocessing {idx + 1}/{total_files} images...")
 
     if not processed_results:
-        print("No images were successfully processed")
+        logger.error("No images were successfully processed")
         return None
 
     # Sort results by original index to maintain order
@@ -261,9 +264,9 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output
     try:
         with open(cache_path, 'wb') as f:
             pickle.dump(cached_data, f)
-        print(f"Cached preprocessed data to: {cache_path}")
+        logger.info(f"Cached preprocessed data to: {cache_path}")
     except Exception as e:
-        print(f"Warning: Failed to save cache: {e}")
+        logger.warning(f"Failed to save cache: {e}")
 
     return cache_path
 
@@ -275,7 +278,7 @@ def load_cached_data(cache_path):
             cached_data = pickle.load(f)
         return cached_data['X'], cached_data['y']
     except Exception as e:
-        print(f"Error loading cached data: {e}")
+        logger.error(f"Error loading cached data: {e}")
         return None, None
 
 
@@ -397,7 +400,7 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
             message = f"Epoch {epoch + 1}/{NUM_EPOCHS} - Loss: {avg_loss:.4f}, Val Acc: {epoch_accuracy:.2f}%"
             progress_callback(epoch + 1, NUM_EPOCHS, avg_loss, epoch_accuracy, message)
 
-        print(f"Epoch {epoch + 1}/{NUM_EPOCHS} - Loss: {avg_loss:.4f}, Val Acc: {epoch_accuracy:.2f}%")
+        logger.info(f"Epoch {epoch + 1}/{NUM_EPOCHS} - Loss: {avg_loss:.4f}, Val Acc: {epoch_accuracy:.2f}%")
 
         if epoch_accuracy > best_accuracy:
             best_accuracy = epoch_accuracy
@@ -412,6 +415,12 @@ def TrainImageClassifierLogic(output_dir, gui):
     and trains the CNN using train_cnn_model_logic. Updates the provided GUI
     (TrainClassifierGUI) with progress messages.
     """
+    from .logging_config import update_log_file_location
+
+    # Set up file logging now that we have the output directory
+    os.makedirs(output_dir, exist_ok=True)
+    update_log_file_location(output_dir)
+
     try:
         import pandas as pd
         import joblib
@@ -442,7 +451,7 @@ def TrainImageClassifierLogic(output_dir, gui):
                         df = pd.read_csv(csv_path)
                         all_data.append(df)
                     except Exception as e:
-                        print(f"Error reading {csv_path}: {e}")
+                        logger.warning(f"Error reading {csv_path}: {e}")
 
         if not all_data:
             gui.update_status("❌ Error: No classification CSV files found to train on.")
@@ -565,7 +574,7 @@ def TrainImageClassifierLogic(output_dir, gui):
         try:
             joblib.dump(target_encoder, target_encoder_filename)
         except Exception as e:
-            print(f"Warning: failed to save target encoder: {e}")
+            logger.warning(f"Failed to save target encoder: {e}")
 
         # Save a short summary
         try:

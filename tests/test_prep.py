@@ -4,7 +4,7 @@ from mrid_app.field_detection import extract_and_clean_array_features
 
 
 def test_extract_array_features():
-    """Test array feature extraction using the new field_detection module."""
+    """Test array feature extraction using the field_detection module."""
     df = pd.DataFrame({
         'PixelSpacing (mm)': ['1\\ 2', '[0.5, 0.5]', 'None'],
         'ImagePositionPatient (mm)': ['(1,2,3)', '1 2 3', None],
@@ -19,7 +19,7 @@ def test_extract_array_features():
 
     out = extract_and_clean_array_features(df.copy(), array_fields_info)
 
-    # Expect new columns for PixelSpacing_0, PixelSpacing_1, ImagePositionPatient_0..2
+    # Expect expanded columns for PixelSpacing_0, PixelSpacing_1, ImagePositionPatient_0..2
     assert any(col.startswith('PixelSpacing (mm)_') for col in out.columns)
     assert any(col.startswith('ImagePositionPatient (mm)_') for col in out.columns)
 
