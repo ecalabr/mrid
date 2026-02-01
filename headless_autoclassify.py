@@ -238,10 +238,11 @@ def load_models(output_dir, model_type):
 
     # Load RF model
     if rf_needed:
-        rf_model_path = os.path.join(output_dir, "rf_classifier_model.joblib")
-        rf_target_encoder_path = os.path.join(output_dir, "label_encoder.joblib")
-        rf_feature_encoder_path = os.path.join(output_dir, "feature_encoder.joblib")
-        rf_field_types_path = os.path.join(output_dir, "field_types.joblib")
+        model_files_dir = os.path.join(output_dir, "model_files")
+        rf_model_path = os.path.join(model_files_dir, "rf_classifier_model.joblib")
+        rf_target_encoder_path = os.path.join(model_files_dir, "label_encoder.joblib")
+        rf_feature_encoder_path = os.path.join(model_files_dir, "feature_encoder.joblib")
+        rf_field_types_path = os.path.join(model_files_dir, "field_types.joblib")
 
         if not os.path.exists(rf_model_path):
             logger.error(f"RF model not found at {rf_model_path}")
@@ -265,8 +266,9 @@ def load_models(output_dir, model_type):
 
     # Load CNN model
     if cnn_needed:
-        cnn_model_path = os.path.join(output_dir, "cnn_classifier_model.pth")
-        cnn_target_encoder_path = os.path.join(output_dir, "label_encoder.joblib")
+        model_files_dir = os.path.join(output_dir, "model_files")
+        cnn_model_path = os.path.join(model_files_dir, "cnn_classifier_model.pth")
+        cnn_target_encoder_path = os.path.join(model_files_dir, "label_encoder.joblib")
 
         if not os.path.exists(cnn_model_path):
             logger.error(f"CNN model not found at {cnn_model_path}")

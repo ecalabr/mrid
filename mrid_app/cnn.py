@@ -167,9 +167,12 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output
         logger.warning("PyTorch torchvision.transforms unavailable")
         return None
 
-    # Generate cache filename based on data hash and save directly to output_dir
+    # Generate cache filename based on data hash and save to model_files subdirectory
+    model_files_dir = os.path.join(output_dir, "model_files")
+    os.makedirs(model_files_dir, exist_ok=True)
+
     data_hash = hashlib.md5(str(sorted(filepaths)).encode()).hexdigest()[:16]
-    cache_path = os.path.join(output_dir, f"cnn_preprocessed_data_{data_hash}.pkl")
+    cache_path = os.path.join(model_files_dir, f"cnn_preprocessed_data_{data_hash}.pkl")
 
     # Check if cache exists
     if os.path.exists(cache_path):
@@ -362,7 +365,11 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
 
     model_cls = SimpleCNNClass or SimpleCNN
     model = model_cls(num_classes=num_classes).to(device)
-    model_path = os.path.join(output_dir, "cnn_classifier_model.pth")
+
+    model_files_dir = os.path.join(output_dir, "model_files")
+    os.makedirs(model_files_dir, exist_ok=True)
+    model_path = os.path.join(model_files_dir, "cnn_classifier_model.pth")
+
     if os.path.isfile(model_path):
         model.load_state_dict(torch.load(model_path))
     criterion = nn.CrossEntropyLoss()
@@ -460,7 +467,12 @@ def TrainImageClassifierLogic(output_dir, gui):
             return
 
         master_df = pd.concat(all_data, ignore_index=True)
-        master_df.to_csv(os.path.join(output_dir, "classification_data.csv"), index=False)
+
+        # Create model_files directory
+        model_files_dir = os.path.join(output_dir, "model_files")
+        os.makedirs(model_files_dir, exist_ok=True)
+
+        master_df.to_csv(os.path.join(model_files_dir, "classification_data.csv"), index=False)
 
         # Remove 'other' and 'none' labels
         master_df = master_df[master_df['Classification'].str.lower() != 'other'].copy()
@@ -531,7 +543,9 @@ def TrainImageClassifierLogic(output_dir, gui):
 
         # Load or fit target encoder
         try:
-            target_encoder_filename = os.path.join(output_dir, "label_encoder.joblib")
+            model_files_dir = os.path.join(output_dir, "model_files")
+            os.makedirs(model_files_dir, exist_ok=True)
+            target_encoder_filename = os.path.join(model_files_dir, "label_encoder.joblib")
             if os.path.exists(target_encoder_filename):
                 target_encoder = joblib.load(target_encoder_filename)
                 y_encoded = target_encoder.transform(y)
@@ -579,7 +593,8 @@ def TrainImageClassifierLogic(output_dir, gui):
         # Save a short summary
         try:
             final_message = f"✅ Image Model Training.\nModel Saved: {model_path}\nBest Accuracy: {best_accuracy:.2f}%"
-            summary_path = os.path.join(output_dir, "cnn_model_training_summary.txt")
+            model_files_dir = os.path.join(output_dir, "model_files")
+            summary_path = os.path.join(model_files_dir, "cnn_model_training_summary.txt")
             with open(summary_path, 'w') as f:
                 f.write(final_message)
             gui.update_status(final_message)

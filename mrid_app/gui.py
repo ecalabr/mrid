@@ -489,8 +489,9 @@ class MainApp:
         rf_needed = model_type in ["DICOM Header Model", "Header + Image Model"]
         cnn_needed = model_type in ["Image-Based Model", "Header + Image Model"]
 
-        rf_model_path = os.path.join(output_dir, "rf_classifier_model.joblib")
-        cnn_model_path = os.path.join(output_dir, "cnn_classifier_model.pth")
+        model_files_dir = os.path.join(output_dir, "model_files")
+        rf_model_path = os.path.join(model_files_dir, "rf_classifier_model.joblib")
+        cnn_model_path = os.path.join(model_files_dir, "cnn_classifier_model.pth")
 
         # Check which models exist and which are missing
         rf_exists = os.path.exists(rf_model_path) if rf_needed else True
@@ -535,10 +536,11 @@ class MainApp:
 
     def _load_classifier_and_encoder(self):
         output_dir = self.output_dir.get()
-        model_path = os.path.join(output_dir, "rf_classifier_model.joblib")
-        target_encoder_path = os.path.join(output_dir, "label_encoder.joblib")
-        feature_encoder_path = os.path.join(output_dir, "feature_encoder.joblib")
-        field_types_path = os.path.join(output_dir, "field_types.joblib")
+        model_files_dir = os.path.join(output_dir, "model_files")
+        model_path = os.path.join(model_files_dir, "rf_classifier_model.joblib")
+        target_encoder_path = os.path.join(model_files_dir, "label_encoder.joblib")
+        feature_encoder_path = os.path.join(model_files_dir, "feature_encoder.joblib")
+        field_types_path = os.path.join(model_files_dir, "field_types.joblib")
 
         if not os.path.exists(model_path) or not os.path.exists(target_encoder_path) or not os.path.exists(feature_encoder_path):
             logger.info("Header Model files not found - skipping RF model load")
@@ -580,8 +582,9 @@ class MainApp:
             messagebox.showwarning("Load Warning", "PyTorch is not installed. Skipping CNN load.", parent=self.master)
             return
         output_dir = self.output_dir.get()
-        model_path = os.path.join(output_dir, "cnn_classifier_model.pth")
-        target_encoder_path = os.path.join(output_dir, "label_encoder.joblib")
+        model_files_dir = os.path.join(output_dir, "model_files")
+        model_path = os.path.join(model_files_dir, "cnn_classifier_model.pth")
+        target_encoder_path = os.path.join(model_files_dir, "label_encoder.joblib")
         if not os.path.exists(model_path) or not os.path.exists(target_encoder_path):
             logger.info("Image Model files not found - skipping CNN model load")
             messagebox.showwarning("Load Warning", "Image Model files not found. Skipping CNN load.", parent=self.master)
@@ -784,8 +787,9 @@ class MainApp:
                 cnn_needed = model_type in ["Image-Based Model", "Header + Image Model"]
 
                 output_dir = self.output_dir.get()
-                rf_model_path = os.path.join(output_dir, "rf_classifier_model.joblib")
-                cnn_model_path = os.path.join(output_dir, "cnn_classifier_model.pth")
+                model_files_dir = os.path.join(output_dir, "model_files")
+                rf_model_path = os.path.join(model_files_dir, "rf_classifier_model.joblib")
+                cnn_model_path = os.path.join(model_files_dir, "cnn_classifier_model.pth")
 
                 # Load RF model if needed and exists
                 if rf_needed and os.path.exists(rf_model_path):
@@ -1372,30 +1376,14 @@ class MainApp:
 
             # Delete models
             if delete_models:
-                model_files = [
-                    "rf_classifier_model.joblib",
-                    "cnn_classifier_model.pth",
-                    "label_encoder.joblib",
-                    "feature_encoder.joblib",
-                    "field_types.joblib",
-                    "classification_data.csv",
-                    "rf_model_training_summary.txt",
-                    "cnn_model_training_summary.txt"
-                ]
+                model_files_dir = os.path.join(output_dir, "model_files")
 
-                # Also check for CNN cache files
-                for item in os.listdir(output_dir):
-                    if item.startswith("cnn_preprocessed_data_") and item.endswith(".pkl"):
-                        model_files.append(item)
-
-                for filename in model_files:
-                    filepath = os.path.join(output_dir, filename)
-                    if os.path.exists(filepath):
-                        try:
-                            os.remove(filepath)
-                            deleted_items.append(f"Model file: {filename}")
-                        except Exception as e:
-                            errors.append(f"Failed to delete {filename}: {e}")
+                if os.path.exists(model_files_dir):
+                    try:
+                        shutil.rmtree(model_files_dir)
+                        deleted_items.append("Model files directory (all model files and data)")
+                    except Exception as e:
+                        errors.append(f"Failed to delete model_files directory: {e}")
 
                 # Reset loaded models in GUI
                 self.rf_model = None
@@ -1439,7 +1427,7 @@ class MainApp:
                 messages = []
                 if delete_classifications and any('Study folder' in item for item in deleted_items):
                     messages.append("Successfully deleted classification data")
-                if delete_models and any('Model file' in item for item in deleted_items):
+                if delete_models and any('Model files directory' in item for item in deleted_items):
                     messages.append("Successfully deleted model data")
                 if delete_hierarchy and (any('hierarchy.yaml' in item for item in deleted_items) or
                                         any('dicom_symlinks' in item for item in deleted_items) or

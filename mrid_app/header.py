@@ -105,7 +105,12 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
             return
 
         master_df = pd.concat(all_data, ignore_index=True)
-        master_df.to_csv(os.path.join(output_dir, "classification_data.csv"), index=False)
+
+        # Create model_files directory
+        model_files_dir = os.path.join(output_dir, "model_files")
+        os.makedirs(model_files_dir, exist_ok=True)
+
+        master_df.to_csv(os.path.join(model_files_dir, "classification_data.csv"), index=False)
 
         gui.update_status("2/6: Preprocessing and detecting field types...")
         master_df = master_df[master_df['Classification'].str.lower() != 'none'].copy()
@@ -125,7 +130,9 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
 
         gui.update_status("3/6: Encoding categorical features and target...")
 
-        target_encoder_filename = os.path.join(output_dir, "label_encoder.joblib")
+        model_files_dir = os.path.join(output_dir, "model_files")
+        os.makedirs(model_files_dir, exist_ok=True)
+        target_encoder_filename = os.path.join(model_files_dir, "label_encoder.joblib")
         if os.path.exists(target_encoder_filename):
             target_encoder = joblib.load(target_encoder_filename)
             y_encoded = target_encoder.transform(y)
@@ -153,9 +160,12 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
         model.fit(X_train, y_train)
 
         gui.update_status("5/6: Saving model, encoders, and field types...")
-        model_filename = os.path.join(output_dir, "rf_classifier_model.joblib")
-        feature_encoder_filename = os.path.join(output_dir, "feature_encoder.joblib")
-        field_types_filename = os.path.join(output_dir, "field_types.joblib")
+        model_files_dir = os.path.join(output_dir, "model_files")
+        os.makedirs(model_files_dir, exist_ok=True)
+
+        model_filename = os.path.join(model_files_dir, "rf_classifier_model.joblib")
+        feature_encoder_filename = os.path.join(model_files_dir, "feature_encoder.joblib")
+        field_types_filename = os.path.join(model_files_dir, "field_types.joblib")
 
         joblib.dump(model, model_filename)
         joblib.dump(target_encoder, target_encoder_filename)
@@ -167,7 +177,7 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
         accuracy = accuracy_score(y_test, y_pred)
 
         final_message = f"✅ Header Model Training Complete!\nAccuracy on Test Set: {accuracy:.2f}\nModel and Encoders Saved."
-        summary_path = os.path.join(output_dir, "rf_model_training_summary.txt")
+        summary_path = os.path.join(model_files_dir, "rf_model_training_summary.txt")
         with open(summary_path, 'w') as f:
             f.write(final_message)
             f.write("\n\nDetected Field Types:\n")
