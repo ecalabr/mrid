@@ -602,6 +602,44 @@ Access via menu bar: **"File Options"**
 - **Safety**: Multiple confirmation dialogs
 - **Use Cases**: Fresh start, disk space management, retraining
 
+### Configuration Menu
+
+Access via menu bar: **"Configuration"**
+
+#### View Configuration
+- **Purpose**: Display all current configuration settings
+- **Features**:
+  - Read-only view of all settings from config.py
+  - Formatted display with descriptions
+  - Edit Config File button (opens in system editor)
+  - Reload Config button (applies changes after editing)
+- **Usage**: Review settings, edit config.py, reload to apply changes
+- **Note**: Some settings may require application restart to fully take effect
+
+#### Save Config
+- **Purpose**: Save current configuration to output directory
+- **Usage**: Select menu item → Config saved to `{output_dir}/config.py`
+- **Use Cases**:
+  - Preserve project-specific settings
+  - Share configurations across datasets
+  - Document configuration used for specific analyses
+- **Validation**: Checks that output directory exists before saving
+
+#### Load Config
+- **Purpose**: Load a previously saved configuration file
+- **Usage**: Select menu item → Choose config.py file → Config loaded
+- **Features**:
+  - File browser for config selection
+  - Automatic validation of all required settings
+  - Warning if invalid (continues with original config)
+  - Updates all configuration globals dynamically
+- **Validation**: Ensures loaded config contains all required variables from repository config
+- **Automatic Loading**: When starting classification, system checks output directory for saved config.py:
+  - If found alongside hierarchy.yaml: Prompts to load both
+  - If config invalid: Shows warning, uses original config
+  - Seamless integration with existing hierarchy workflow
+- **Note**: Some settings may require application restart to fully take effect
+
 ### CSV Field Management
 
 When adding new DICOM header fields:

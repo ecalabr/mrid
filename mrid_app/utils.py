@@ -6,6 +6,7 @@ from typing import Optional
 import pydicom
 import re
 import logging
+import hashlib
 
 # Import naming template from config
 try:
@@ -54,6 +55,35 @@ def sanitize_template(template, replacement='-'):
 STUDY_NAME_TEMPLATE = sanitize_template(STUDY_NAME_TEMPLATE)
 
 
+def _generate_deterministic_placeholder(field_name, *context_values):
+    """
+    Generate a deterministic placeholder value for a missing template field.
+    
+    Args:
+        field_name: Name of the missing field ('mrn', 'study_uid', or 'accn')
+        *context_values: Other available values to use as context for determinism
+        
+    Returns:
+        str: A deterministic alphanumeric placeholder value
+    """
+    # Filter out None and empty values from context
+    valid_context = [str(v) for v in context_values if v]
+    
+    # Create hash input combining field name and context
+    hash_input = f"{field_name}:" + "|".join(valid_context)
+    
+    # Generate MD5 hash (deterministic)
+    hash_obj = hashlib.md5(hash_input.encode('utf-8'))
+    hash_hex = hash_obj.hexdigest()
+    
+    # Take first 8 characters and make it more readable
+    # Use uppercase letters and numbers for better readability
+    short_hash = hash_hex[:8].upper()
+    
+    # Return with field prefix for clarity
+    return f"{field_name.upper()}-{short_hash}"
+
+
 def sanitize_target_series(target_series):
     """
     Sanitize TARGET_SERIES list to ensure all values are safe for filenames.
@@ -93,18 +123,28 @@ def sanitize_target_series(target_series):
 def get_study_dir_name(mrn, study_uid, accn=None):
     """
     Generate study directory name from MRN, Study UID, and optional Accession Number.
+    Missing values are replaced with deterministic placeholders.
 
     Args:
-        mrn: Patient MRN/PatientID
-        study_uid: Study UID
-        accn: Optional Accession Number
+        mrn: Patient MRN/PatientID (can be None or empty)
+        study_uid: Study UID (can be None or empty)
+        accn: Optional Accession Number (can be None or empty)
 
     Returns:
         str: Study directory name based on STUDY_NAME_TEMPLATE
     """
-    # Provide default empty string for missing accn to avoid KeyError
-    if accn is None:
-        accn = ""
+    # Handle missing values with deterministic placeholders
+    # Use available values as context for hash generation
+    
+    if not mrn or mrn == "":
+        mrn = _generate_deterministic_placeholder('mrn', study_uid, accn)
+    
+    if not study_uid or study_uid == "":
+        study_uid = _generate_deterministic_placeholder('study_uid', mrn, accn)
+    
+    if accn is None or accn == "":
+        accn = _generate_deterministic_placeholder('accn', mrn, study_uid)
+    
     return STUDY_NAME_TEMPLATE.format(mrn=mrn, study_uid=study_uid, accn=accn)
 
 
@@ -153,10 +193,11 @@ def get_symlink_dir_name(mrn, study_uid, series_uid, accn="", split_index=None):
     """
     Generate symlink directory name for organizing DICOM files.
     Uses STUDY_NAME_TEMPLATE to maintain consistency with study directory naming.
+    Missing values are replaced with deterministic placeholders.
 
     Args:
-        mrn: Patient MRN/PatientID
-        study_uid: Study UID
+        mrn: Patient MRN/PatientID (can be None or empty)
+        study_uid: Study UID (can be None or empty)
         series_uid: Series UID
         accn: Optional Accession Number (default: "")
         split_index: Optional split index for multi-volume series (0-based integer)
@@ -164,6 +205,16 @@ def get_symlink_dir_name(mrn, study_uid, series_uid, accn="", split_index=None):
     Returns:
         str: Symlink directory name
     """
+    # Handle missing values with deterministic placeholders
+    if not mrn or mrn == "":
+        mrn = _generate_deterministic_placeholder('mrn', study_uid, series_uid, accn)
+    
+    if not study_uid or study_uid == "":
+        study_uid = _generate_deterministic_placeholder('study_uid', mrn, series_uid, accn)
+    
+    if accn is None or accn == "":
+        accn = _generate_deterministic_placeholder('accn', mrn, study_uid, series_uid)
+    
     # Use the same template as study directories for consistency
     base_name = STUDY_NAME_TEMPLATE.format(mrn=mrn, study_uid=study_uid, accn=accn)
 

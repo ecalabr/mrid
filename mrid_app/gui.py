@@ -362,6 +362,8 @@ class MainApp:
         self.convert_to_nifti = tk.BooleanVar(value=False)
         # Flag to indicate models should be loaded after training completes
         self._auto_load_after_training = False
+        # Track the currently active config file path
+        self.active_config_path = None  # None means using repository config
 
         # Create menu bar
         menubar = tk.Menu(master)
@@ -377,6 +379,8 @@ class MainApp:
         config_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Configuration", menu=config_menu)
         config_menu.add_command(label="View Configuration", command=self._view_configuration_dialog)
+        config_menu.add_command(label="Save Config", command=self._save_config)
+        config_menu.add_command(label="Load Config", command=self._load_config)
 
         # UI layout
         dir_frame = tk.LabelFrame(master, text="Directories", padx=scale_value(10), pady=scale_value(10))
@@ -832,28 +836,35 @@ class MainApp:
         logger.info(f"Output directory: {output_dir}")
 
         # New: if hierarchy.yaml exists in output_dir, ask user whether to load it or rescan
+        # Also check for config.py and offer to load it
+        # Automatically load existing hierarchy and config files if they exist
         existing_hierarchy = None
         try:
             hierarchy_path = os.path.join(output_dir, "hierarchy.yaml")
-            if os.path.exists(hierarchy_path):
-                load_choice = messagebox.askyesno(
-                    "Existing hierarchy found",
-                    "A saved 'hierarchy.yaml' was found in the output directory.\n\n"
-                    "Choose 'Yes' to load the existing hierarchy and skip scanning files,\n"
-                    "or 'No' to rescan all files.",
-                    parent=self.master)
-                if load_choice:
-                    try:
-                        import yaml
-                        with open(hierarchy_path, 'r') as hf:
-                            existing_hierarchy = yaml.safe_load(hf)
-                        logger.info("Loaded existing hierarchy.yaml - skipping DICOM scan")
-                    except Exception as e:
-                        logger.warning(f"Failed to load existing hierarchy.yaml: {e} - will rescan files")
-                        messagebox.showwarning("Load Warning", f"Failed to load existing hierarchy.yaml: {e}\nWill rescan files instead.", parent=self.master)
-                        existing_hierarchy = None
-                else:
-                    logger.info("User chose to rescan files instead of using existing hierarchy")
+            config_path = os.path.join(output_dir, "config.py")
+            hierarchy_exists = os.path.exists(hierarchy_path)
+            config_exists = os.path.exists(config_path)
+
+            # Automatically load config if it exists
+            if config_exists:
+                try:
+                    if self._load_config_from_file(config_path):
+                        logger.info(f"Automatically loaded config from: {config_path}")
+                    else:
+                        logger.warning(f"Failed to load config from {config_path}, using current config")
+                except Exception as e:
+                    logger.warning(f"Failed to load config.py: {e} - using current config")
+
+            # Automatically load hierarchy if it exists
+            if hierarchy_exists:
+                try:
+                    import yaml
+                    with open(hierarchy_path, 'r') as hf:
+                        existing_hierarchy = yaml.safe_load(hf)
+                    logger.info("Automatically loaded existing hierarchy.yaml - skipping DICOM scan")
+                except Exception as e:
+                    logger.warning(f"Failed to load existing hierarchy.yaml: {e} - will rescan files")
+                    existing_hierarchy = None
         except Exception:
             existing_hierarchy = None
 
@@ -937,7 +948,7 @@ class MainApp:
                 all_files = []
                 for dcm_root, _, files in os.walk(input_dir):
                     for f in files:
-                        if not f.startswith(".") and os.path.splitext(f)[1] in ["", ".dcm", ".dicom"]:
+                        if not f.startswith(".") and os.path.splitext(f)[1] in ["", ".dcm", ".dicom", ".ima"]:
                             all_files.append(os.path.join(dcm_root, f))
 
                 logger.info(f"Found {len(all_files)} files. Scanning for DICOM...")
@@ -1525,6 +1536,20 @@ class MainApp:
         lines.append("=" * 70)
         lines.append("CONFIGURATION SETTINGS")
         lines.append("=" * 70)
+
+        # Show which config is currently active
+        if self.active_config_path:
+            lines.append(f"Active Config: {self.active_config_path}")
+            if os.path.exists(self.active_config_path):
+                lines.append("(Custom configuration loaded)")
+            else:
+                lines.append("(Custom configuration loaded - file may have been moved)")
+        else:
+            repo_config_path = os.path.join(os.path.dirname(__file__), 'config.py')
+            lines.append(f"Active Config: {repo_config_path}")
+            lines.append("(Repository default configuration)")
+
+        lines.append("=" * 70)
         lines.append("")
 
         # Define configuration variables to display (user-configurable only)
@@ -1532,6 +1557,13 @@ class MainApp:
             # Directories
             ("DATA_DIR", "Input directory for DICOM files"),
             ("OUT_DIR", "Output directory for processed data"),
+
+            # Output naming
+            ("STUDY_NAME_TEMPLATE", "Study naming template (e.g., {mrn}-{accn})"),
+
+            # Thumbnail settings
+            ("THUMBNAIL_FORMAT", "Format for generated thumbnails (JPEG or PNG)"),
+            ("THUMBNAIL_QUALITY", "JPEG quality (1-100)"),
 
             # Classification settings
             ("TARGET_SERIES", "Target series labels for classification"),
@@ -1544,8 +1576,10 @@ class MainApp:
 
             # Classification UI options
             ("NUM_COLUMNS", "Number of columns in classification UI"),
+            ("NUM_ROWS", "Number of rows in verification UI"),
             ("OVERRIDE_THRESHOLD", "Probability threshold for auto-classification"),
             ("ALLOW_DUPLICATE_LABELS", "Allow duplicate labels in manual classification"),
+            ("NUM_PARALLEL_WORKERS", "Number of parallel threads for file operations"),
 
             # CNN hyperparameters
             ("IMAGE_SIZE", "Image size for CNN input"),
@@ -1564,6 +1598,9 @@ class MainApp:
             ("TEXT_MIN_WORDS", "Minimum words for text field detection"),
             ("ARRAY_SIZE_THRESHOLD", "Threshold for array field detection"),
             ("SEMANTIC_MODEL_NAME", "Name of semantic model for text encoding"),
+
+            # Logging
+            ("LOG_LEVEL", "Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)"),
         ]
 
         for var_name, description in config_vars:
@@ -1597,10 +1634,17 @@ class MainApp:
         return "\n".join(lines)
 
     def _edit_config_file(self):
-        """Open config.py in the system's default text editor."""
+        """Open the currently active config.py in the system's default text editor."""
         try:
-            # Get path to config.py
-            config_path = os.path.join(os.path.dirname(__file__), 'config.py')
+            # Get path to the currently active config file
+            if self.active_config_path and os.path.exists(self.active_config_path):
+                # Using a custom config that was loaded
+                config_path = self.active_config_path
+                config_source = "custom"
+            else:
+                # Using repository config
+                config_path = os.path.join(os.path.dirname(__file__), 'config.py')
+                config_source = "repository"
 
             if not os.path.exists(config_path):
                 messagebox.showerror(
@@ -1619,10 +1663,23 @@ class MainApp:
             else:  # Linux and others
                 subprocess.Popen(['xdg-open', config_path])
 
+            # Show different message based on config source
+            if config_source == "custom":
+                message = (
+                    f"The currently active config file has been opened:\n{config_path}\n\n"
+                    "After making changes, save the file and click 'Reload Config' to apply them.\n\n"
+                    "Note: This is a custom config file. To edit the repository default, "
+                    "reload the repository config first."
+                )
+            else:
+                message = (
+                    "The repository config file has been opened in your default text editor.\n\n"
+                    "After making changes, save the file and click 'Reload Config' to apply them."
+                )
+
             messagebox.showinfo(
                 "Config File Opened",
-                "The config file has been opened in your default text editor.\n\n"
-                "After making changes, save the file and click 'Reload Config' to apply them.",
+                message,
                 parent=self.master
             )
 
@@ -1648,6 +1705,9 @@ class MainApp:
             NUM_COLUMNS = config.NUM_COLUMNS
             ALLOW_DUPLICATE_LABELS = config.ALLOW_DUPLICATE_LABELS
 
+            # Reset to repository config
+            self.active_config_path = None
+
             # Update the UI elements if they need to reflect updated values
             # (input_dir and output_dir StringVars are set from these at startup)
 
@@ -1655,7 +1715,7 @@ class MainApp:
             messagebox.showinfo(
                 "Config Reloaded",
                 "Configuration has been reloaded successfully.\n\n"
-                "⚠️ Note: Some settings (loaded models, running processes, and certain UI elements) "
+                "Note: Some settings (loaded models, running processes, and certain UI elements) "
                 "may require an application restart to fully take effect.",
                 parent=parent_dialog if parent_dialog else self.master
             )
@@ -1671,6 +1731,187 @@ class MainApp:
                 f"Failed to reload configuration:\n\n{e}\n\n"
                 "Please check the config file for syntax errors.",
                 parent=parent_dialog if parent_dialog else self.master
+            )
+
+    def _get_config_globals(self):
+        """
+        Extract all uppercase global variable names from the config module.
+        Returns a list of variable names (excluding special variables like __name__).
+        """
+        globals_list = []
+        for name in dir(config):
+            # Include only uppercase variables that don't start with underscore
+            if name.isupper() and not name.startswith('_'):
+                globals_list.append(name)
+        return globals_list
+
+    def _validate_config_file(self, config_path):
+        """
+        Validate that a config file contains all required global variables.
+
+        Args:
+            config_path: Path to the config file to validate
+
+        Returns:
+            tuple: (success: bool, missing_vars: list, error_msg: str)
+        """
+        try:
+            # Get expected globals from the repository config
+            expected_globals = self._get_config_globals()
+
+            # Load the config file and check for required globals
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("temp_config", config_path)
+            if spec is None or spec.loader is None:
+                return False, [], "Could not load config file"
+
+            temp_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(temp_module)
+
+            # Check which globals are missing
+            missing_vars = []
+            for var_name in expected_globals:
+                if not hasattr(temp_module, var_name):
+                    missing_vars.append(var_name)
+
+            if missing_vars:
+                return False, missing_vars, f"Missing required variables: {', '.join(missing_vars)}"
+
+            return True, [], ""
+
+        except SyntaxError as e:
+            return False, [], f"Syntax error in config file: {e}"
+        except Exception as e:
+            return False, [], f"Error validating config file: {e}"
+
+    def _load_config_from_file(self, config_path):
+        """
+        Load config variables from a file and update the config module.
+
+        Args:
+            config_path: Path to the config file to load
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Validate the config file first
+            success, missing_vars, error_msg = self._validate_config_file(config_path)
+            if not success:
+                messagebox.showwarning(
+                    "Invalid Config File",
+                    f"The selected config file is invalid:\n\n{error_msg}\n\n"
+                    "The original configuration will be used.",
+                    parent=self.master
+                )
+                return False
+
+            # Load the config file
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("temp_config", config_path)
+            temp_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(temp_module)
+
+            # Get list of globals to update
+            config_globals = self._get_config_globals()
+
+            # Update the config module with values from the loaded file
+            for var_name in config_globals:
+                if hasattr(temp_module, var_name):
+                    setattr(config, var_name, getattr(temp_module, var_name))
+
+            # Update local globals that are imported directly
+            global DATA_DIR, OUT_DIR, TARGET_SERIES, NUM_COLUMNS, ALLOW_DUPLICATE_LABELS
+            DATA_DIR = config.DATA_DIR
+            OUT_DIR = config.OUT_DIR
+            TARGET_SERIES = sanitize_target_series(config.TARGET_SERIES)
+            NUM_COLUMNS = config.NUM_COLUMNS
+            ALLOW_DUPLICATE_LABELS = config.ALLOW_DUPLICATE_LABELS
+
+            # Track that we're now using a custom config
+            self.active_config_path = config_path
+
+            logger.info(f"Successfully loaded config from: {config_path}")
+            return True
+
+        except Exception as e:
+            messagebox.showwarning(
+                "Load Failed",
+                f"Failed to load configuration:\n\n{e}\n\n"
+                "The original configuration will be used.",
+                parent=self.master
+            )
+            logger.error(f"Failed to load config from {config_path}: {e}")
+            return False
+
+    def _save_config(self):
+        """Save the current config.py file to the output directory and make it the active config."""
+        output_dir = self.output_dir.get()
+
+        if not os.path.isdir(output_dir):
+            messagebox.showerror(
+                "Error",
+                "Please specify a valid output directory first.",
+                parent=self.master
+            )
+            return
+
+        try:
+            # Get the path to the currently active config (repository or custom)
+            if self.active_config_path and os.path.exists(self.active_config_path):
+                # Save the currently active custom config
+                source_config_path = self.active_config_path
+            else:
+                # Save the repository config
+                source_config_path = config.__file__
+                if source_config_path.endswith('.pyc'):
+                    source_config_path = source_config_path[:-1]  # Remove 'c' to get .py
+
+            # Destination path in output directory
+            dest_path = os.path.join(output_dir, "config.py")
+
+            # Copy the file
+            shutil.copy(source_config_path, dest_path)
+
+            # Make the saved config the active config
+            self.active_config_path = dest_path
+
+            messagebox.showinfo(
+                "Config Saved",
+                f"Configuration saved successfully to:\n{dest_path}\n\n"
+                f"This is now the active configuration for viewing and editing.",
+                parent=self.master
+            )
+            logger.info(f"Config saved to: {dest_path} (now active)")
+
+        except Exception as e:
+            messagebox.showerror(
+                "Save Failed",
+                f"Failed to save configuration:\n\n{e}",
+                parent=self.master
+            )
+            logger.error(f"Failed to save config: {e}")
+
+    def _load_config(self):
+        """Load a config.py file from a user-selected location."""
+        # Open file dialog to select config file
+        config_path = filedialog.askopenfilename(
+            title="Select Config File",
+            initialdir=self.output_dir.get() if os.path.isdir(self.output_dir.get()) else None,
+            filetypes=[("Python files", "*.py"), ("All files", "*.*")]
+        )
+
+        if not config_path:
+            return  # User cancelled
+
+        # Load the config file
+        if self._load_config_from_file(config_path):
+            messagebox.showinfo(
+                "Config Loaded",
+                f"Configuration loaded successfully from:\n{config_path}\n\n"
+                "Note: Some settings (loaded models, running processes, and certain UI elements) "
+                "may require an application restart to fully take effect.",
+                parent=self.master
             )
 
     def start_verification(self):

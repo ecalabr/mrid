@@ -23,6 +23,9 @@ Examples:
 
     # Use existing hierarchy.yaml (skip scanning)
     python headless_autoclassify.py -i /data/dicoms -o /data/output --hierarchy /data/output/hierarchy.yaml
+
+    # Use custom config file
+    python headless_autoclassify.py -i /data/dicoms -o /data/output --config /path/to/custom_config.py
 """
 
 import argparse
@@ -79,6 +82,13 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to custom config.py file (default: use repository config)"
+    )
+
+    parser.add_argument(
         "-j", "--jobs",
         type=int,
         default=None,
@@ -112,6 +122,64 @@ def load_hierarchy_from_yaml(yaml_path):
     return hierarchy
 
 
+def load_custom_config(config_path):
+    """
+    Load a custom config.py file and update the config module.
+    
+    Args:
+        config_path: Path to the custom config.py file
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    logger = get_logger()
+    
+    if not os.path.exists(config_path):
+        logger.error(f"Config file not found: {config_path}")
+        return False
+    
+    try:
+        from mrid_app import config
+        import importlib.util
+        
+        # Get expected globals from the repository config
+        expected_globals = [name for name in dir(config) if name.isupper() and not name.startswith('_')]
+        
+        # Load the custom config file
+        spec = importlib.util.spec_from_file_location("custom_config", config_path)
+        if spec is None or spec.loader is None:
+            logger.error(f"Could not load config file: {config_path}")
+            return False
+        
+        custom_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(custom_module)
+        
+        # Check for missing required variables
+        missing_vars = []
+        for var_name in expected_globals:
+            if not hasattr(custom_module, var_name):
+                missing_vars.append(var_name)
+        
+        if missing_vars:
+            logger.error(f"Custom config is missing required variables: {', '.join(missing_vars)}")
+            return False
+        
+        # Update the config module with values from the custom config
+        for var_name in expected_globals:
+            if hasattr(custom_module, var_name):
+                setattr(config, var_name, getattr(custom_module, var_name))
+        
+        logger.info(f"Successfully loaded custom config from: {config_path}")
+        return True
+        
+    except SyntaxError as e:
+        logger.error(f"Syntax error in config file: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Error loading config file: {e}")
+        return False
+
+
 def scan_dicom_directory(input_dir, output_dir, num_workers=None):
     """
     Scan a directory for DICOM files and build the hierarchy structure.
@@ -128,7 +196,7 @@ def scan_dicom_directory(input_dir, output_dir, num_workers=None):
     all_files = []
     for dcm_root, _, files in os.walk(input_dir):
         for f in files:
-            if not f.startswith(".") and os.path.splitext(f)[1] in ["", ".dcm", ".dicom"]:
+            if not f.startswith(".") and os.path.splitext(f)[1] in ["", ".dcm", ".dicom", ".ima"]:
                 all_files.append(os.path.join(dcm_root, f))
 
     total_files = len(all_files)
@@ -380,9 +448,19 @@ def main():
     # Create output directory if needed
     os.makedirs(args.output, exist_ok=True)
 
-    # Setup logging with file handler in output directory
-    setup_logging(args.output)
-    logger = get_logger()
+    # Load custom config if provided (before logging setup so config values are available)
+    if args.config:
+        # Do a preliminary setup of logging for config loading messages
+        setup_logging(args.output)
+        logger = get_logger()
+        
+        if not load_custom_config(args.config):
+            logger.error("Failed to load custom config. Exiting.")
+            sys.exit(1)
+    else:
+        # Setup logging with file handler in output directory
+        setup_logging(args.output)
+        logger = get_logger()
 
     # Convert model type argument
     model_type = model_type_str(args.model_type)
