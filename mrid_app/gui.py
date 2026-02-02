@@ -1286,7 +1286,7 @@ class MainApp:
         dialog = tk.Toplevel(self.master)
         enable_tkinter_autoscaling(dialog)
         dialog.title("Erase Data")
-        dialog.geometry(scale_geometry("550x280"))
+        dialog.geometry(scale_geometry("550x320"))
         dialog.transient(self.master)
         dialog.grab_set()
 
@@ -1296,6 +1296,7 @@ class MainApp:
         delete_classifications = tk.BooleanVar(value=False)
         delete_models = tk.BooleanVar(value=False)
         delete_hierarchy = tk.BooleanVar(value=False)
+        delete_config = tk.BooleanVar(value=False)
 
         tk.Checkbutton(
             dialog,
@@ -1324,6 +1325,15 @@ class MainApp:
             justify="left"
         ).pack(anchor="w", padx=scale_value(20), pady=scale_value(5))
 
+        tk.Checkbutton(
+            dialog,
+            text="Delete Config (config.py saved in output directory)",
+            variable=delete_config,
+            font=("Arial", scale_value(10)),
+            wraplength=scale_value(500),
+            justify="left"
+        ).pack(anchor="w", padx=scale_value(20), pady=scale_value(5))
+
         tk.Label(
             dialog,
             text="Warning: This action cannot be undone!",
@@ -1336,7 +1346,7 @@ class MainApp:
         button_frame.pack(pady=scale_value(10))
 
         def confirm_delete():
-            if not any([delete_classifications.get(), delete_models.get(), delete_hierarchy.get()]):
+            if not any([delete_classifications.get(), delete_models.get(), delete_hierarchy.get(), delete_config.get()]):
                 messagebox.showwarning("No Selection", "Please select at least one option to delete.", parent=dialog)
                 return
 
@@ -1348,6 +1358,8 @@ class MainApp:
                 items.append("- All trained models and training data")
             if delete_hierarchy.get():
                 items.append("- Hierarchy and temporary files")
+            if delete_config.get():
+                items.append("- Saved configuration file (config.py)")
 
             confirm_msg = "Are you sure you want to DELETE:\n\n" + "\n".join(items) + "\n\nThis cannot be undone!"
 
@@ -1356,14 +1368,14 @@ class MainApp:
                 logger.info("User cancelled data deletion")
                 return
 
-            logger.info(f"User confirmed data deletion - Classifications: {delete_classifications.get()}, Models: {delete_models.get()}, Hierarchy: {delete_hierarchy.get()}")
+            logger.info(f"User confirmed data deletion - Classifications: {delete_classifications.get()}, Models: {delete_models.get()}, Hierarchy: {delete_hierarchy.get()}, Config: {delete_config.get()}")
             dialog.destroy()
-            self._perform_data_deletion(delete_classifications.get(), delete_models.get(), delete_hierarchy.get())
+            self._perform_data_deletion(delete_classifications.get(), delete_models.get(), delete_hierarchy.get(), delete_config.get())
 
         tk.Button(button_frame, text="Delete", command=confirm_delete, bg="#ff4444", fg="white", font=("Arial", scale_value(10), "bold"), width=10).pack(side="left", padx=scale_value(5))
         tk.Button(button_frame, text="Cancel", command=dialog.destroy, font=("Arial", scale_value(10)), width=10).pack(side="left", padx=scale_value(5))
 
-    def _perform_data_deletion(self, delete_classifications, delete_models, delete_hierarchy):
+    def _perform_data_deletion(self, delete_classifications, delete_models, delete_hierarchy, delete_config):
         """Perform the actual data deletion."""
         output_dir = self.output_dir.get()
         deleted_items = []
@@ -1432,6 +1444,21 @@ class MainApp:
                     except Exception as e:
                         errors.append(f"Failed to delete series_thumbnails: {e}")
 
+            # Delete config
+            if delete_config:
+                config_path = os.path.join(output_dir, "config.py")
+
+                if os.path.exists(config_path):
+                    try:
+                        os.remove(config_path)
+                        deleted_items.append("config.py")
+                        # Reset to repository config if we were using the deleted config
+                        if self.active_config_path == config_path:
+                            self.active_config_path = None
+                            logger.info("Reverted to repository configuration after deleting custom config.py")
+                    except Exception as e:
+                        errors.append(f"Failed to delete config.py: {e}")
+
             # Show results
             if deleted_items or errors:
                 # Create simplified messages based on what was deleted
@@ -1444,6 +1471,8 @@ class MainApp:
                                         any('dicom_symlinks' in item for item in deleted_items) or
                                         any('series_thumbnails' in item for item in deleted_items)):
                     messages.append("Successfully deleted hierarchy data")
+                if delete_config and any('config.py' in item for item in deleted_items):
+                    messages.append("Successfully deleted configuration file")
 
                 result_msg = "\n".join(messages) if messages else "Deletion completed"
 
