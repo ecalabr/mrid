@@ -33,6 +33,8 @@ NUM_ROWS = 4  # max number of rows in verification UI
 OVERRIDE_THRESHOLD = 0.5  # probability threshold for auto-classification
 ALLOW_DUPLICATE_LABELS = False  # allow multiple series to have the same label for manual classification
 NUM_PARALLEL_WORKERS = 8  # number of parallel threads for various file loading operations
+RANDOMIZE_STUDY_ORDER = True  # randomize the order of studies during manual/semi-auto classification
+STUDY_ORDER_SEED = 42  # seed for pseudo-random study ordering (ensures reproducibility)
 
 # CNN hyperparameters
 IMAGE_SIZE = 128

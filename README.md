@@ -473,6 +473,26 @@ Controls the number of concurrent worker threads used to load image thumbnails i
 - **Purpose**: Optimizes thumbnail loading performance through parallel processing
 - **Default**: 8 workers (suitable for most modern systems, adjust as needed based on your system capabilities)
 
+### Study Order Randomization
+
+```python
+RANDOMIZE_STUDY_ORDER = True  # Randomize the order of studies during manual/semi-auto classification
+STUDY_ORDER_SEED = 42         # Seed for pseudo-random study ordering (ensures reproducibility)
+```
+
+Controls whether studies are presented in a randomized order during Manual and Semi-Auto classification:
+
+- **Purpose**: Reduces bias in manual classification by randomizing the order studies are presented
+- **`RANDOMIZE_STUDY_ORDER`**: Enable/disable randomization
+  - `True` (Default): Studies are shuffled in pseudo-random order
+  - `False`: Studies are presented in the order found (patient ID, then study UID)
+- **`STUDY_ORDER_SEED`**: Integer seed for random number generator
+  - Default: 42
+  - Using the same seed ensures reproducible ordering across runs
+  - Change the seed to get a different random order
+  - Only used when `RANDOMIZE_STUDY_ORDER = True`
+- **Note**: Only applies to Manual and Semi-Auto modes; Full-Auto mode processes studies in original order for consistency
+
 ### DICOM ImageType Filtering
 
 ```python
@@ -606,17 +626,7 @@ Access via menu bar: **"File Options"**
 
 Access via menu bar: **"Configuration"**
 
-#### View Configuration
-- **Purpose**: Display all current configuration settings
-- **Features**:
-  - Read-only view of all settings from config.py
-  - Formatted display with descriptions
-  - Edit Config File button (opens in system editor)
-  - Reload Config button (applies changes after editing)
-- **Usage**: Review settings, edit config.py, reload to apply changes
-- **Note**: Some settings may require application restart to fully take effect
-
-#### Save Config
+#### Save Config File
 - **Purpose**: Save current configuration to output directory
 - **Usage**: Select menu item → Config saved to `{output_dir}/config.py`
 - **Use Cases**:
@@ -625,7 +635,7 @@ Access via menu bar: **"Configuration"**
   - Document configuration used for specific analyses
 - **Validation**: Checks that output directory exists before saving
 
-#### Load Config
+#### Load Config File
 - **Purpose**: Load a previously saved configuration file
 - **Usage**: Select menu item → Choose config.py file → Config loaded
 - **Features**:
@@ -639,6 +649,25 @@ Access via menu bar: **"Configuration"**
   - If config invalid: Shows warning, uses original config
   - Seamless integration with existing hierarchy workflow
 - **Note**: Some settings may require application restart to fully take effect
+
+#### Edit Config File
+- **Purpose**: Open the currently active config.py file in your system's default text editor
+- **Features**:
+  - Opens repository config.py or custom loaded config
+  - Uses system default text editor (Notepad, TextEdit, gedit, etc.)
+  - Shows which config is active (repository vs. custom)
+- **Usage**: Select menu item → Config file opens in editor → Make changes → Save file → Use "Reload Config"
+- **Note**: After editing, use "Configuration > Reload Config" to apply changes
+
+#### Reload Config File
+- **Purpose**: Reload configuration from the currently active config file
+- **Features**:
+  - Reloads either repository config or custom loaded config
+  - Updates all configuration variables in memory
+  - Validates config before applying
+- **Usage**: After editing config.py, select menu item to apply changes
+- **Note**: Some settings (loaded models, running processes, certain UI elements) may require application restart to fully take effect
+
 
 ### CSV Field Management
 

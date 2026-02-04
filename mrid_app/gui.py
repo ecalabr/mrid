@@ -1,6 +1,7 @@
 import os
 import threading
 import time
+import random
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from . import config
@@ -17,6 +18,7 @@ import colorsys
 import platform
 import subprocess
 import importlib
+import pydicom
 
 logger = get_logger()
 
@@ -373,14 +375,16 @@ class MainApp:
         other_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="File Options", menu=other_menu)
         other_menu.add_command(label="Convert NIfTIs", command=self._convert_niftis_utility)
+        other_menu.add_command(label="Export DICOMS", command=self._export_dicoms_utility)
         other_menu.add_command(label="Erase Data", command=self._erase_data_utility)
 
         # Configuration menu
         config_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Configuration", menu=config_menu)
-        config_menu.add_command(label="View Configuration", command=self._view_configuration_dialog)
-        config_menu.add_command(label="Save Config", command=self._save_config)
-        config_menu.add_command(label="Load Config", command=self._load_config)
+        config_menu.add_command(label="Save Config File", command=self._save_config)
+        config_menu.add_command(label="Load Config File", command=self._load_config)
+        config_menu.add_command(label="Edit Config File", command=self._edit_config_file)
+        config_menu.add_command(label="Reload Config File", command=self._reload_config_menu)
 
         # UI layout
         dir_frame = tk.LabelFrame(master, text="Directories", padx=scale_value(10), pady=scale_value(10))
@@ -1060,6 +1064,13 @@ class MainApp:
                     series_dict = study_data.get("series", {})
                     all_studies.append((mrn, study_uid, accn, series_dict))
 
+            # Randomize study order for Manual/Semi-Auto modes if configured
+            if mode in ["Manual", "Semi-Auto"] and getattr(config, 'RANDOMIZE_STUDY_ORDER', True):
+                seed = getattr(config, 'STUDY_ORDER_SEED', 42)
+                random.seed(seed)
+                random.shuffle(all_studies)
+                logger.info(f"Randomized study order using seed {seed}")
+
             total_studies = len(all_studies)
             try:
                 self.progress_bar.config(maximum=total_studies)
@@ -1269,6 +1280,188 @@ class MainApp:
             progress_window.after(0, progress_window.destroy)
 
         thread = threading.Thread(target=convert_worker, daemon=True)
+        thread.start()
+
+    def _export_dicoms_utility(self):
+        """Utility to export all classified DICOMs to a user-specified location."""
+        if self.is_running:
+            messagebox.showwarning("Busy", "Cannot export DICOMs while classification is running.", parent=self.master)
+            return
+
+        output_dir = self.output_dir.get()
+        if not os.path.isdir(output_dir):
+            messagebox.showerror("Error", "Please specify a valid output directory.", parent=self.master)
+            return
+
+        # Prompt user for export location
+        export_dir = filedialog.askdirectory(
+            title="Select Export Directory",
+            parent=self.master
+        )
+
+        if not export_dir:
+            logger.info("User cancelled DICOM export")
+            return
+
+        logger.info(f"Starting DICOM export to: {export_dir}")
+
+        # Count studies to process
+        study_folders = []
+        for folder in os.listdir(output_dir):
+            folder_path = os.path.join(output_dir, folder)
+            if os.path.isdir(folder_path):
+                # Check if it looks like a study folder (has classification CSV)
+                study_id = extract_study_id_from_path(folder_path)
+                csv_path = os.path.join(folder_path, get_study_csv_name(study_id))
+                if os.path.exists(csv_path):
+                    study_folders.append(folder_path)
+
+        if not study_folders:
+            messagebox.showinfo("No Studies", "No classified studies found in output directory.", parent=self.master)
+            return
+
+        # Create progress window
+        progress_window = tk.Toplevel(self.master)
+        enable_tkinter_autoscaling(progress_window)
+        progress_window.title("Exporting DICOMs...")
+        progress_window.geometry(scale_geometry("500x150"))
+        progress_window.protocol("WM_DELETE_WINDOW", lambda: None)  # Disable close
+
+        status_label = tk.Label(progress_window, text=f"Exporting DICOMs from {len(study_folders)} studies...")
+        status_label.pack(pady=scale_value(10))
+
+        progress_bar = ttk.Progressbar(progress_window, orient="horizontal", length=scale_value(400), mode="determinate", maximum=len(study_folders))
+        progress_bar.pack(pady=scale_value(10))
+
+        current_label = tk.Label(progress_window, text="")
+        current_label.pack(pady=scale_value(5))
+
+        # Export in background thread
+        def export_worker():
+            import csv
+            total_files_copied = 0
+            skipped_count = 0
+            error_count = 0
+
+            # Track processed series to avoid duplicates
+            processed_series = set()
+
+            for idx, study_path in enumerate(study_folders):
+                study_id = extract_study_id_from_path(study_path)
+
+                # Update UI
+                progress_window.after(0, lambda i=idx, sid=study_id: current_label.config(text=f"Processing: {sid}"))
+                progress_window.after(0, lambda i=idx: progress_bar.config(value=i))
+
+                # Read classification CSV
+                csv_path = os.path.join(study_path, get_study_csv_name(study_id))
+                try:
+                    with open(csv_path, 'r', newline='') as f:
+                        reader = csv.DictReader(f)
+
+                        for row in reader:
+                            classification = str(row.get('Classification', '')).strip()
+                            if classification.lower() in ['other', 'none', '']:
+                                skipped_count += 1
+                                continue
+
+                            path = row.get('Path', '')
+                            if not path or not os.path.exists(path):
+                                logger.warning(f"DICOM path not found: {path}")
+                                error_count += 1
+                                continue
+
+                            try:
+                                # Read metadata from the DICOM file
+                                ds = pydicom.dcmread(path, stop_before_pixels=True)
+                                mrn = str(getattr(ds, 'PatientID', '')).strip()
+                                study_uid = str(getattr(ds, 'StudyInstanceUID', '')).strip()
+                                series_uid = str(getattr(ds, 'SeriesInstanceUID', '')).strip()
+
+                                if not mrn or not study_uid or not series_uid:
+                                    logger.warning(f"Missing metadata in DICOM file: {path}")
+                                    error_count += 1
+                                    continue
+
+                                # Check if we've already processed this series
+                                series_key = (mrn, study_uid, series_uid, classification)
+                                if series_key in processed_series:
+                                    continue
+                                processed_series.add(series_key)
+
+                                # Handle directory naming based on ALLOW_DUPLICATE_LABELS
+                                if ALLOW_DUPLICATE_LABELS:
+                                    # Use series_uid to make directory unique
+                                    classified_series_dir = f"{classification}-{series_uid}"
+                                else:
+                                    # Use just the label
+                                    classified_series_dir = classification
+
+                                # Find all DICOMs in the same series directory
+                                series_dir = os.path.dirname(path)
+
+                                dicom_files = []
+                                for file_name in os.listdir(series_dir):
+                                    file_path = os.path.join(series_dir, file_name)
+                                    if os.path.isfile(file_path):
+                                        # Check if it's a DICOM file by trying to read it
+                                        try:
+                                            pydicom.dcmread(file_path, stop_before_pixels=True)
+                                            dicom_files.append(file_path)
+                                        except:
+                                            # Not a DICOM file, skip
+                                            pass
+
+                                # Copy all DICOMs to export location
+                                for dicom_file in dicom_files:
+                                    ds_file = pydicom.dcmread(dicom_file, stop_before_pixels=True)
+                                    instance_uid = str(getattr(ds_file, 'SOPInstanceUID', '')).strip()
+
+                                    if not instance_uid:
+                                        logger.warning(f"Missing SOPInstanceUID in {dicom_file}, using filename")
+                                        instance_uid = os.path.splitext(os.path.basename(dicom_file))[0]
+
+                                    # Build export path: output/{mrn}/{study_uid}/{classified_series_name}/{instance_uid}.dcm
+                                    export_path = os.path.join(
+                                        export_dir,
+                                        mrn,
+                                        study_uid,
+                                        classified_series_dir,
+                                        f"{instance_uid}.dcm"
+                                    )
+
+                                    # Create directories if needed
+                                    os.makedirs(os.path.dirname(export_path), exist_ok=True)
+
+                                    # Copy the file
+                                    shutil.copy2(dicom_file, export_path)
+                                    total_files_copied += 1
+
+                            except Exception as e:
+                                logger.error(f"Error exporting DICOMs from {path}: {e}")
+                                error_count += 1
+
+                except Exception as e:
+                    logger.error(f"Error processing {csv_path}: {e}")
+                    error_count += 1
+
+            # Update final progress
+            progress_window.after(0, lambda: progress_bar.config(value=len(study_folders)))
+            progress_window.after(0, lambda: current_label.config(text="Complete!"))
+
+            # Show summary
+            summary = "DICOM Export Complete!\n\n"
+            summary += f"Files copied: {total_files_copied}\n"
+            summary += f"Series skipped (Other/None): {skipped_count}\n"
+            if error_count > 0:
+                summary += f"Errors: {error_count}"
+
+            logger.info(f"DICOM export complete - Files copied: {total_files_copied}, Skipped: {skipped_count}, Errors: {error_count}")
+
+            progress_window.after(0, lambda: messagebox.showinfo("Export Complete", summary, parent=self.master))
+            progress_window.after(0, progress_window.destroy)
+
+        thread = threading.Thread(target=export_worker, daemon=True)
         thread.start()
 
     def _erase_data_utility(self):
@@ -1490,178 +1683,6 @@ class MainApp:
         except Exception as e:
             messagebox.showerror("Error", f"An error occurred during deletion: {e}", parent=self.master)
 
-    def _view_configuration_dialog(self):
-        """Display configuration settings in a read-only dialog with edit and reload options."""
-        dialog = tk.Toplevel(self.master)
-        enable_tkinter_autoscaling(dialog)
-        dialog.title("Configuration Settings")
-        dialog.geometry(scale_geometry("700x600"))
-        dialog.transient(self.master)
-
-        # Header
-        header_frame = tk.Frame(dialog)
-        header_frame.pack(fill="x", padx=scale_value(10), pady=scale_value(10))
-        tk.Label(
-            header_frame,
-            text="Current Configuration Settings",
-            font=("Arial", scale_value(12), "bold")
-        ).pack()
-
-        # Text widget with scrollbar for configuration display
-        text_frame = tk.Frame(dialog)
-        text_frame.pack(fill="both", expand=True, padx=scale_value(10), pady=scale_value(5))
-
-        scrollbar = tk.Scrollbar(text_frame)
-        scrollbar.pack(side="right", fill="y")
-
-        text_widget = tk.Text(
-            text_frame,
-            wrap="none",
-            yscrollcommand=scrollbar.set,
-            font=("Courier", scale_value(9)),
-            state="normal"
-        )
-        text_widget.pack(side="left", fill="both", expand=True)
-        scrollbar.config(command=text_widget.yview)
-
-        # Get configuration values
-        config_text = self._get_config_text()
-        text_widget.insert("1.0", config_text)
-        text_widget.config(state="disabled")
-
-        # Button frame
-        button_frame = tk.Frame(dialog)
-        button_frame.pack(fill="x", padx=scale_value(10), pady=scale_value(10))
-
-        tk.Button(
-            button_frame,
-            text="Edit Config File",
-            command=self._edit_config_file,
-            font=("Arial", scale_value(10)),
-            width=15
-        ).pack(side="left", padx=scale_value(5))
-
-        tk.Button(
-            button_frame,
-            text="Reload Config",
-            command=lambda: self._reload_config(dialog),
-            font=("Arial", scale_value(10)),
-            width=15
-        ).pack(side="left", padx=scale_value(5))
-
-        tk.Button(
-            button_frame,
-            text="Close",
-            command=dialog.destroy,
-            font=("Arial", scale_value(10)),
-            width=15
-        ).pack(side="right", padx=scale_value(5))
-
-    def _get_config_text(self):
-        """Generate formatted text of all user-configurable settings from config.py."""
-        import pprint
-
-        lines = []
-        lines.append("=" * 70)
-        lines.append("CONFIGURATION SETTINGS")
-        lines.append("=" * 70)
-
-        # Show which config is currently active
-        if self.active_config_path:
-            lines.append(f"Active Config: {self.active_config_path}")
-            if os.path.exists(self.active_config_path):
-                lines.append("(Custom configuration loaded)")
-            else:
-                lines.append("(Custom configuration loaded - file may have been moved)")
-        else:
-            repo_config_path = os.path.join(os.path.dirname(__file__), 'config.py')
-            lines.append(f"Active Config: {repo_config_path}")
-            lines.append("(Repository default configuration)")
-
-        lines.append("=" * 70)
-        lines.append("")
-
-        # Define configuration variables to display (user-configurable only)
-        config_vars = [
-            # Directories
-            ("DATA_DIR", "Input directory for DICOM files"),
-            ("OUT_DIR", "Output directory for processed data"),
-
-            # Output naming
-            ("STUDY_NAME_TEMPLATE", "Study naming template (e.g., {mrn}-{accn})"),
-
-            # Thumbnail settings
-            ("THUMBNAIL_FORMAT", "Format for generated thumbnails (JPEG or PNG)"),
-            ("THUMBNAIL_QUALITY", "JPEG quality (1-100)"),
-
-            # Classification settings
-            ("TARGET_SERIES", "Target series labels for classification"),
-            ("PREFER_3D", "Prefer 3D acquisitions for each series type"),
-            ("INCLUDE_TYPES", "DICOM ImageType values to include"),
-            ("EXCLUDE_TYPES", "DICOM ImageType values to exclude"),
-            ("IGNORE_MULTIPLE_ORIENTATIONS", "Ignore series with multiple orientations"),
-            ("SEPARATE_STACKED_SERIES", "Separate stacked series into components"),
-            ("MAX_SPLIT", "Maximum splits for stacked series"),
-
-            # Classification UI options
-            ("NUM_COLUMNS", "Number of columns in classification UI"),
-            ("NUM_ROWS", "Number of rows in verification UI"),
-            ("OVERRIDE_THRESHOLD", "Probability threshold for auto-classification"),
-            ("ALLOW_DUPLICATE_LABELS", "Allow duplicate labels in manual classification"),
-            ("NUM_PARALLEL_WORKERS", "Number of parallel threads for file operations"),
-
-            # CNN hyperparameters
-            ("IMAGE_SIZE", "Image size for CNN input"),
-            ("NUM_EPOCHS", "Number of training epochs for CNN"),
-            ("BATCH_SIZE", "Batch size for CNN training"),
-            ("LR", "Learning rate for CNN"),
-
-            # Random Forest hyperparameters
-            ("N_ESTIMATORS", "Number of trees in Random Forest"),
-
-            # DICOM header fields
-            ("DICOM_HEADER_FIELDS", "DICOM header fields for classification"),
-
-            # Advanced configuration
-            ("CATEGORICAL_UNIQUE_THRESHOLD", "Threshold for categorical field detection"),
-            ("TEXT_MIN_WORDS", "Minimum words for text field detection"),
-            ("ARRAY_SIZE_THRESHOLD", "Threshold for array field detection"),
-            ("SEMANTIC_MODEL_NAME", "Name of semantic model for text encoding"),
-
-            # Logging
-            ("LOG_LEVEL", "Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)"),
-        ]
-
-        for var_name, description in config_vars:
-            try:
-                value = getattr(config, var_name)
-                lines.append(f"# {description}")
-
-                # Use pprint for better formatting of complex structures
-                if isinstance(value, (list, dict, tuple)):
-                    # Check if it's a complex structure that needs multi-line formatting
-                    # Use a shorter threshold to trigger pretty printing more often
-                    str_len = len(repr(value))
-
-                    if str_len > 70 or (isinstance(value, list) and len(value) > 3):
-                        # Format complex structures with pprint for readability
-                        formatted_value = pprint.pformat(value, width=66, compact=False)
-                        lines.append(f"{var_name} = {formatted_value}")
-                    else:
-                        # Short lists/dicts can stay on one line
-                        lines.append(f"{var_name} = {repr(value)}")
-                else:
-                    # Simple values use repr
-                    lines.append(f"{var_name} = {repr(value)}")
-
-                lines.append("")
-            except AttributeError:
-                lines.append(f"# {description}")
-                lines.append(f"{var_name} = <not defined>")
-                lines.append("")
-
-        return "\n".join(lines)
-
     def _edit_config_file(self):
         """Open the currently active config.py in the system's default text editor."""
         try:
@@ -1696,14 +1717,14 @@ class MainApp:
             if config_source == "custom":
                 message = (
                     f"The currently active config file has been opened:\n{config_path}\n\n"
-                    "After making changes, save the file and click 'Reload Config' to apply them.\n\n"
+                    "After making changes, save the file and use 'Configuration > Reload Config File' to apply them.\n\n"
                     "Note: This is a custom config file. To edit the repository default, "
                     "reload the repository config first."
                 )
             else:
                 message = (
                     "The repository config file has been opened in your default text editor.\n\n"
-                    "After making changes, save the file and click 'Reload Config' to apply them."
+                    "After making changes, save the file and use 'Configuration > Reload Config File' to apply them."
                 )
 
             messagebox.showinfo(
@@ -1720,10 +1741,25 @@ class MainApp:
             )
 
     def _reload_config(self, parent_dialog=None):
-        """Reload the config module to apply any changes."""
+        """Reload the currently active config to apply any changes."""
         try:
-            # Reload the config module
-            importlib.reload(config)
+            # Determine which config to reload
+            if self.active_config_path and os.path.exists(self.active_config_path):
+                # Reload custom config file
+                config_path = self.active_config_path
+                if not self._load_config_from_file(config_path):
+                    messagebox.showerror(
+                        "Error",
+                        f"Failed to reload config from:\n{config_path}",
+                        parent=parent_dialog if parent_dialog else self.master
+                    )
+                    return
+                logger.info(f"Reloaded custom config from {config_path}")
+            else:
+                # Reload repository config module
+                importlib.reload(config)
+                self.active_config_path = None
+                logger.info("Reloaded repository config")
 
             # Re-import specific values that are used directly in this module
             # Note: We use config.VARIABLE_NAME elsewhere, so those will automatically update
@@ -1734,25 +1770,18 @@ class MainApp:
             NUM_COLUMNS = config.NUM_COLUMNS
             ALLOW_DUPLICATE_LABELS = config.ALLOW_DUPLICATE_LABELS
 
-            # Reset to repository config
-            self.active_config_path = None
-
             # Update the UI elements if they need to reflect updated values
             # (input_dir and output_dir StringVars are set from these at startup)
 
             # Show success message with warning
+            config_source = "custom" if self.active_config_path else "repository"
             messagebox.showinfo(
                 "Config Reloaded",
-                "Configuration has been reloaded successfully.\n\n"
+                f"Configuration has been reloaded successfully from the {config_source} config file.\n\n"
                 "Note: Some settings (loaded models, running processes, and certain UI elements) "
                 "may require an application restart to fully take effect.",
                 parent=parent_dialog if parent_dialog else self.master
             )
-
-            # If parent dialog exists, refresh its content
-            if parent_dialog:
-                parent_dialog.destroy()
-                self._view_configuration_dialog()
 
         except Exception as e:
             messagebox.showerror(
@@ -1761,6 +1790,10 @@ class MainApp:
                 "Please check the config file for syntax errors.",
                 parent=parent_dialog if parent_dialog else self.master
             )
+
+    def _reload_config_menu(self):
+        """Wrapper for _reload_config when called from Configuration menu."""
+        self._reload_config(parent_dialog=None)
 
     def _get_config_globals(self):
         """
