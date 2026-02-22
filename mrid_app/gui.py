@@ -2260,47 +2260,23 @@ class MainApp:
             # ── Phase 3: Clustering ───────────────────────────────────────────
             coverage_threshold = getattr(_cfg, 'ANALYZE_COVERAGE_THRESHOLD', 0.5)
 
-            import math as _math
-            from mrid_app import analyze as _analyze_mod
-            series_counts = [
-                len(study_data.get("series", {}))
-                for studies in hierarchy.values()
-                for study_data in studies.values()
-            ]
-            avg_series = (sum(series_counts) / len(series_counts)) if series_counts else 4
-            _k_max = max(_analyze_mod._MIN_K,
-                         min(_math.floor(avg_series * 2), 30,
-                             max(1, len(thumbnail_files) - 1)))
-            _k_range = max(1, _k_max - _analyze_mod._MIN_K + 1)
-            total_cluster_runs = _k_range * _analyze_mod._CONSENSUS_RUNS
-
-            _cluster_inited = [False]
-            _cluster_highest = [0]
-            _cluster_last_ui_time = [0.0]
-            _CLUSTER_UI_INTERVAL = 0.05
+            # Stage labels: callback is called with current=0 (init) then
+            # current=1/2/3 just BEFORE each stage starts, so the label is
+            # always accurate while that stage is actually running.
+            _stage_labels = {0: "Clustering — PCA…",
+                             1: "Clustering — UMAP…",
+                             2: "Clustering — HDBSCAN…"}
 
             def _cluster_progress(current, total):
                 try:
-                    if current <= _cluster_highest[0]:
-                        return
-                    _cluster_highest[0] = current
-                    now = _time.monotonic()
-                    is_final = (current >= total)
-                    if is_final or not _cluster_inited[0] or \
-                            (now - _cluster_last_ui_time[0]) >= _CLUSTER_UI_INTERVAL:
-                        _cluster_last_ui_time[0] = now
-                        init = not _cluster_inited[0]
-                        _cluster_inited[0] = True
-                        v, t = current, total
-                        def _update(_v=v, _t=t, _init=init):
-                            if _init:
-                                self.progress_bar.stop()
-                                self.progress_bar.config(
-                                    mode="determinate", maximum=_t, value=0)
-                            self.progress_bar.config(value=_v)
-                            self.progress_label.set(
-                                f"Clustering… {_v}/{_t} runs")
-                        self.master.after(0, _update)
+                    label = _stage_labels.get(current, "Clustering…")
+                    def _update(_l=label, _init=(current == 0)):
+                        if _init:
+                            self.progress_bar.stop()
+                            self.progress_bar.config(mode="indeterminate", value=0)
+                            self.progress_bar.start(10)
+                        self.progress_label.set(_l)
+                    self.master.after(0, _update)
                 except Exception:
                     pass
 

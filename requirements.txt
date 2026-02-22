@@ -9,3 +9,5 @@ joblib
 sentence-transformers
 torch>=1.8.0    # Optional for CNN functionality
 torchvision
+umap-learn      # UMAP dimensionality reduction for Analyze mode
+hdbscan         # Density-based clustering for Analyze mode

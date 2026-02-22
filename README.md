@@ -16,6 +16,11 @@ A comprehensive GUI application for automated classification and organization of
 - [Quick Start](#quick-start)
 - [Usage](#usage)
   - [Classification Modes](#classification-modes)
+    - [Analyze Mode](#analyze-mode)
+    - [Manual Mode](#manual-mode)
+    - [Semi-Auto Mode](#semi-auto-mode)
+    - [Full-Auto Mode](#full-auto-mode)
+    - [Verify Mode](#verify-mode)
   - [Model Types](#model-types)
   - [Training Models](#training-models)
 - [Basic Configuration](#basic-configuration)
@@ -46,7 +51,8 @@ MRID is a powerful tool designed to automate the classification and organization
 
 ### Core Functionality
 - ✅ **Multi-Modal Classification**: DICOM header model, image-based CNN, or combined
-- ✅ **Four Classification Modes**: Manual, Semi-Auto, Full-Auto, Verify
+- ✅ **Five Classification Modes**: Analyze, Manual, Semi-Auto, Full-Auto, Verify
+- ✅ **Analyze Mode**: Fully automated series discovery using deep learning — no pre-defined labels required
 - ✅ **Smart Series Selection**: Automatic selection with configurable confidence thresholds
 - ✅ **3D Preference**: Prioritize 3D acquisitions over 2D when configured
 - ✅ **NIfTI Conversion**: Integrated dcm2niix conversion with automatic organization
@@ -119,9 +125,13 @@ Pillow>=9.0.0
 pyyaml>=6.0
 joblib>=1.1.0
 sentence-transformers>=2.2.0
+umap-learn   # For Analyze mode dimensionality reduction
+hdbscan      # For Analyze mode clustering
 ```
 
 **Note on Compressed DICOMs:** The application uses `python-gdcm` to handle compressed DICOM files (JPEG, JPEG2000, RLE, etc.). This library provides native support for reading compressed transfer syntaxes that pydicom alone cannot handle.
+
+**Note on Analyze Mode:** `umap-learn` and `hdbscan` are required for Analyze mode. They are not needed for Manual, Semi-Auto, Full-Auto, or Verify modes.
 
 ### External Dependencies
 
@@ -185,6 +195,9 @@ python run.py
 
 ### 3. Choose Classification Mode
 
+- **Analyze**: Automatically discover series types from your dataset
+  - This mode is optional. You can skip it if you already know your `TARGET_SERIES` and have them configured in `config.py`
+  - Use this mode at the very beginning if you need help determining your `TARGET_SERIES` list in `config.py`
 - **Manual**: Review and classify each series manually
 - **Semi-Auto**: Pre-select best series matches based on model predictions, review before saving (requires trained models)
 - **Full-Auto**: Automatically classify and save without review (requires trained models)
@@ -206,6 +219,33 @@ python run.py
 ## Usage
 
 ### Classification Modes
+
+#### Analyze Mode
+- **Use Case**: First-time dataset exploration, automatic `TARGET_SERIES` configuration, no labels or trained models required
+- **Workflow**:
+  1. Select Input and Output directories and set Mode to **Analyze**
+  2. Click **"▶ Start Analysis"**
+  3. System scans DICOM files and generates series thumbnails (skipped if already done)
+  4. Image series are automatically clustered into similar groups. Use the `ANALYZE_COVERAGE_THRESHOLD` parameter in `config.py` to define the minimum fraction of exams that must contain an example for a given cluster to be considered valid
+  5. A results window opens showing the 4 most-representative thumbnails per cluster
+  6. For each cluster, enter a series name (defaults: `Series1`, `Series2`, …) and optionally tick **"Prefer 3D"** if you want the system to automatically prefer 3D volumetric images for this series type
+  7. Uncheck **"Include"** for any series cluster you do not want to include in your workflow
+  8. Click **"Apply"** — `TARGET_SERIES` and `PREFER_3D` are written to `config.py` in the output directory
+- **Technical Pipeline**:
+  - **Feature extraction**: Frozen ResNet50 (ImageNet weights, already cached), 2048-D global average-pool output, batched GPU inference (~2 ms/image on modern hardware)
+  - **L2 normalization**: Makes cosine distance equivalent to Euclidean distance on the unit hypersphere
+  - **PCA**: Reduces 2048-D features to the minimum number of components that retain ≥ 90 % of variance (typically 3–15 for MRI datasets), capped at 150
+  - **UMAP**: Non-linear manifold embedding preserving global topology (`n_neighbors=30`, `min_dist=0.1`, cosine metric); output dimension = min(PCA dims, 15)
+  - **HDBSCAN**: Density-based clustering with `min_cluster_size = ceil(ANALYZE_COVERAGE_THRESHOLD × n_exams)`; noise points are reassigned to the nearest cluster centroid
+  - **Best examples**: The 4 thumbnails per cluster closest to the centroid in PCA space are shown in the results window
+- **Output**:
+  - `TARGET_SERIES` and `PREFER_3D` updated in `{output_dir}/config.py`
+  - `"Other"` is always appended as the final catch-all entry regardless of user selections
+- **Notes**:
+  - Requires `torch`, `torchvision`, `umap-learn`, and `hdbscan` packages
+  - ResNet50 weights are loaded from the local PyTorch cache — no internet access required after first run
+  - Scanning and thumbnail generation are skipped automatically if already completed
+  - If no `config.py` is found in the output directory, you will be prompted to copy the default
 
 #### Manual Mode
 - **Use Case**: Maximum control, review every series
@@ -398,6 +438,22 @@ TARGET_SERIES = ["T1", "T2", "FLAIR", "T1c", "Other"] # always include "Other"
 - These are just labels and don't need to match the series description.
 - Add or remove series as needed.
 - "Other" should always be included (it's the default for unclassified series).
+- In **Analyze mode**, this list is populated automatically and written to `config.py` — you do not need to set it manually.
+
+### Analyze Mode Coverage Threshold
+
+Controls how inclusive or exclusive the automatic series-type discovery in Analyze mode is:
+
+```python
+ANALYZE_COVERAGE_THRESHOLD = 0.1  # default: 10% of exams must contain a series type
+```
+
+- **Meaning**: A series type is only recognised as a valid cluster if it appears in at least this fraction of exams in the dataset.
+- **How it works**: The value is passed directly to HDBSCAN as `min_cluster_size = ceil(ANALYZE_COVERAGE_THRESHOLD × n_unique_exams)`. Any group of thumbnails smaller than this threshold is treated as noise and merged into the nearest valid cluster.
+- **Effect of increasing the value** (e.g. `0.5`): Only series types present in ≥ 50 % of exams are reported — rare or incidental sequences are suppressed. Use when your protocol is highly consistent and you only want the core series types.
+- **Effect of decreasing the value** (e.g. `0.05`): Series types present in as few as 5 % of exams are reported — more clusters, including rare or optional sequences. Use when your dataset contains heterogeneous protocols or you want to capture all series types.
+- **Range**: 0.0–1.0 (values below ~0.05 may produce many small clusters; values above ~0.5 may merge similar types)
+- **Recommended starting point**: `0.1` (10 %) for most datasets, higher if you are getting too many series options in analyze mode, lower if you want more options
 
 ### 3D Preference
 
@@ -576,6 +632,7 @@ mrid/
 │   ├── __init__.py
 │   ├── config.py           # Configuration settings
 │   ├── gui.py              # Tkinter GUI and main logic
+│   ├── analyze.py          # Analyze mode: ResNet50 → PCA → UMAP → HDBSCAN pipeline
 │   ├── processing.py       # DICOM processing and classification
 │   ├── scanner.py          # DICOM hierarchy scanning
 │   ├── header.py           # Random Forest header model
@@ -888,5 +945,5 @@ Please check back for updates to citation information.
 
 ---
 
-**Last Updated**: January 2026  
-**Version**: 1.0.0
+**Last Updated**: February 2026  
+**Version**: 1.1.0
