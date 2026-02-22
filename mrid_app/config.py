@@ -2,8 +2,8 @@
 # Filepath configuration options (modify only at beginning of project)
 # ============================================================================
 # Default directories (can be overridden by UI)
-DATA_DIR = "/media/ecalabr/raid/khasraw_data/2026-01-21-001"
-OUT_DIR = "/media/ecalabr/raid/khasraw_data/outputs"
+DATA_DIR = "/media/ecalabr/raid/MRID-testing"
+OUT_DIR = "/media/ecalabr/raid/MRID-testing"
 # Output naming template
 STUDY_NAME_TEMPLATE = "{mrn}-{accn}"
 # Thumbnail generation settings
@@ -26,6 +26,9 @@ EXCLUDE_TYPES = ["DERIVED", "SECONDARY", "ADC", "DIFFUSION", "LOCALIZER", "MIP",
 IGNORE_MULTIPLE_ORIENTATIONS = True
 SEPARATE_STACKED_SERIES = True
 MAX_SPLIT = 5  # max number of splits for stacked series
+
+# Analyze mode settings
+ANALYZE_COVERAGE_THRESHOLD = 0.1  # clusters will only be considered if this proportion of exams contains a member
 
 # Classification UI options
 NUM_COLUMNS = 6  # max number of columns in classification/verification UI

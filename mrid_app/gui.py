@@ -402,7 +402,7 @@ class MainApp:
         mode_frame = tk.Frame(control_frame)
         mode_frame.pack(side="right", padx=scale_value(5))
         tk.Label(mode_frame, text="Mode:").pack(side="left", padx=scale_value(5))
-        mode_options = ["Manual", "Semi-Auto", "Full-Auto", "Verify"]
+        mode_options = ["Analyze", "Manual", "Semi-Auto", "Full-Auto", "Verify"]
         # Replaced ttk.Combobox with tk.OptionMenu. Keep using the same
         # StringVar (self.classification_mode) and call _check_model_status via
         # the OptionMenu 'command' so existing logic that relies on the
@@ -642,8 +642,12 @@ class MainApp:
         models_loaded = False
         mode_is_manual = False
         mode_is_verify = False
+        mode_is_analyze = False
 
-        if mode == "Manual":
+        if mode == "Analyze":
+            can_start = True
+            mode_is_analyze = True
+        elif mode == "Manual":
             can_start = True
             mode_is_manual = True
         elif mode == "Verify":
@@ -664,7 +668,9 @@ class MainApp:
 
         # Update start button
         if can_start:
-            if mode_is_verify:
+            if mode_is_analyze:
+                self.start_button.config(text="▶ Start Analysis", state="normal", bg="#4fff5b", activebackground="#4fff5b")
+            elif mode_is_verify:
                 self.start_button.config(text="▶ Start Verification", state="normal", bg="#4fff5b", activebackground="#4fff5b")
             else:
                 self.start_button.config(text="▶ Start Classification", state="normal", bg="#4fff5b", activebackground="#4fff5b")
@@ -674,7 +680,7 @@ class MainApp:
         # Update load button
         if models_loaded:
             self.load_button.config(text="Model(s) Loaded", state="disabled", bg="#4fff5b", activebackground="#4fff5b")
-        elif mode_is_manual or mode_is_verify:
+        elif mode_is_manual or mode_is_verify or mode_is_analyze:
             self.load_button.config(text="Load Model(s)", state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
         else:
             self.load_button.config(text="Load Model(s)", state="normal", bg="#ff4f4f", activebackground="#ff4f4f")
@@ -813,6 +819,11 @@ class MainApp:
         if self.is_running: return
         current_mode = self.classification_mode.get()
 
+        # Handle Analyze mode separately
+        if current_mode == "Analyze":
+            self.start_analysis()
+            return
+
         # Handle Verify mode separately
         if current_mode == "Verify":
             self.start_verification()
@@ -849,7 +860,7 @@ class MainApp:
             hierarchy_exists = os.path.exists(hierarchy_path)
             config_exists = os.path.exists(config_path)
 
-            # Automatically load config if it exists
+            # Automatically load config if it exists; otherwise offer to copy the default
             if config_exists:
                 try:
                     if self._load_config_from_file(config_path):
@@ -858,6 +869,39 @@ class MainApp:
                         logger.warning(f"Failed to load config from {config_path}, using current config")
                 except Exception as e:
                     logger.warning(f"Failed to load config.py: {e} - using current config")
+            else:
+                # No config in output dir — ask the user if they want to copy the default
+                copy_default = messagebox.askyesno(
+                    "No Config File Found",
+                    "No config.py was found in the output directory.\n\n"
+                    "Would you like to copy the default config file to the output directory "
+                    "and use it as the active configuration?\n\n"
+                    "Select 'No' to continue using the default repository config.",
+                    parent=self.master
+                )
+                if copy_default:
+                    try:
+                        # Determine the source: active custom config or the repo config
+                        if self.active_config_path and os.path.exists(self.active_config_path):
+                            source_config_path = self.active_config_path
+                        else:
+                            source_config_path = config.__file__
+                            if source_config_path.endswith('.pyc'):
+                                source_config_path = source_config_path[:-1]
+
+                        os.makedirs(output_dir, exist_ok=True)
+                        shutil.copy(source_config_path, config_path)
+                        logger.info(f"Copied default config to: {config_path}")
+
+                        if self._load_config_from_file(config_path):
+                            self.active_config_path = config_path
+                            logger.info(f"Loaded copied config from: {config_path}")
+                        else:
+                            logger.warning(f"Copied config to {config_path} but failed to load it, using current config")
+                    except Exception as e:
+                        logger.warning(f"Failed to copy default config to output directory: {e} - using current config")
+                else:
+                    logger.info("User declined to copy default config - continuing with repository config")
 
             # Automatically load hierarchy if it exists
             if hierarchy_exists:
@@ -1976,6 +2020,633 @@ class MainApp:
                 parent=self.master
             )
 
+    # =========================================================================
+    # Analyze Mode
+    # =========================================================================
+
+    def start_analysis(self):
+        """Entry point for Analyze mode — scan + thumbnail generation then cluster."""
+        input_dir = self.input_dir.get()
+        output_dir = self.output_dir.get()
+
+        if not os.path.isdir(input_dir):
+            messagebox.showerror("Error", "Please specify a valid input directory.", parent=self.master)
+            return
+
+        # Ensure output directory exists
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except Exception as e:
+            messagebox.showerror("Error", f"Cannot create output directory:\n{e}", parent=self.master)
+            return
+
+        # Config copy prompt (same logic as start_classification)
+        config_path = os.path.join(output_dir, "config.py")
+        if not os.path.exists(config_path):
+            copy_default = messagebox.askyesno(
+                "No Config File Found",
+                "No config.py was found in the output directory.\n\n"
+                "Would you like to copy the default config file to the output directory "
+                "and use it as the active configuration?\n\n"
+                "Select 'No' to continue using the default repository config.",
+                parent=self.master
+            )
+            if copy_default:
+                try:
+                    if self.active_config_path and os.path.exists(self.active_config_path):
+                        source_config_path = self.active_config_path
+                    else:
+                        source_config_path = config.__file__
+                        if source_config_path.endswith('.pyc'):
+                            source_config_path = source_config_path[:-1]
+                    shutil.copy(source_config_path, config_path)
+                    if self._load_config_from_file(config_path):
+                        self.active_config_path = config_path
+                        logger.info(f"Copied and loaded config to: {config_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to copy config: {e}")
+
+        # Check whether scanning has already been done
+        hierarchy_path = os.path.join(output_dir, "hierarchy.yaml")
+        thumbnail_dir = os.path.join(output_dir, "series_thumbnails")
+        scan_needed = (
+            not os.path.exists(hierarchy_path)
+            or not os.path.isdir(thumbnail_dir)
+            or len(os.listdir(thumbnail_dir)) == 0
+        )
+
+        if not scan_needed:
+            logger.info("Existing hierarchy and thumbnails found — skipping scan.")
+
+        # Lock UI
+        self.is_running = True
+        self.stop_requested.clear()
+        self.start_button.config(state="disabled")
+        self.stop_button.config(state="normal")
+        self.train_button.config(state="disabled")
+
+        self.progress_frame = tk.Frame(self.master)
+        self.progress_frame.pack(padx=20, pady=10, fill='x')
+        self.progress_label = tk.StringVar(value="Starting analysis…")
+        tk.Label(self.progress_frame, textvariable=self.progress_label).pack(side="top")
+        self.progress_bar = ttk.Progressbar(self.progress_frame, orient="horizontal", mode="indeterminate")
+        self.progress_bar.pack(fill='x', pady=5)
+        self.progress_bar.start(10)
+
+        analysis_thread = threading.Thread(
+            target=self.run_analysis_main,
+            args=(input_dir, output_dir, scan_needed),
+            daemon=True
+        )
+        analysis_thread.start()
+        self.master.after(100, self._poll_classification_status, analysis_thread)
+
+    def run_analysis_main(self, input_dir, output_dir, scan_needed):
+        """Background worker for Analyze mode."""
+        try:
+            import multiprocessing as mp
+            import yaml as _yaml
+            from .scanner import build_hierarchy
+            from .utils import write_yaml_hierarchy
+            from .analyze import run_analysis
+
+            os.makedirs(output_dir, exist_ok=True)
+            update_log_file_location(output_dir)
+
+            hierarchy_path = os.path.join(output_dir, "hierarchy.yaml")
+            thumbnail_dir = os.path.join(output_dir, "series_thumbnails")
+
+            # ── Phase 1: Scan (if needed) ────────────────────────────────────
+            if scan_needed:
+                self.master.after(0, lambda: self.progress_label.set("Scanning DICOM files…"))
+
+                all_files = []
+                for dcm_root, _, files in os.walk(input_dir):
+                    for f in files:
+                        if not f.startswith(".") and os.path.splitext(f)[1] in ["", ".dcm", ".dicom", ".ima"]:
+                            all_files.append(os.path.join(dcm_root, f))
+
+                logger.info(f"Found {len(all_files)} candidate files.")
+                total_files = len(all_files)
+                gui = ProgressGUI(total_files=total_files, title="Analyze — Scanning…")
+
+                pool = mp.Pool(mp.cpu_count())
+                results = []
+                try:
+                    from .scanner import check_dicom_batch
+                    batch_size = 64
+                    chunks = [all_files[i:i + batch_size] for i in range(0, len(all_files), batch_size)]
+                    processed = 0
+                    for batch_res in pool.imap_unordered(check_dicom_batch, chunks):
+                        if batch_res:
+                            results.extend(batch_res)
+                            processed += len(batch_res)
+                        else:
+                            processed += batch_size
+                        if processed > total_files:
+                            processed = total_files
+                        gui.update(processed, total_files)
+                        if self.stop_requested.is_set():
+                            gui.close()
+                            pool.terminate()
+                            pool.join()
+                            self.classification_finished(aborted=True)
+                            return
+                finally:
+                    pool.close()
+                    pool.join()
+
+                dicom_records = [r for r in results if r is not None]
+                logger.info(f"Identified {len(dicom_records)} valid DICOM records.")
+
+                groups = set((r['patient'], r['study_uid'], r['series_uid']) for r in dicom_records)
+                total_groups = max(1, len(groups))
+
+                organize_started = [False]
+                thumbnail_started = [False]
+
+                def _build_cb(n):
+                    try:
+                        if not organize_started[0]:
+                            gui.show_organize_progress("Organizing series…", total_groups)
+                            organize_started[0] = True
+                        gui.update_organize_progress(n, total_groups)
+                    except Exception:
+                        pass
+
+                def _thumb_cb(current, total):
+                    try:
+                        if not thumbnail_started[0]:
+                            gui.show_thumbnail_progress("Generating thumbnails…", total)
+                            thumbnail_started[0] = True
+                        gui.update_thumbnail_progress(current, total)
+                    except Exception:
+                        pass
+
+                hierarchy = build_hierarchy(
+                    dicom_records, output_dir,
+                    progress_callback=_build_cb,
+                    thumbnail_progress_callback=_thumb_cb
+                )
+                try:
+                    write_yaml_hierarchy(hierarchy, output_dir)
+                except Exception as e:
+                    logger.warning(f"Failed to write hierarchy.yaml: {e}")
+                try:
+                    gui.close()
+                except Exception:
+                    pass
+
+            else:
+                # Load existing hierarchy
+                try:
+                    with open(hierarchy_path, 'r') as hf:
+                        hierarchy = _yaml.safe_load(hf)
+                    logger.info("Loaded existing hierarchy.yaml")
+                except Exception as e:
+                    logger.warning(f"Could not load hierarchy.yaml: {e}; using empty hierarchy")
+                    hierarchy = {}
+
+            if self.stop_requested.is_set():
+                self.classification_finished(aborted=True)
+                return
+
+            # ── Phase 2: Feature loading ──────────────────────────────────────
+            from mrid_app import config as _cfg
+            num_workers = getattr(_cfg, 'NUM_PARALLEL_WORKERS', 8)
+
+            thumbnail_files = [
+                f for f in os.listdir(thumbnail_dir)
+                if os.path.splitext(f)[1].lower() in {'.jpg', '.jpeg', '.png'}
+            ] if os.path.isdir(thumbnail_dir) else []
+            total_thumbs = max(1, len(thumbnail_files))
+
+            import time as _time
+
+            # The first callback call initialises the bar (mode, maximum, value=0)
+            # then immediately applies the real value.  This avoids any thread
+            # synchronisation: the init and first update happen atomically in one
+            # after() call, so the bar is never in the wrong mode when updated.
+            _load_inited = [False]
+            _load_highest = [0]
+            _load_last_ui_time = [0.0]
+            _LOAD_UI_INTERVAL = 0.05  # seconds — cap GUI update rate
+
+            def _load_progress(current, total):
+                try:
+                    if current <= _load_highest[0]:
+                        return
+                    _load_highest[0] = current
+                    now = _time.monotonic()
+                    is_final = (current >= total)
+                    if is_final or not _load_inited[0] or \
+                            (now - _load_last_ui_time[0]) >= _LOAD_UI_INTERVAL:
+                        _load_last_ui_time[0] = now
+                        init = not _load_inited[0]
+                        _load_inited[0] = True
+                        v, t = current, total
+                        def _update(_v=v, _t=t, _init=init):
+                            if _init:
+                                self.progress_bar.stop()
+                                self.progress_bar.config(
+                                    mode="determinate", maximum=_t, value=0)
+                            self.progress_bar.config(value=_v)
+                            self.progress_label.set(
+                                f"Loading thumbnails… {_v}/{_t}")
+                        self.master.after(0, _update)
+                except Exception:
+                    pass
+
+            # ── Phase 3: Clustering ───────────────────────────────────────────
+            coverage_threshold = getattr(_cfg, 'ANALYZE_COVERAGE_THRESHOLD', 0.5)
+
+            import math as _math
+            from mrid_app import analyze as _analyze_mod
+            series_counts = [
+                len(study_data.get("series", {}))
+                for studies in hierarchy.values()
+                for study_data in studies.values()
+            ]
+            avg_series = (sum(series_counts) / len(series_counts)) if series_counts else 4
+            _k_max = max(_analyze_mod._MIN_K,
+                         min(_math.floor(avg_series * 2), 30,
+                             max(1, len(thumbnail_files) - 1)))
+            _k_range = max(1, _k_max - _analyze_mod._MIN_K + 1)
+            total_cluster_runs = _k_range * _analyze_mod._CONSENSUS_RUNS
+
+            _cluster_inited = [False]
+            _cluster_highest = [0]
+            _cluster_last_ui_time = [0.0]
+            _CLUSTER_UI_INTERVAL = 0.05
+
+            def _cluster_progress(current, total):
+                try:
+                    if current <= _cluster_highest[0]:
+                        return
+                    _cluster_highest[0] = current
+                    now = _time.monotonic()
+                    is_final = (current >= total)
+                    if is_final or not _cluster_inited[0] or \
+                            (now - _cluster_last_ui_time[0]) >= _CLUSTER_UI_INTERVAL:
+                        _cluster_last_ui_time[0] = now
+                        init = not _cluster_inited[0]
+                        _cluster_inited[0] = True
+                        v, t = current, total
+                        def _update(_v=v, _t=t, _init=init):
+                            if _init:
+                                self.progress_bar.stop()
+                                self.progress_bar.config(
+                                    mode="determinate", maximum=_t, value=0)
+                            self.progress_bar.config(value=_v)
+                            self.progress_label.set(
+                                f"Clustering… {_v}/{_t} runs")
+                        self.master.after(0, _update)
+                except Exception:
+                    pass
+
+            result = run_analysis(
+                thumbnail_dir=thumbnail_dir,
+                hierarchy=hierarchy,
+                coverage_threshold=coverage_threshold,
+                num_workers=num_workers,
+                load_progress_cb=_load_progress,
+                cluster_progress_cb=_cluster_progress,
+            )
+
+            if self.stop_requested.is_set():
+                self.classification_finished(aborted=True)
+                return
+
+            # ── Phase 4: Show naming GUI on main thread ───────────────────────
+            self.master.after(0, lambda: self.progress_label.set(
+                f"Analysis complete — {result['k']} clusters found. Opening naming dialog…"))
+            self.master.after(0, lambda: self._show_cluster_naming_gui(result, output_dir))
+
+        except Exception as e:
+            logger.exception(f"Error in analysis workflow: {e}")
+            self.master.after(0, lambda: messagebox.showerror(
+                "Analysis Error", f"An error occurred during analysis:\n\n{e}", parent=self.master))
+            self.classification_finished(aborted=True)
+
+    def _show_cluster_naming_gui(self, analysis_result, output_dir):
+        """
+        Modal window: show 4 best-example thumbnails per cluster, ask the user to
+        name each cluster, tick 'Prefer 3D', and optionally exclude a cluster.
+        On Apply write to config.  Called on the main thread.
+        """
+        k = analysis_result["k"]
+        best_examples = analysis_result["best_examples"]
+
+        win = tk.Toplevel(self.master)
+        win.title("Analyze — Name Your Series Types")
+        enable_tkinter_autoscaling(win)
+        win.grab_set()
+        win.resizable(True, True)
+
+        THUMB_PX = scale_value(192)  # display size per thumbnail
+        PAD = scale_value(6)
+
+        # Header label
+        tk.Label(
+            win,
+            text=(
+                f"Found {k} series type cluster(s).  "
+                "For each cluster, review the example thumbnails and enter a name.\n"
+                "Tick 'Prefer 3D' if this series type should prefer 3D acquisitions. "
+                "Uncheck 'Include' to exclude a cluster from TARGET_SERIES.\n"
+                "Click Apply to save the names to TARGET_SERIES / PREFER_3D in config.py."
+            ),
+            wraplength=scale_value(1100),
+            justify="left"
+        ).grid(row=0, column=0, columnspan=2, padx=PAD * 2, pady=PAD * 2, sticky="w")
+
+        # Scrollable canvas for clusters
+        container = tk.Frame(win)
+        container.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=PAD, pady=PAD)
+        win.grid_rowconfigure(1, weight=1)
+        win.grid_columnconfigure(0, weight=1)
+
+        canvas = tk.Canvas(container)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        scroll_frame = tk.Frame(canvas)
+        scroll_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Per-cluster widgets
+        name_vars = []
+        prefer3d_vars = []
+        include_vars = []
+        row_frames = []
+        thumb_refs = []   # keep ImageTk references alive
+
+        for c in range(k):
+            row_frame = tk.LabelFrame(
+                scroll_frame,
+                text=f"Name your series",
+                padx=PAD, pady=PAD
+            )
+            row_frame.pack(fill="x", padx=PAD, pady=PAD)
+            row_frames.append(row_frame)
+
+            # Thumbnail grid (up to 4) — each slot is a fixed-pixel Frame so
+            # sizing is always in pixels whether or not an image is loaded.
+            thumb_frame = tk.Frame(row_frame)
+            thumb_frame.pack(side="left", padx=PAD)
+            example_paths = best_examples.get(c, [])
+            cluster_refs = []
+            for col_i, img_path in enumerate(example_paths[:4]):
+                slot = tk.Frame(thumb_frame, width=THUMB_PX, height=THUMB_PX, bg="gray")
+                slot.grid(row=0, column=col_i, padx=2, pady=2)
+                slot.grid_propagate(False)
+                lbl = tk.Label(slot, bg="gray")
+                lbl.place(relwidth=1, relheight=1)
+                try:
+                    pil_img = Image.open(img_path).convert("RGB").resize(
+                        (THUMB_PX, THUMB_PX), Image.LANCZOS
+                    )
+                    tk_img = ImageTk.PhotoImage(pil_img, master=lbl)
+                    lbl.config(image=tk_img)
+                    cluster_refs.append(tk_img)
+                except Exception:
+                    cluster_refs.append(None)
+            # Pad remaining slots if fewer than 4
+            for col_i in range(len(example_paths), 4):
+                slot = tk.Frame(thumb_frame, width=THUMB_PX, height=THUMB_PX, bg="#cccccc")
+                slot.grid(row=0, column=col_i, padx=2, pady=2)
+                slot.grid_propagate(False)
+                tk.Label(slot, bg="#cccccc", text="N/A", anchor="center").place(relwidth=1, relheight=1)
+            thumb_refs.append(cluster_refs)
+
+            # Controls: name entry, prefer 3D, include toggle
+            ctrl_frame = tk.Frame(row_frame)
+            ctrl_frame.pack(side="left", padx=PAD * 2, anchor="w")
+
+            name_var = tk.StringVar(value=f"Series{c + 1}")
+            prefer3d_var = tk.BooleanVar(value=False)
+            include_var = tk.BooleanVar(value=True)
+
+            # Include checkbox – toggling dims/restores the row visually
+            def _make_toggle(rf, nv, p3v, iv):
+                def _toggle(*_):
+                    state = "normal" if iv.get() else "disabled"
+                    fg = "black" if iv.get() else "#aaaaaa"
+                    rf.config(fg=fg)
+                    for child in rf.winfo_children():
+                        try:
+                            child.config(state=state)
+                        except Exception:
+                            pass
+                    # keep Include checkbox itself always enabled
+                    for child in ctrl_frame.winfo_children():
+                        if getattr(child, '_is_include_cb', False):
+                            child.config(state="normal")
+                return _toggle
+
+            include_cb = tk.Checkbutton(
+                ctrl_frame,
+                text="Include",
+                variable=include_var,
+            )
+            include_cb._is_include_cb = True
+            include_cb.grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
+            include_var.trace_add("write", _make_toggle(row_frame, name_var, prefer3d_var, include_var))
+
+            tk.Label(ctrl_frame, text="Series name:").grid(row=1, column=0, sticky="w", pady=2)
+            name_entry = tk.Entry(ctrl_frame, textvariable=name_var, width=20)
+            name_entry.grid(row=1, column=1, sticky="w", padx=PAD, pady=2)
+
+            prefer3d_cb = tk.Checkbutton(
+                ctrl_frame,
+                text="Prefer 3D acquisition",
+                variable=prefer3d_var,
+            )
+            prefer3d_cb.grid(row=2, column=0, columnspan=2, sticky="w", pady=2)
+
+            name_vars.append(name_var)
+            prefer3d_vars.append(prefer3d_var)
+            include_vars.append(include_var)
+
+        # Buttons row
+        btn_frame = tk.Frame(win)
+        btn_frame.grid(row=2, column=0, columnspan=2, pady=PAD * 2)
+
+        def _on_apply():
+            included = [i for i, v in enumerate(include_vars) if v.get()]
+            if not included:
+                messagebox.showwarning(
+                    "No Clusters Included",
+                    "At least one cluster must be included before applying.",
+                    parent=win
+                )
+                return
+            names = [name_vars[i].get().strip() for i in included]
+            prefer3d = [prefer3d_vars[i].get() for i in included]
+            # Validate: no empty names among included clusters
+            if any(n == "" for n in names):
+                messagebox.showwarning(
+                    "Missing Name",
+                    "Please provide a name for every included cluster before applying.",
+                    parent=win
+                )
+                return
+            # Validate: no duplicate names among included clusters
+            if len(set(names)) != len(names):
+                messagebox.showwarning(
+                    "Duplicate Names",
+                    "Each included cluster must have a unique name.",
+                    parent=win
+                )
+                return
+            win.destroy()
+            self._write_analysis_to_config(names, prefer3d, output_dir)
+            self.classification_finished(aborted=False)
+
+        def _on_cancel():
+            win.destroy()
+            self.classification_finished(aborted=False)
+
+        tk.Button(btn_frame, text="Apply", width=12, command=_on_apply,
+                  bg="#4fff5b").pack(side="left", padx=PAD)
+        tk.Button(btn_frame, text="Cancel", width=12, command=_on_cancel).pack(side="left", padx=PAD)
+
+        # ── Size and position the window ──────────────────────────────────────
+        def _fit_window():
+            win.update_idletasks()
+            screen_w = win.winfo_screenwidth()
+            screen_h = win.winfo_screenheight()
+            max_h = int(screen_h * 0.90)
+            max_w = int(screen_w * 0.95)
+
+            # Measure the true content height: the scrollable cluster rows plus
+            # the header and button frames that live outside the canvas.
+            # winfo_reqheight() on the scroll_frame gives the full unclipped
+            # height of all cluster rows.
+            content_h = (scroll_frame.winfo_reqheight()
+                         + win.grid_slaves(row=0)[0].winfo_reqheight()  # header
+                         + btn_frame.winfo_reqheight()                  # buttons
+                         + PAD * 8)                                     # padding
+
+            # Content width: scroll_frame natural width plus scrollbar
+            content_w = (scroll_frame.winfo_reqwidth()
+                         + scrollbar.winfo_reqwidth()
+                         + PAD * 4)
+
+            final_w = max(min(content_w, max_w), scale_value(900))
+            final_h = min(content_h, max_h)
+
+            # Place at a fixed offset from the main window's top-left corner
+            OFFSET_X = scale_value(40)
+            OFFSET_Y = scale_value(40)
+            x = self.master.winfo_rootx() + OFFSET_X
+            y = self.master.winfo_rooty() + OFFSET_Y
+
+            # Clamp so the dialog doesn't spill off the right or bottom edge
+            x = max(0, min(x, screen_w - final_w))
+            y = max(0, min(y, screen_h - final_h))
+
+            win.geometry(f"{final_w}x{final_h}+{x}+{y}")
+            win.minsize(final_w, min(final_h, scale_value(400)))
+
+        win.after(0, _fit_window)
+        win.wait_window()
+
+    def _write_analysis_to_config(self, names: list, prefer3d: list, output_dir: str):
+        """
+        Write the user-defined cluster names and 3D preferences into config.
+
+        Updates config module in memory, then rewrites the config file using a
+        robust AST-based approach: parse the file, replace/insert TARGET_SERIES
+        and PREFER_3D assignments, and write back with original formatting preserved
+        for all other content.
+        """
+        import ast
+        import tokenize
+        import io
+
+        # ── 0. Always append "Other" as the final catch-all entry ─────────────
+        # Strip any existing "Other" the user may have typed so we control its
+        # position, then add it at the end.
+        other_idx = next((i for i, n in enumerate(names) if n.strip().lower() == "other"), None)
+        if other_idx is not None:
+            names = [n for i, n in enumerate(names) if i != other_idx]
+            prefer3d = [p for i, p in enumerate(prefer3d) if i != other_idx]
+        names = list(names) + ["Other"]
+        prefer3d = list(prefer3d) + [False]
+
+        # ── 1. Update in-memory config ────────────────────────────────────────
+        setattr(config, 'TARGET_SERIES', names)
+        prefer3d_dict = {name: p3d for name, p3d in zip(names, prefer3d)}
+        setattr(config, 'PREFER_3D', prefer3d_dict)
+        # Also update the module-level global used elsewhere in gui.py
+        global TARGET_SERIES
+        TARGET_SERIES = sanitize_target_series(names)
+        logger.info(f"Updated TARGET_SERIES={names}, PREFER_3D={prefer3d_dict}")
+
+        # Notify user that memory is updated
+        messagebox.showinfo(
+            "Analysis Applied",
+            f"Series types have been updated:\n\n"
+            f"TARGET_SERIES = {names}\n\n"
+            f"PREFER_3D = {prefer3d_dict}\n\n"
+            "Attempting to persist changes to config.py…",
+            parent=self.master
+        )
+
+        # ── 2. Determine which config file to update ──────────────────────────
+        config_file_path = None
+        output_config = os.path.join(output_dir, "config.py")
+        if os.path.exists(output_config):
+            config_file_path = output_config
+        elif self.active_config_path and os.path.exists(self.active_config_path):
+            config_file_path = self.active_config_path
+        else:
+            src = config.__file__
+            if src.endswith('.pyc'):
+                src = src[:-1]
+            if os.path.exists(src):
+                config_file_path = src
+
+        if not config_file_path:
+            logger.warning("Could not locate a writable config.py — changes saved in memory only.")
+            return
+
+        # ── 3. Robust file rewrite ────────────────────────────────────────────
+        try:
+            with open(config_file_path, 'r', encoding='utf-8') as fh:
+                original_source = fh.read()
+
+            new_source = _rewrite_config_assignments(
+                original_source,
+                {
+                    'TARGET_SERIES': repr(names),
+                    'PREFER_3D': _format_prefer3d_dict(prefer3d_dict),
+                }
+            )
+
+            with open(config_file_path, 'w', encoding='utf-8') as fh:
+                fh.write(new_source)
+
+            logger.info(f"Config file updated: {config_file_path}")
+            messagebox.showinfo(
+                "Config Saved",
+                f"Changes written to:\n{config_file_path}",
+                parent=self.master
+            )
+        except Exception as e:
+            logger.error(f"Failed to write config file: {e}")
+            messagebox.showwarning(
+                "Config Write Warning",
+                f"Could not write config.py:\n{e}\n\n"
+                "Changes are active in memory for this session only.",
+                parent=self.master
+            )
+
     def start_verification(self):
         """Start the verification workflow to review already classified studies."""
         output_dir = self.output_dir.get()
@@ -2183,6 +2854,114 @@ class MainApp:
         except Exception as e:
             logger.exception(f"Error in verification workflow: {e}")
             self.classification_finished(aborted=True)
+
+
+
+# ── Config rewrite helpers (used by _write_analysis_to_config) ────────────────
+
+def _format_prefer3d_dict(prefer3d_dict: dict) -> str:
+    """
+    Render a PREFER_3D dict as a nicely-indented Python literal, e.g.::
+
+        {
+            "T1": True,
+            "T2": False,
+        }
+    """
+    lines = ["{"]
+    for k, v in prefer3d_dict.items():
+        lines.append(f'    "{k}": {v},')
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _rewrite_config_assignments(source: str, replacements: dict) -> str:
+    """
+    Replace top-level simple assignment statements in *source* for each variable
+    name in *replacements*.
+
+    Strategy (robust against multi-line values and varied formatting):
+    1. Tokenise the source to find each target assignment's start line.
+    2. Use the ``ast`` module to find the byte-offset of the whole statement
+       (including its complete right-hand side, however many lines it spans).
+    3. Splice the new value string in place of the old RHS text.
+
+    Parameters
+    ----------
+    source       : str   – full content of the config file
+    replacements : dict  – {var_name: new_rhs_repr_string}
+
+    Returns
+    -------
+    str  – updated source
+    """
+    import ast
+
+    for var_name, new_rhs in replacements.items():
+        source = _replace_single_assignment(source, var_name, new_rhs)
+    return source
+
+
+def _replace_single_assignment(source: str, var_name: str, new_rhs: str) -> str:
+    """
+    Replace the RHS of a single top-level ``var_name = <expr>`` assignment.
+
+    If the variable is not found in the source it is *appended* at the end.
+    """
+    import ast
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        # Fall back: crude regex replacement if the file has a syntax error
+        import re
+        pattern = re.compile(
+            r'^' + re.escape(var_name) + r'\s*=\s*.+?(?=\n[A-Z_#\n]|\Z)',
+            re.MULTILINE | re.DOTALL
+        )
+        new_stmt = f"{var_name} = {new_rhs}"
+        if pattern.search(source):
+            return pattern.sub(new_stmt, source, count=1)
+        return source + f"\n{new_stmt}\n"
+
+    # Find the target Assign node at module level
+    target_node = None
+    for node in ast.iter_child_nodes(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            if node.targets[0].id == var_name:
+                target_node = node
+                break
+
+    if target_node is None:
+        # Variable not present — append it
+        return source.rstrip() + f"\n\n{var_name} = {new_rhs}\n"
+
+    # ast gives us line numbers (1-based). Translate to character offsets.
+    lines = source.splitlines(keepends=True)
+
+    stmt_start_line = target_node.lineno - 1        # 0-based index
+    stmt_end_line = target_node.end_lineno - 1      # 0-based index (inclusive)
+
+    # Preserve any trailing comment on the last line of the assignment.
+    # We look at the last source line of the statement to detect a comment.
+    last_line = lines[stmt_end_line]
+    # Find the end column of the expression within that line
+    end_col = target_node.end_col_offset
+    trailing = last_line[end_col:].rstrip('\n')
+
+    # Build the replacement statement text
+    new_stmt = f"{var_name} = {new_rhs}"
+    # Append trailing comment if one existed
+    if trailing.lstrip().startswith('#'):
+        new_stmt += "  " + trailing.lstrip()
+    new_stmt += "\n"
+
+    # Splice: everything before the statement + new statement + everything after
+    before = "".join(lines[:stmt_start_line])
+    after = "".join(lines[stmt_end_line + 1:])
+    return before + new_stmt + after
 
 
 # At end of file, add asynchronous image loader and per-study classification GUI
