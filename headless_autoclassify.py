@@ -388,7 +388,7 @@ def classify_all_studies(hierarchy, output_dir, model_type,
     This replicates the GUI's full-auto classification loop.
     """
     from mrid_app import processing
-    from mrid_app.utils import get_study_dir_name, get_study_csv_name
+    from mrid_app.utils import get_study_dir_name, get_study_csv_name, get_classified_outputs_dir
 
     logger = get_logger()
 
@@ -410,7 +410,11 @@ def classify_all_studies(hierarchy, output_dir, model_type,
         study_dir_name = get_study_dir_name(mrn, study_uid, accn)
 
         # Check if already classified
-        classification_csv = os.path.join(output_dir, study_dir_name, get_study_csv_name(study_dir_name))
+        classification_csv = os.path.join(
+            get_classified_outputs_dir(output_dir),
+            study_dir_name,
+            get_study_csv_name(study_dir_name)
+        )
         if os.path.exists(classification_csv):
             if verbose:
                 logger.debug(f"  [{i + 1}/{total_studies}] Skipping {study_dir_name} (already classified)")

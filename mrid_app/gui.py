@@ -9,7 +9,8 @@ from .config import DATA_DIR, OUT_DIR, NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LA
 from .header import TrainHeaderClassifierLogic
 from .cnn import SimpleCNN
 from .utils import (extract_study_id_from_path, get_study_csv_name, get_study_dir_name,
-                     get_nifti_name, get_nifti_prefix, sanitize_target_series)
+                     get_nifti_name, get_nifti_prefix, sanitize_target_series,
+                     get_classified_outputs_dir)
 from .logging_config import get_logger, setup_logging, update_log_file_location
 import joblib
 from PIL import Image, ImageTk
@@ -158,6 +159,43 @@ def scale_value(value):
     if _SCALE_FACTOR is None:
         return value
     return int(value * _SCALE_FACTOR)
+
+
+class _ToolTip:
+    """Simple hover tooltip for a tkinter widget."""
+
+    def __init__(self, widget, text=""):
+        self.widget = widget
+        self.text = text
+        self._tip_win = None
+        widget.bind("<Enter>", self._show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+
+    def update_text(self, text):
+        self.text = text
+
+    def _show(self, _event=None):
+        if not self.text:
+            return
+        try:
+            x = self.widget.winfo_rootx() + 20
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+            self._tip_win = tw = tk.Toplevel(self.widget)
+            tw.wm_overrideredirect(True)
+            tw.wm_geometry(f"+{x}+{y}")
+            tk.Label(tw, text=self.text, justify="left",
+                     background="#ffffe0", relief="solid", borderwidth=1,
+                     font=("TkDefaultFont", 9)).pack()
+        except Exception:
+            pass
+
+    def _hide(self, _event=None):
+        try:
+            if self._tip_win:
+                self._tip_win.destroy()
+                self._tip_win = None
+        except Exception:
+            pass
 
 
 def _generate_color_map(labels):
@@ -366,6 +404,9 @@ class MainApp:
         self._auto_load_after_training = False
         # Track the currently active config file path
         self.active_config_path = None  # None means using repository config
+        # Analyze-mode training state
+        self._analyze_csv_ready = False       # True once selfsupervised CSV is written
+        self._selfsupervised_csv_path = None  # Path to the written CSV
 
         # Create menu bar
         menubar = tk.Menu(master)
@@ -452,6 +493,7 @@ class MainApp:
         self.stop_button.pack(side="left", padx=scale_value(5))
         self.train_button = tk.Button(control_frame, text="Train Model(s)", font=("Arial", scale_value(12)), command=self._train_model)
         self.train_button.pack(side="right", padx=scale_value(5))
+        self._train_button_tooltip = _ToolTip(self.train_button, "")
         self.load_button = tk.Button(control_frame, text="Load Model(s)", font=("Arial", scale_value(12)), command=self._load_model_handler)
         self.load_button.pack(side="right", padx=scale_value(5))
         self._check_model_status()
@@ -686,6 +728,18 @@ class MainApp:
             self.load_button.config(text="Load Model(s)", state="normal", bg="#ff4f4f", activebackground="#ff4f4f")
 
         train_available = True
+        if mode == "Analyze":
+            train_available = self._analyze_csv_ready
+            tip = "" if train_available else "Run Analyze first"
+            try:
+                self._train_button_tooltip.update_text(tip)
+            except Exception:
+                pass
+        else:
+            try:
+                self._train_button_tooltip.update_text("")
+            except Exception:
+                pass
         self.train_button.config(state="normal" if train_available else "disabled")
 
     def _train_model(self):
@@ -698,12 +752,25 @@ class MainApp:
         if not rf_needed and not cnn_needed:
             messagebox.showinfo("Info", "No model type selected for training. Please choose a Model Type.", parent=self.master)
             return
+
+        # In Analyze mode, train exclusively from the self-supervised CSV
+        mode = self.classification_mode.get()
+        if mode == "Analyze":
+            if not self._analyze_csv_ready or not self._selfsupervised_csv_path:
+                messagebox.showwarning("Not Ready", "Please run Analyze first to generate the self-supervised training data.", parent=self.master)
+                return
+            if rf_needed:
+                self.train_classifier_rf(preloaded_csv=self._selfsupervised_csv_path)
+            if cnn_needed:
+                self.train_classifier_cnn(preloaded_csv=self._selfsupervised_csv_path)
+            return
+
         if rf_needed:
             self.train_classifier_rf()
         if cnn_needed:
             self.train_classifier_cnn()
 
-    def train_classifier_rf(self):
+    def train_classifier_rf(self, preloaded_csv=None):
         if self.is_running: return
         output_dir = self.output_dir.get()
         try:
@@ -722,6 +789,16 @@ class MainApp:
 
         logger.info("Starting DICOM Header Model training")
 
+        # Pre-load the self-supervised CSV when called from Analyze mode
+        preloaded_df = None
+        if preloaded_csv:
+            try:
+                import pandas as _pd
+                preloaded_df = _pd.read_csv(preloaded_csv)
+                logger.info(f"Using self-supervised CSV for RF training: {preloaded_csv} ({len(preloaded_df)} rows)")
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not load self-supervised CSV:\n{e}", parent=self.master)
+                return
         # Create callback for missing fields prompt
         def prompt_update_missing_fields(num_csvs, missing_fields):
             """Prompt user about updating CSVs with missing fields."""
@@ -746,12 +823,13 @@ class MainApp:
         training_thread = threading.Thread(
             target=TrainHeaderClassifierLogic,
             args=(output_dir, training_gui, prompt_update_missing_fields),
+            kwargs={"preloaded_df": preloaded_df},
             daemon=True
         )
         training_thread.start()
         self.master.after(100, self._poll_training_status, training_thread)
 
-    def train_classifier_cnn(self):
+    def train_classifier_cnn(self, preloaded_csv=None):
         if self.is_running: return
         output_dir = self.output_dir.get()
         try:
@@ -760,23 +838,35 @@ class MainApp:
             logger.error("CNN training dependency not found (PyTorch)")
             messagebox.showerror("Error", "CNN training requires PyTorch (torch).", parent=self.master)
             return
+
+        # Pre-load the self-supervised CSV when called from Analyze mode
+        preloaded_df = None
+        if preloaded_csv:
+            try:
+                import pandas as _pd
+                preloaded_df = _pd.read_csv(preloaded_csv)
+                logger.info(f"Using self-supervised CSV for CNN training: {preloaded_csv} ({len(preloaded_df)} rows)")
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not load self-supervised CSV:\n{e}", parent=self.master)
+                return
+
         logger.info("Starting Image-Based Model (CNN) training")
         self.start_button.config(state="disabled")
         self.train_button.config(state="disabled")
         training_gui = TrainClassifierGUI(self.master)
         training_thread = threading.Thread(
             target=self._train_cnn_background,
-            args=(output_dir, training_gui),
+            args=(output_dir, training_gui, preloaded_df),
             daemon=True
         )
         training_thread.start()
         self.master.after(100, self._poll_training_status, training_thread)
 
-    def _train_cnn_background(self, output_dir, training_gui):
+    def _train_cnn_background(self, output_dir, training_gui, preloaded_df=None):
         # Delegate the full image-model training flow to the cnn module's TrainImageClassifierLogic
         try:
             from . import cnn as cnn_module
-            cnn_module.TrainImageClassifierLogic(output_dir, training_gui)
+            cnn_module.TrainImageClassifierLogic(output_dir, training_gui, preloaded_df=preloaded_df)
         finally:
             # Ensure GUI is closed if the training function returns
             try:
@@ -956,7 +1046,6 @@ class MainApp:
         self.stop_requested.clear()
         self.start_button.config(state="normal")
         self.stop_button.config(text="Stop", state="disabled")
-        self.train_button.config(state="normal")
 
         if aborted:
             logger.info("Classification workflow stopped by user")
@@ -965,7 +1054,7 @@ class MainApp:
 
         if hasattr(self, 'progress_frame') and self.progress_frame.winfo_exists():
             self.progress_frame.destroy()
-        self._check_model_status()
+        self._check_model_status()  # handles train_button state including Analyze-mode rules
 
     def run_classification_main(self, input_dir, output_dir, mode, existing_hierarchy=None):
         """
@@ -1136,7 +1225,11 @@ class MainApp:
                     f"Classifying Study {i + 1} of {total_studies} ({mode}/{model_type}): {mrn} / {study_uid}")
 
                 study_dir_name = get_study_dir_name(mrn, study_uid, accn)
-                classification_csv = os.path.join(output_dir, study_dir_name, get_study_csv_name(study_dir_name))
+                classification_csv = os.path.join(
+                    get_classified_outputs_dir(output_dir),
+                    study_dir_name,
+                    get_study_csv_name(study_dir_name)
+                )
                 if os.path.exists(classification_csv):
                     try:
                         self.progress_bar.config(value=i + 1)
@@ -1149,7 +1242,7 @@ class MainApp:
                     processing.full_auto_classify_study(
                         series_dict, mrn, study_uid, output_dir,
                         model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model, cnn_target_encoder,
-                        self.rf_field_types,  # Pass field types
+                        self.rf_field_types,
                         convert=self.convert_to_nifti.get(),
                         accn=accn
                     )
@@ -1161,7 +1254,7 @@ class MainApp:
                         series_dict, mrn, study_uid, output_dir, self.stop_requested,
                         study_done_event, mode,
                         model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model, cnn_target_encoder,
-                        self.rf_field_types,  # Pass field types
+                        self.rf_field_types,
                         convert=self.convert_to_nifti.get(),
                         accn=accn
                     )
@@ -1224,14 +1317,15 @@ class MainApp:
 
         # Count studies to process
         study_folders = []
-        for folder in os.listdir(output_dir):
-            folder_path = os.path.join(output_dir, folder)
-            if os.path.isdir(folder_path):
-                # Check if it looks like a study folder (has classification CSV)
-                study_id = extract_study_id_from_path(folder_path)
-                csv_path = os.path.join(folder_path, get_study_csv_name(study_id))
-                if os.path.exists(csv_path):
-                    study_folders.append(folder_path)
+        classified_dir = get_classified_outputs_dir(output_dir)
+        if os.path.isdir(classified_dir):
+            for folder in os.listdir(classified_dir):
+                folder_path = os.path.join(classified_dir, folder)
+                if os.path.isdir(folder_path):
+                    study_id = extract_study_id_from_path(folder_path)
+                    csv_path = os.path.join(folder_path, get_study_csv_name(study_id))
+                    if os.path.exists(csv_path):
+                        study_folders.append(folder_path)
 
         if not study_folders:
             messagebox.showinfo("No Studies", "No classified studies found in output directory.", parent=self.master)
@@ -1351,14 +1445,15 @@ class MainApp:
 
         # Count studies to process
         study_folders = []
-        for folder in os.listdir(output_dir):
-            folder_path = os.path.join(output_dir, folder)
-            if os.path.isdir(folder_path):
-                # Check if it looks like a study folder (has classification CSV)
-                study_id = extract_study_id_from_path(folder_path)
-                csv_path = os.path.join(folder_path, get_study_csv_name(study_id))
-                if os.path.exists(csv_path):
-                    study_folders.append(folder_path)
+        classified_dir = get_classified_outputs_dir(output_dir)
+        if os.path.isdir(classified_dir):
+            for folder in os.listdir(classified_dir):
+                folder_path = os.path.join(classified_dir, folder)
+                if os.path.isdir(folder_path):
+                    study_id = extract_study_id_from_path(folder_path)
+                    csv_path = os.path.join(folder_path, get_study_csv_name(study_id))
+                    if os.path.exists(csv_path):
+                        study_folders.append(folder_path)
 
         if not study_folders:
             messagebox.showinfo("No Studies", "No classified studies found in output directory.", parent=self.master)
@@ -1434,12 +1529,15 @@ class MainApp:
                                 processed_series.add(series_key)
 
                                 # Handle directory naming based on ALLOW_DUPLICATE_LABELS
+                                # Spaces in the classification label are replaced with underscores
+                                # so that the exported directory tree never contains spaces.
+                                safe_classification = classification.replace(' ', '_')
                                 if ALLOW_DUPLICATE_LABELS:
                                     # Use series_uid to make directory unique
-                                    classified_series_dir = f"{classification}-{series_uid}"
+                                    classified_series_dir = f"{safe_classification}-{series_uid}"
                                 else:
                                     # Use just the label
-                                    classified_series_dir = classification
+                                    classified_series_dir = safe_classification
 
                                 # Find all DICOMs in the same series directory
                                 series_dir = os.path.dirname(path)
@@ -1621,18 +1719,20 @@ class MainApp:
         try:
             # Delete classifications (study folders with CSVs)
             if delete_classifications:
-                for folder in os.listdir(output_dir):
-                    folder_path = os.path.join(output_dir, folder)
-                    if os.path.isdir(folder_path):
-                        study_id = extract_study_id_from_path(folder_path)
-                        csv_path = os.path.join(folder_path, get_study_csv_name(study_id))
+                classified_dir = get_classified_outputs_dir(output_dir)
+                if os.path.isdir(classified_dir):
+                    for folder in os.listdir(classified_dir):
+                        folder_path = os.path.join(classified_dir, folder)
+                        if os.path.isdir(folder_path):
+                            study_id = extract_study_id_from_path(folder_path)
+                            csv_path = os.path.join(folder_path, get_study_csv_name(study_id))
 
-                        if os.path.exists(csv_path):
-                            try:
-                                shutil.rmtree(folder_path)
-                                deleted_items.append(f"Study folder: {study_id}")
-                            except Exception as e:
-                                errors.append(f"Failed to delete {folder_path}: {e}")
+                            if os.path.exists(csv_path):
+                                try:
+                                    shutil.rmtree(folder_path)
+                                    deleted_items.append(f"Study folder: {study_id}")
+                                except Exception as e:
+                                    errors.append(f"Failed to delete {folder_path}: {e}")
 
             # Delete models
             if delete_models:
@@ -2293,6 +2393,10 @@ class MainApp:
                 self.classification_finished(aborted=True)
                 return
 
+            # Stash for use by _write_selfsupervised_csv after the naming GUI
+            self._last_analysis_result = result
+            self._last_hierarchy = hierarchy
+
             # ── Phase 4: Show naming GUI on main thread ───────────────────────
             self.master.after(0, lambda: self.progress_label.set(
                 f"Analysis complete — {result['k']} clusters found. Opening naming dialog…"))
@@ -2312,6 +2416,7 @@ class MainApp:
         """
         k = analysis_result["k"]
         best_examples = analysis_result["best_examples"]
+        representative_names = analysis_result.get("representative_names", [])
 
         win = tk.Toplevel(self.master)
         win.title("Analyze — Name Your Series Types")
@@ -2403,7 +2508,10 @@ class MainApp:
             ctrl_frame = tk.Frame(row_frame)
             ctrl_frame.pack(side="left", padx=PAD * 2, anchor="w")
 
-            name_var = tk.StringVar(value=f"Series{c + 1}")
+            default_name = (representative_names[c]
+                            if c < len(representative_names) and representative_names[c]
+                            else f"Series{c + 1}")
+            name_var = tk.StringVar(value=default_name)
             prefer3d_var = tk.BooleanVar(value=False)
             include_var = tk.BooleanVar(value=True)
 
@@ -2481,6 +2589,7 @@ class MainApp:
                 return
             win.destroy()
             self._write_analysis_to_config(names, prefer3d, output_dir)
+            self._write_selfsupervised_csv(included, names, output_dir)
             self.classification_finished(aborted=False)
 
         def _on_cancel():
@@ -2623,6 +2732,230 @@ class MainApp:
                 parent=self.master
             )
 
+    def _write_selfsupervised_csv(self, included_cluster_indices: list, names: list, output_dir: str):
+        """
+        Write a self-supervised classification CSV to
+        ``<output_dir>/model_files/selfsupervised_classification_data.csv``.
+
+        Rows are the high-confidence (probability ≥ threshold) members of each
+        *included* cluster.  The format mirrors classification_data.csv:
+          Classification, Path, <DICOM header fields…>
+
+        *included_cluster_indices*  — list of cluster int ids that the user kept
+        *names*                     — parallel list of user-assigned names
+        *output_dir*                — root output directory
+        """
+        try:
+            import csv as _csv
+            import pydicom as _pydicom
+            import numpy as np
+
+            from .analyze import _build_thumbnail_to_dicom_map, _HIGH_CONF_THRESHOLD
+            from .config import DICOM_HEADER_FIELDS
+            from .utils import safe_get_dicom_attribute
+
+            result = getattr(self, '_last_analysis_result', None)
+            hierarchy = getattr(self, '_last_hierarchy', None)
+
+            if result is None:
+                logger.warning("_write_selfsupervised_csv: no analysis result available, skipping.")
+                return
+
+            paths = result.get('paths', [])
+            labels = result.get('labels', np.array([]))
+            probabilities = result.get('probabilities', np.zeros(len(paths)))
+
+            if len(paths) == 0:
+                logger.warning("_write_selfsupervised_csv: paths list is empty, skipping.")
+                return
+
+            paths_arr = np.array(paths)
+            labels_arr = np.array(labels)
+            probs_arr = np.array(probabilities)
+
+            # Build thumbnail → dicom_path map from the hierarchy
+            thumb_to_dicom = _build_thumbnail_to_dicom_map(hierarchy) if hierarchy else {}
+
+            # Build fieldnames to match classification_data.csv
+            fieldnames = ["Classification", "Path"] + [
+                display_name for display_name, _ in DICOM_HEADER_FIELDS
+            ]
+
+            # ── Phase 1: collect (cluster_name, dicom_path) pairs cheaply ────
+            # This is fast (just dict lookups + os.path.exists), so no progress
+            # bar needed here.
+            candidates = []   # list of (cluster_name, dicom_path)
+            for cluster_idx, cluster_name in zip(included_cluster_indices, names):
+                if cluster_name.strip().lower() == "other":
+                    continue
+
+                cluster_mask = labels_arr == cluster_idx
+                hc_mask = cluster_mask & (probs_arr >= _HIGH_CONF_THRESHOLD)
+                candidate_indices = np.where(hc_mask)[0]
+                if len(candidate_indices) == 0:
+                    candidate_indices = np.where(cluster_mask)[0]
+
+                for idx in candidate_indices:
+                    thumb_basename = os.path.basename(paths_arr[idx])
+                    dicom_path = thumb_to_dicom.get(thumb_basename)
+                    if dicom_path and os.path.exists(dicom_path):
+                        candidates.append((cluster_name, dicom_path))
+
+            if not candidates:
+                logger.warning("_write_selfsupervised_csv: no resolvable DICOM paths found.")
+                messagebox.showwarning(
+                    "Self-Supervised CSV",
+                    "No DICOM paths could be resolved for the included clusters.\n"
+                    "The self-supervised CSV was not written.\n\n"
+                    "This can happen when the hierarchy was loaded from a previous run "
+                    "and DICOM paths are no longer available.",
+                    parent=self.master
+                )
+                return
+
+            total_files = len(candidates)
+
+            # ── Phase 2: read DICOM headers in a background thread with a ─────
+            # modal progress window on the main thread.
+            rows = []
+            errors = [0]
+            _done = threading.Event()
+
+            # Progress window
+            prog_win = tk.Toplevel(self.master)
+            prog_win.title("Retrieving DICOM data…")
+            prog_win.resizable(False, False)
+            prog_win.grab_set()
+            prog_win.protocol("WM_DELETE_WINDOW", lambda: None)  # block close
+
+            PAD = scale_value(8)
+            prog_label_var = tk.StringVar(
+                value=f"Retrieving data from DICOM files (0/{total_files})")
+            tk.Label(prog_win, textvariable=prog_label_var,
+                     anchor="w").pack(padx=PAD * 2, pady=(PAD * 2, PAD), fill="x")
+            prog_bar = ttk.Progressbar(prog_win, orient="horizontal",
+                                       mode="determinate", maximum=total_files, value=0)
+            prog_bar.pack(padx=PAD * 2, pady=(0, PAD * 2), fill="x")
+            prog_win.update_idletasks()
+
+            # Centre the progress window over the main window
+            prog_win.geometry(
+                f"{scale_value(420)}x{scale_value(80)}"
+                f"+{self.master.winfo_rootx() + scale_value(60)}"
+                f"+{self.master.winfo_rooty() + scale_value(60)}"
+            )
+
+            # Shared counter updated by background thread, read by poll callback
+            _completed = [0]
+
+            def _dicom_worker():
+                for cluster_name, dicom_path in candidates:
+                    try:
+                        ds = _pydicom.dcmread(
+                            dicom_path, stop_before_pixels=True, force=True)
+                        row_dict = {"Classification": cluster_name,
+                                    "Path": dicom_path}
+                        for display_name, dicom_attr in DICOM_HEADER_FIELDS:
+                            row_dict[display_name] = safe_get_dicom_attribute(
+                                ds, dicom_attr)
+                        rows.append([row_dict.get(f, "") for f in fieldnames])
+                    except Exception as e:
+                        logger.debug(f"Could not read DICOM {dicom_path}: {e}")
+                        errors[0] += 1
+                    finally:
+                        _completed[0] += 1
+                _done.set()
+
+            worker = threading.Thread(target=_dicom_worker, daemon=True)
+            worker.start()
+
+            # Poll the progress on the main thread every 100 ms
+            def _poll_progress():
+                n = _completed[0]
+                try:
+                    prog_bar.config(value=n)
+                    prog_label_var.set(
+                        f"Retrieving data from DICOM files ({n}/{total_files})")
+                except Exception:
+                    pass
+                if not _done.is_set():
+                    prog_win.after(100, _poll_progress)
+                else:
+                    # Final update then finish
+                    try:
+                        prog_bar.config(value=total_files)
+                        prog_label_var.set(
+                            f"Retrieving data from DICOM files "
+                            f"({total_files}/{total_files})")
+                        prog_win.update_idletasks()
+                    except Exception:
+                        pass
+                    prog_win.after(200, _finish)
+
+            def _finish():
+                try:
+                    prog_win.grab_release()
+                    prog_win.destroy()
+                except Exception:
+                    pass
+
+                total_written = len(rows)
+
+                if not rows:
+                    logger.warning(
+                        "_write_selfsupervised_csv: all DICOM reads failed "
+                        f"({errors[0]} errors).")
+                    messagebox.showwarning(
+                        "Self-Supervised CSV",
+                        "All DICOM header reads failed; the CSV was not written.\n"
+                        f"({errors[0]} error(s) — check the log for details.)",
+                        parent=self.master
+                    )
+                    return
+
+                model_files_dir = os.path.join(output_dir, "model_files")
+                os.makedirs(model_files_dir, exist_ok=True)
+                csv_out = os.path.join(
+                    model_files_dir, "selfsupervised_classification_data.csv")
+
+                try:
+                    with open(csv_out, "w", newline="", encoding="utf-8") as fh:
+                        writer = _csv.writer(fh)
+                        writer.writerow(fieldnames)
+                        writer.writerows(rows)
+                except Exception as e:
+                    logger.error(f"Failed to write self-supervised CSV: {e}")
+                    messagebox.showwarning(
+                        "Self-Supervised CSV Warning",
+                        f"Could not write selfsupervised_classification_data.csv:\n{e}",
+                        parent=self.master
+                    )
+                    return
+
+                logger.info(
+                    f"Wrote self-supervised CSV: {csv_out} "
+                    f"({total_written} rows, {errors[0]} skipped)"
+                )
+                # Unlock Train Model(s) button for Analyze mode
+                self._analyze_csv_ready = True
+                self._selfsupervised_csv_path = csv_out
+                self._check_model_status()
+                messagebox.showinfo(
+                    "Self-Supervised CSV Saved",
+                    f"Saved {total_written} labelled series to:\n{csv_out}",
+                    parent=self.master
+                )
+
+            prog_win.after(100, _poll_progress)
+
+        except Exception as e:
+            logger.error(f"_write_selfsupervised_csv failed: {e}", exc_info=True)
+            messagebox.showwarning(
+                "Self-Supervised CSV Warning",
+                f"Could not write selfsupervised_classification_data.csv:\n{e}",
+                parent=self.master
+            )
+
     def start_verification(self):
         """Start the verification workflow to review already classified studies."""
         output_dir = self.output_dir.get()
@@ -2670,20 +3003,22 @@ class MainApp:
             all_classifications = []
             study_folders = []
 
-            for folder in os.listdir(output_dir):
-                folder_path = os.path.join(output_dir, folder)
-                if os.path.isdir(folder_path):
-                    study_id = extract_study_id_from_path(folder_path)
-                    csv_path = os.path.join(folder_path, get_study_csv_name(study_id))
-                    if os.path.exists(csv_path):
-                        try:
-                            df = pd.read_csv(csv_path)
-                            df['study_folder'] = folder_path
-                            df['study_id'] = study_id
-                            all_classifications.append(df)
-                            study_folders.append(folder_path)
-                        except Exception as e:
-                            logger.warning(f"Error reading {csv_path}: {e}")
+            classified_dir = get_classified_outputs_dir(output_dir)
+            if os.path.isdir(classified_dir):
+                for folder in os.listdir(classified_dir):
+                    folder_path = os.path.join(classified_dir, folder)
+                    if os.path.isdir(folder_path):
+                        study_id = extract_study_id_from_path(folder_path)
+                        csv_path = os.path.join(folder_path, get_study_csv_name(study_id))
+                        if os.path.exists(csv_path):
+                            try:
+                                df = pd.read_csv(csv_path)
+                                df['study_folder'] = folder_path
+                                df['study_id'] = study_id
+                                all_classifications.append(df)
+                                study_folders.append(folder_path)
+                            except Exception as e:
+                                logger.warning(f"Error reading {csv_path}: {e}")
 
             if not all_classifications:
                 self.master.after(0, lambda: messagebox.showinfo(
@@ -3420,6 +3755,9 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     row_num = 0
     col_num = 0
 
+    if mode == "Semi-Auto":
+        logger.info(f"Semi-auto classifying exam {study_uid}...")
+
     for series_desc, dicom_paths in study_dict.items():
         series_frame = tk.Frame(content_frame, padx=scale_value(5), pady=scale_value(5))
         series_frame.grid(row=row_num, column=col_num, sticky="nsew")
@@ -3458,6 +3796,8 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                     except Exception:
                         top_label, top_p = None, None
                 # prefer to show probabilities for the selected label when available
+                # (use the raw initial_value key before sanitizing, as prob dicts
+                # are keyed by whatever label the model encoder produced)
                 if 'combined' in prob_info and initial_value in prob_info['combined']:
                     combined_p = prob_info['combined'][initial_value]
                 if 'rf' in prob_info and initial_value in prob_info['rf']:
@@ -3466,6 +3806,19 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                     cnn_p = prob_info['cnn'][initial_value]
             except Exception:
                 pass
+
+            # Sanitize the label so it matches the dropdown options (which are
+            # built from the sanitized TARGET_SERIES list).  Do this AFTER the
+            # probability lookup above so the raw label is still available there.
+            sanitized_candidates = sanitize_target_series([initial_value])
+            sanitized_label = sanitized_candidates[0] if sanitized_candidates else "Other"
+            # If the sanitized label is the auto-appended "Other" sentinel that
+            # sanitize_target_series always adds, fall back to "Other" only if
+            # the sanitized result genuinely maps to nothing useful.
+            if sanitized_label in dropdown_values:
+                initial_value = sanitized_label
+            else:
+                initial_value = "Other"
 
             prob_parts = []
             if initial_value != 'Other':

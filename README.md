@@ -52,13 +52,14 @@ MRID is a powerful tool designed to automate the classification and organization
 ### Core Functionality
 - ✅ **Multi-Modal Classification**: DICOM header model, image-based CNN, or combined
 - ✅ **Five Classification Modes**: Analyze, Manual, Semi-Auto, Full-Auto, Verify
-- ✅ **Analyze Mode**: Fully automated series discovery using deep learning — no pre-defined labels required
+- ✅ **Analyze Mode**: Fully automated series discovery using deep learning — no pre-defined labels required; can also pre-train DICOM header and CNN models from the discovered clusters with **zero manual labeling**
 - ✅ **Smart Series Selection**: Automatic selection with configurable confidence thresholds
 - ✅ **3D Preference**: Prioritize 3D acquisitions over 2D when configured
 - ✅ **NIfTI Conversion**: Integrated dcm2niix conversion with automatic organization
 - ✅ **Hierarchical Organization**: Study/Series hierarchy with metadata extraction
 - ✅ **Compressed DICOM Support**: Handles JPEG, JPEG2000, RLE compressed files via python-gdcm
 - ✅ **Automatic Folder Organization**: Detects and organizes unstructured DICOM folders using symlinks
+- ✅ **Organized Output Structure**: Classified series outputs (study folders, CSVs, NIfTIs) are stored in a dedicated `classified_outputs/` subfolder inside the output directory, keeping scan metadata files separate
 
 ### Machine Learning
 - ✅ **Random Forest Header Model**: configurable classifier using DICOM metadata
@@ -198,6 +199,7 @@ python run.py
 - **Analyze**: Automatically discover series types from your dataset
   - This mode is optional. You can skip it if you already know your `TARGET_SERIES` and have them configured in `config.py`
   - Use this mode at the very beginning if you need help determining your `TARGET_SERIES` list in `config.py`
+  - Optionally, use **"Train Model(s)"** after analysis to pre-train DICOM header and CNN models from the discovered clusters — no manual labeling required
 - **Manual**: Review and classify each series manually
 - **Semi-Auto**: Pre-select best series matches based on model predictions, review before saving (requires trained models)
 - **Full-Auto**: Automatically classify and save without review (requires trained models)
@@ -221,31 +223,47 @@ python run.py
 ### Classification Modes
 
 #### Analyze Mode
-- **Use Case**: First-time dataset exploration, automatic `TARGET_SERIES` configuration, no labels or trained models required
+- **Use Case**: First-time dataset exploration, automatic `TARGET_SERIES` configuration, and — uniquely — **pre-training DICOM header and CNN models from scratch with zero manual labeling**. Use this mode when you have a new dataset and want to go from raw DICOMs to working classification models without labeling a single study by hand.
 - **Workflow**:
   1. Select Input and Output directories and set Mode to **Analyze**
   2. Click **"▶ Start Analysis"**
   3. System scans DICOM files and generates series thumbnails (skipped if already done)
   4. Image series are automatically clustered into similar groups. Use the `ANALYZE_COVERAGE_THRESHOLD` parameter in `config.py` to define the minimum fraction of exams that must contain an example for a given cluster to be considered valid
-  5. A results window opens showing the 4 most-representative thumbnails per cluster
-  6. For each cluster, enter a series name (defaults: `Series1`, `Series2`, …) and optionally tick **"Prefer 3D"** if you want the system to automatically prefer 3D volumetric images for this series type
+  5. A results window opens showing the 4 most-representative thumbnails per cluster, with a suggested name pre-populated from the series descriptions of high-confidence cluster members
+  6. For each cluster, review or edit the series name and optionally tick **"Prefer 3D"** if you want the system to automatically prefer 3D volumetric images for this series type
   7. Uncheck **"Include"** for any series cluster you do not want to include in your workflow
-  8. Click **"Apply"** — `TARGET_SERIES` and `PREFER_3D` are written to `config.py` in the output directory
+  8. Click **"Apply"** — `TARGET_SERIES` and `PREFER_3D` are written to `config.py` in the output directory, and a `selfsupervised_classification_data.csv` file is written to `{output_dir}/model_files/` containing high-confidence cluster members for all approved clusters
+  9. **(Optional) Train models without any manual labeling**: Once analysis is complete, the **"Train Model(s)"** button becomes active. Click it, select the desired model type (Header / Image / Both), and training will proceed automatically using only the high-confidence series from `selfsupervised_classification_data.csv`. No additional labeled data is needed.
+  10. After training, switch to **Semi-Auto** or **Full-Auto** mode, load the newly trained models, and begin classifying your dataset
+- **Zero-Label Training Pipeline** (the full end-to-end flow):
+  ```
+  Analyze mode → cluster discovery → name clusters → Apply
+       ↓
+  selfsupervised_classification_data.csv written automatically
+       ↓
+  Train Model(s) (Header / CNN / Both) — uses CSV above, no manual labels
+       ↓
+  Load Model(s) → switch to Semi-Auto or Full-Auto → classify dataset
+  ```
 - **Technical Pipeline**:
   - **Feature extraction**: Frozen ResNet50 (ImageNet weights, already cached), 2048-D global average-pool output, batched GPU inference (~2 ms/image on modern hardware)
   - **L2 normalization**: Makes cosine distance equivalent to Euclidean distance on the unit hypersphere
   - **PCA**: Reduces 2048-D features to the minimum number of components that retain ≥ 90 % of variance (typically 3–15 for MRI datasets), capped at 150
   - **UMAP**: Non-linear manifold embedding preserving global topology (`n_neighbors=30`, `min_dist=0.1`, cosine metric); output dimension = min(PCA dims, 15)
   - **HDBSCAN**: Density-based clustering with `min_cluster_size = ceil(ANALYZE_COVERAGE_THRESHOLD × n_exams)`; noise points are reassigned to the nearest cluster centroid
+  - **Cluster naming**: High-confidence members (HDBSCAN soft probability > 0.8) are identified; `SeriesDescription` is extracted from the corresponding DICOM files; a medoid using pairwise Levenshtein distance selects the most representative description as the suggested name
   - **Best examples**: The 4 thumbnails per cluster closest to the centroid in PCA space are shown in the results window
+  - **Training data collection**: After the user approves clusters, high-confidence members from approved clusters are collected into `selfsupervised_classification_data.csv` (same format as standard `classification_data.csv`)
 - **Output**:
   - `TARGET_SERIES` and `PREFER_3D` updated in `{output_dir}/config.py`
   - `"Other"` is always appended as the final catch-all entry regardless of user selections
+  - `{output_dir}/model_files/selfsupervised_classification_data.csv` — high-confidence labeled training data, ready for immediate model training
 - **Notes**:
   - Requires `torch`, `torchvision`, `umap-learn`, and `hdbscan` packages
   - ResNet50 weights are loaded from the local PyTorch cache — no internet access required after first run
   - Scanning and thumbnail generation are skipped automatically if already completed
   - If no `config.py` is found in the output directory, you will be prompted to copy the default
+  - The **"Train Model(s)"** button is grayed out (with a tooltip *"Analyze first"*) until `selfsupervised_classification_data.csv` has been written; it activates automatically once analysis is complete
 
 #### Manual Mode
 - **Use Case**: Maximum control, review every series
@@ -328,11 +346,55 @@ python run.py
 ### Training Models
 
 #### Prerequisites
+- You need labeled training data to train models. There are **two ways** to obtain this:
+  1. **Manual labeling** (traditional): Classify studies using Manual or Semi-Auto mode first
+  2. **Zero-label (Analyze mode)**: Run Analyze mode — the app automatically collects high-confidence cluster members as training data with no manual labeling required
+- Minimum ~50 examples per target class recommended
+- More data = better performance
+
+#### Zero-Label Training Workflow (Analyze Mode — no manual labeling required)
+
+This is the recommended starting point for new datasets where no labeled data exists:
+
+1. **Run Analyze Mode**
+   ```
+   - Set mode to Analyze, click "▶ Start Analysis"
+   - Name the discovered clusters in the results window
+   - Click "Apply" to write config.py and collect training data
+   - selfsupervised_classification_data.csv is written automatically to
+     {output_dir}/model_files/
+   ```
+
+2. **Train Models Directly from Analyze Results**
+   ```
+   - The "Train Model(s)" button activates once analysis is complete
+   - Click "Train Model(s)", select model type (Header / Image / Both)
+   - Training uses selfsupervised_classification_data.csv (high-confidence
+     cluster members only) — no manual labels required
+   - Progress is shown in a popup window
+   ```
+
+3. **Load Models and Classify**
+   ```
+   - Switch to Semi-Auto or Full-Auto mode
+   - Click "Load Model(s)" to load the newly trained models
+   - Begin classifying your full dataset
+   ```
+
+4. **Iterate and Improve** *(optional)*
+   ```
+   - Use Semi-Auto mode to annotate data with model assistance
+   - Re-train models with the growing body of verified labels
+   - Performance improves with each iteration
+   ```
+
+#### Standard Training Workflow (Manual Labeling)
+
+#### Prerequisites (Standard)
 - First you need to prepare some training data (using Manual mode at first, +/- Semi-Auto mode)
 - Minimum ~50 examples per target class recommended
 - More data = better performance
 
-#### Training Workflow
 
 1. **Classify Training Data**
    ```
@@ -651,6 +713,26 @@ mrid/
 ├── run_tests.py            # Test runner
 ├── requirements.txt        # Python dependencies
 └── README.md               # This file
+```
+
+**Output directory layout** (created at runtime inside your chosen Output DIR):
+```
+{output_dir}/
+├── config.py                        # Project-specific config (copied from repo on first run)
+├── hierarchy.yaml                   # DICOM hierarchy index
+├── series_thumbnails/               # Center-slice thumbnails used by the GUI and Analyze mode
+├── dicom_symlinks/                  # Symlinks for unorganized DICOM folders (if needed)
+├── model_files/                     # Trained models and Analyze mode training data
+│   ├── rf_classifier_model.joblib
+│   ├── cnn_classifier_model.pth
+│   ├── label_encoder.joblib
+│   ├── feature_encoder.joblib
+│   ├── classification_data.csv      # Aggregated classification results for model training
+│   └── selfsupervised_classification_data.csv      # Written by Analyze mode
+└── classified_outputs/              # All classification results live here
+    └── {study_id}/                  # One folder per classified study
+        ├── {study_id}_classification-results.csv   # Classification results for this study
+        └── {study_id}_{series_name}.nii.gz         # NIfTI file (if conversion enabled)
 ```
 
 ---

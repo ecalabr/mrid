@@ -8,7 +8,7 @@ import pandas as pd
 import pydicom
 from .prep import _preprocess_df, encode_text_features
 from .config import N_ESTIMATORS, DICOM_HEADER_FIELDS
-from .utils import safe_get_dicom_attribute, extract_study_id_from_path, get_study_csv_name
+from .utils import safe_get_dicom_attribute, extract_study_id_from_path, get_study_csv_name, get_classified_outputs_dir
 from .csv_field_updater import (
     scan_for_missing_fields,
     update_all_csvs_with_missing_fields
@@ -18,7 +18,7 @@ from .logging_config import get_logger
 logger = get_logger()
 
 
-def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=None):
+def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=None, preloaded_df=None):
     """
     Train header classifier with optional missing field update.
 
@@ -26,6 +26,8 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
         output_dir: Output directory containing classification CSVs
         gui: Training GUI for status updates
         update_missing_fields_callback: Optional callback that returns True if user wants to update CSVs
+        preloaded_df: Optional pre-loaded DataFrame to use instead of aggregating per-study CSVs.
+                      When provided, CSV scanning/aggregation is skipped entirely.
     """
     from .logging_config import update_log_file_location
 
@@ -40,77 +42,90 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
         return
 
     try:
-        # Check for missing fields in existing CSVs
-        gui.update_status("Checking for missing DICOM header fields...")
-        csv_missing_map = scan_for_missing_fields(output_dir)
+        if preloaded_df is not None:
+            # ── Analyze mode: use the pre-loaded self-supervised DataFrame ────
+            gui.update_status("1/6: Using self-supervised classification data for Header Model…")
+            master_df = preloaded_df.copy()
+            # Create model_files directory and save a copy of the data used
+            model_files_dir = os.path.join(output_dir, "model_files")
+            os.makedirs(model_files_dir, exist_ok=True)
+        else:
+            # ── Normal mode: check for missing fields then aggregate CSVs ─────
+            # Check for missing fields in existing CSVs
+            gui.update_status("Checking for missing DICOM header fields...")
+            classified_dir = get_classified_outputs_dir(output_dir)
+            scan_root = classified_dir if os.path.isdir(classified_dir) else output_dir
+            csv_missing_map = scan_for_missing_fields(scan_root)
 
-        if csv_missing_map:
-            # Found CSVs with missing fields
-            total_csvs = len(csv_missing_map)
-            all_missing_fields = set()
-            for missing_fields in csv_missing_map.values():
-                all_missing_fields.update(missing_fields)
+            if csv_missing_map:
+                # Found CSVs with missing fields
+                total_csvs = len(csv_missing_map)
+                all_missing_fields = set()
+                for missing_fields in csv_missing_map.values():
+                    all_missing_fields.update(missing_fields)
 
-            missing_fields_str = ", ".join(sorted(all_missing_fields))
+                missing_fields_str = ", ".join(sorted(all_missing_fields))
 
-            # Prompt user if callback provided
-            should_update = False
-            if update_missing_fields_callback:
-                should_update = update_missing_fields_callback(
-                    total_csvs,
-                    list(all_missing_fields)
-                )
+                # Prompt user if callback provided
+                should_update = False
+                if update_missing_fields_callback:
+                    should_update = update_missing_fields_callback(
+                        total_csvs,
+                        list(all_missing_fields)
+                    )
 
-            if should_update:
-                # Update CSVs with missing fields
-                gui.update_status(f"Updating {total_csvs} CSV(s) with missing fields...")
+                if should_update:
+                    # Update CSVs with missing fields
+                    gui.update_status(f"Updating {total_csvs} CSV(s) with missing fields...")
 
-                def update_progress(current, total, message):
-                    gui.update_status(f"Updating CSVs: {message}")
+                    def update_progress(current, total, message):
+                        gui.update_status(f"Updating CSVs: {message}")
 
-                success_count, failure_count = update_all_csvs_with_missing_fields(
-                    csv_missing_map,
-                    update_progress
-                )
+                    success_count, failure_count = update_all_csvs_with_missing_fields(
+                        csv_missing_map,
+                        update_progress
+                    )
 
-                if failure_count > 0:
-                    gui.update_status(f"⚠️ Warning: {failure_count} CSV(s) failed to update. Continuing with training...")
-                    time.sleep(2)
+                    if failure_count > 0:
+                        gui.update_status(f"⚠️ Warning: {failure_count} CSV(s) failed to update. Continuing with training...")
+                        time.sleep(2)
+                    else:
+                        gui.update_status(f"✅ Successfully updated {success_count} CSV(s)")
+                        time.sleep(1)
                 else:
-                    gui.update_status(f"✅ Successfully updated {success_count} CSV(s)")
-                    time.sleep(1)
-            else:
-                # User declined or no callback - warn and continue
-                gui.update_status(f"⚠️ Warning: {total_csvs} CSV(s) missing fields: {missing_fields_str}")
+                    # User declined or no callback - warn and continue
+                    gui.update_status(f"⚠️ Warning: {total_csvs} CSV(s) missing fields: {missing_fields_str}")
+                    time.sleep(2)
+
+            gui.update_status("1/6: Aggregating classification CSVs for Header Model...")
+            all_data = []
+            classified_dir = get_classified_outputs_dir(output_dir)
+            scan_root = classified_dir if os.path.isdir(classified_dir) else output_dir
+            for study_folder in os.listdir(scan_root):
+                study_path = os.path.join(scan_root, study_folder)
+                if os.path.isdir(study_path):
+                    study_id = extract_study_id_from_path(study_path)
+                    csv_path = os.path.join(study_path, get_study_csv_name(study_id))
+                    if os.path.exists(csv_path):
+                        try:
+                            df = pd.read_csv(csv_path)
+                            all_data.append(df)
+                        except Exception as e:
+                            logger.warning(f"Error reading {csv_path}: {e}")
+
+            if not all_data:
+                gui.update_status("❌ Error: No classification CSV files found to train on.")
                 time.sleep(2)
+                gui.close()
+                return
 
-        gui.update_status("1/6: Aggregating classification CSVs for Header Model...")
-        all_data = []
-        for study_folder in os.listdir(output_dir):
-            study_path = os.path.join(output_dir, study_folder)
-            if os.path.isdir(study_path):
-                study_id = extract_study_id_from_path(study_path)
-                csv_path = os.path.join(study_path, get_study_csv_name(study_id))
-                if os.path.exists(csv_path):
-                    try:
-                        df = pd.read_csv(csv_path)
-                        all_data.append(df)
-                    except Exception as e:
-                        logger.warning(f"Error reading {csv_path}: {e}")
+            master_df = pd.concat(all_data, ignore_index=True)
 
-        if not all_data:
-            gui.update_status("❌ Error: No classification CSV files found to train on.")
-            time.sleep(2)
-            gui.close()
-            return
+            # Create model_files directory
+            model_files_dir = os.path.join(output_dir, "model_files")
+            os.makedirs(model_files_dir, exist_ok=True)
 
-        master_df = pd.concat(all_data, ignore_index=True)
-
-        # Create model_files directory
-        model_files_dir = os.path.join(output_dir, "model_files")
-        os.makedirs(model_files_dir, exist_ok=True)
-
-        master_df.to_csv(os.path.join(model_files_dir, "classification_data.csv"), index=False)
+            master_df.to_csv(os.path.join(model_files_dir, "classification_data.csv"), index=False)
 
         gui.update_status("2/6: Preprocessing and detecting field types...")
         master_df = master_df[master_df['Classification'].str.lower() != 'none'].copy()

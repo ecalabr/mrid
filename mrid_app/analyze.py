@@ -43,8 +43,8 @@ _UMAP_MIN_DIST    = 0.1   # moderate spread → global topology intact
 _UMAP_METRIC      = "cosine"
 
 # ── HDBSCAN ──────────────────────────────────────────────────────────────────
-_HDBSCAN_MIN_SAMPLES         = 1    # allow single-linkage at leaf level
-_HDBSCAN_CLUSTER_SELECTION   = "eom"  # excess-of-mass: stable, non-over-split
+_HDBSCAN_MIN_SAMPLES         = None    # lower = group everything, higher = more stringent inclusion in clusters, None = defaults to min cluster size
+_HDBSCAN_CLUSTER_SELECTION   = "leaf"  # eom = fewer clusters, leaf = more clusters
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
 _BEST_EXAMPLES = 4
@@ -232,9 +232,10 @@ def _hdbscan_cluster(
     fraction of exams.
 
     Noise points (label -1) are reassigned to the nearest cluster centroid
-    in UMAP space so no thumbnail is left unlabelled.
+    in UMAP space so no thumbnail is left unlabelled.  Noise probabilities are
+    set to 0.0 before reassignment.
 
-    Returns (labels, n_clusters).
+    Returns (labels, probabilities, n_clusters).
     """
     import hdbscan as _hdbscan
 
@@ -247,11 +248,12 @@ def _hdbscan_cluster(
 
     clusterer = _hdbscan.HDBSCAN(
         min_cluster_size=min_cluster_size,
-        min_samples=_HDBSCAN_MIN_SAMPLES,
+        min_samples= _HDBSCAN_MIN_SAMPLES,
         metric="euclidean",
         cluster_selection_method=_HDBSCAN_CLUSTER_SELECTION,
     )
     labels = clusterer.fit_predict(features_umap)
+    probabilities = np.array(clusterer.probabilities_, dtype=np.float32)
 
     unique_clusters = sorted(set(labels) - {-1})
     n_clusters = len(unique_clusters)
@@ -262,7 +264,8 @@ def _hdbscan_cluster(
         # Entire dataset is noise — treat all as one cluster
         logger.warning("HDBSCAN produced no clusters; assigning all to cluster 0")
         labels = np.zeros(len(labels), dtype=int)
-        return labels, 1
+        probabilities = np.zeros(len(labels), dtype=np.float32)
+        return labels, probabilities, 1
 
     # Reassign noise points to the nearest cluster centroid (UMAP space)
     if noise_count > 0:
@@ -280,12 +283,168 @@ def _hdbscan_cluster(
             noise_feats[:, np.newaxis, :] - centroids[np.newaxis, :, :], axis=2
         )  # (n_noise, n_clusters)
         remapped[noise_mask] = np.argmin(dists, axis=1)
+        # Noise points keep probability 0.0 (already set by HDBSCAN)
         labels = remapped
     else:
         id_map = {old: new for new, old in enumerate(unique_clusters)}
         labels = np.array([id_map[l] for l in labels], dtype=int)
 
-    return labels, n_clusters
+    return labels, probabilities, n_clusters
+
+
+# ── Cluster representative name helpers ──────────────────────────────────────
+
+def _parse_thumbnail_stem(stem: str) -> tuple:
+    """
+    Parse a thumbnail stem of the form ``{mrn}_{study_uid}_{series_uid}[_{split_idx}]``
+    into ``(mrn, study_uid, series_uid)``.
+
+    DICOM UIDs contain dots and no underscores, so the last underscore-delimited
+    component that is all-digits is the optional split index.  Everything else is
+    split as mrn (first token), study_uid (second token), series_uid (remainder).
+    """
+    parts = stem.split("_")
+    if len(parts) < 3:
+        return stem, "", ""
+    # Strip trailing split index (2-digit numeric suffix)
+    if parts[-1].isdigit() and len(parts) > 3:
+        parts = parts[:-1]
+    mrn = parts[0]
+    study_uid = parts[1]
+    series_uid = "_".join(parts[2:])
+    return mrn, study_uid, series_uid
+
+
+def _build_thumbnail_to_dicom_map(hierarchy: dict) -> dict:
+    """
+    Walk the hierarchy and return a dict mapping each thumbnail *basename*
+    (without directory) to a DICOM file path suitable for reading with pydicom.
+
+    hierarchy structure:
+        hierarchy[mrn][study_uid]["series"][series_desc] = [
+            {"dicom_path": ..., "thumbnail_path": ...}, ...
+        ]
+    """
+    mapping = {}
+    if not hierarchy:
+        return mapping
+    for mrn, studies in hierarchy.items():
+        if not isinstance(studies, dict):
+            continue
+        for study_uid, study_data in studies.items():
+            if not isinstance(study_data, dict):
+                continue
+            series_dict = study_data.get("series", {})
+            if not isinstance(series_dict, dict):
+                continue
+            for _desc, entries in series_dict.items():
+                if not isinstance(entries, list):
+                    continue
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    thumb = entry.get("thumbnail_path")
+                    dicom = entry.get("dicom_path")
+                    if thumb and dicom:
+                        mapping[os.path.basename(thumb)] = dicom
+    return mapping
+
+
+def _read_series_description(dicom_path: str) -> str:
+    """Read SeriesDescription from a DICOM file; return '' on failure."""
+    try:
+        import pydicom
+        ds = pydicom.dcmread(dicom_path, stop_before_pixels=True, force=True)
+        desc = getattr(ds, "SeriesDescription", None)
+        return str(desc).strip() if desc else ""
+    except Exception:
+        return ""
+
+
+def _levenshtein_medoid(strings: list) -> str:
+    """
+    Return the string from *strings* that minimises the total pairwise
+    Levenshtein distance to all other strings (i.e. the medoid).
+
+    Falls back to the first string if the list is empty or Levenshtein fails.
+    """
+    if not strings:
+        return ""
+    if len(strings) == 1:
+        return strings[0]
+    try:
+        import Levenshtein
+        n = len(strings)
+        total_dist = np.zeros(n, dtype=np.int64)
+        for i in range(n):
+            for j in range(i + 1, n):
+                d = Levenshtein.distance(strings[i], strings[j])
+                total_dist[i] += d
+                total_dist[j] += d
+        return strings[int(np.argmin(total_dist))]
+    except Exception:
+        return strings[0]
+
+
+_HIGH_CONF_THRESHOLD = 0.8   # membership probability threshold for representative selection
+
+
+def get_representative_names(
+    paths: list,
+    labels: np.ndarray,
+    probabilities: np.ndarray,
+    k: int,
+    hierarchy: dict,
+) -> list:
+    """
+    For each cluster 0…k-1, identify high-confidence members (probability ≥
+    _HIGH_CONF_THRESHOLD), read their SeriesDescription from the corresponding
+    DICOM file (looked up via *hierarchy*), and return the Levenshtein medoid
+    of those descriptions as the cluster's representative name.
+
+    If no high-confidence members exist for a cluster, falls back to all members.
+    If no descriptions can be read, returns ``"Series{c+1}"`` as a placeholder.
+
+    Returns a list of k strings.
+    """
+    thumb_to_dicom = _build_thumbnail_to_dicom_map(hierarchy)
+    paths_arr = np.array(paths)
+    names = []
+
+    for c in range(k):
+        cluster_mask = labels == c
+        cluster_indices = np.where(cluster_mask)[0]
+
+        # Prefer high-confidence members; fall back to all members
+        high_conf_mask = cluster_mask & (probabilities >= _HIGH_CONF_THRESHOLD)
+        hc_indices = np.where(high_conf_mask)[0]
+        candidate_indices = hc_indices if len(hc_indices) >= 1 else cluster_indices
+
+        descriptions = []
+        for idx in candidate_indices:
+            thumb_basename = os.path.basename(paths_arr[idx])
+            dicom_path = thumb_to_dicom.get(thumb_basename)
+            if dicom_path:
+                desc = _read_series_description(dicom_path)
+                if desc:
+                    descriptions.append(desc)
+
+        if descriptions:
+            rep = _levenshtein_medoid(descriptions)
+            # Sanitize: strip leading/trailing whitespace, replace characters
+            # unsafe for filenames with underscores (keep alphanums, dots, dashes).
+            import re
+            rep = re.sub(r'[^\w.\- ]', '_', rep).strip()
+            rep = rep if rep else f"Series{c + 1}"
+        else:
+            rep = f"Series{c + 1}"
+
+        logger.info(f"Cluster {c}: representative name = {rep!r} "
+                    f"(from {len(descriptions)} descriptions, "
+                    f"{len(hc_indices)} high-confidence members)")
+        names.append(rep)
+
+    return names
 
 
 # ── Centroid and best-example helpers ────────────────────────────────────────
@@ -388,7 +547,7 @@ def run_analysis(
     if cluster_progress_cb:
         cluster_progress_cb(2, 3)
     logger.info("HDBSCAN clustering…")
-    labels, k = _hdbscan_cluster(
+    labels, probabilities, k = _hdbscan_cluster(
         features_umap, features_pca, exam_ids, coverage_threshold
     )
     logger.info(f"Optimal cluster count: k={k}")
@@ -397,12 +556,20 @@ def run_analysis(
     centers = _compute_centroids(features_pca, labels, k)
     best_examples = get_best_examples(paths, features_pca, labels, centers)
 
+    # ── 7. Representative names from SeriesDescription medoids ───────────────
+    logger.info("Deriving cluster representative names from SeriesDescriptions…")
+    representative_names = get_representative_names(
+        paths, labels, probabilities, k, hierarchy
+    )
+
     return {
-        "k":             k,
-        "labels":        labels,
-        "centers":       centers,
-        "paths":         paths,
-        "exam_ids":      exam_ids,
-        "best_examples": best_examples,
-        "features":      features_pca,
+        "k":                   k,
+        "labels":              labels,
+        "probabilities":       probabilities,
+        "centers":             centers,
+        "paths":               paths,
+        "exam_ids":            exam_ids,
+        "best_examples":       best_examples,
+        "features":            features_pca,
+        "representative_names": representative_names,
     }

@@ -84,10 +84,29 @@ def _generate_deterministic_placeholder(field_name, *context_values):
     return f"{field_name.upper()}-{short_hash}"
 
 
+_CLASSIFIED_OUTPUTS_SUBDIR = "classified_outputs"
+
+
+def get_classified_outputs_dir(output_dir: str) -> str:
+    """
+    Return the path to the 'classified_outputs' subfolder inside *output_dir*.
+
+    All per-study classification folders, CSVs, and NIfTI files are stored here
+    so that they are cleanly separated from scan artefacts (hierarchy.yaml,
+    series_thumbnails, dicom_symlinks, config.py, model_files).
+
+    The directory is *not* created by this function — callers should use
+    ``os.makedirs(..., exist_ok=True)`` when they need to write into it.
+    """
+    return os.path.join(output_dir, _CLASSIFIED_OUTPUTS_SUBDIR)
+
+
 def sanitize_target_series(target_series):
     """
     Sanitize TARGET_SERIES list to ensure all values are safe for filenames.
-    Only allows alphanumeric characters, hyphens, and underscores.
+    Allows alphanumeric characters, spaces, hyphens, and underscores.
+    Spaces are permitted here (they will be replaced with underscores wherever
+    labels are used as directory or file name components).
     Ensures "Other" is always included in the list.
 
     Args:
@@ -105,16 +124,20 @@ def sanitize_target_series(target_series):
         if not isinstance(label, str):
             logger.warning(f"TARGET_SERIES contains non-string value: {label}. Skipping.")
             continue
-        # Remove all characters except alphanumerics, hyphens, and underscores
-        cleaned = re.sub(r'[^a-zA-Z0-9_\-]', '', label)
+        # Remove all characters except alphanumerics, spaces, hyphens, and underscores
+        cleaned = re.sub(r'[^a-zA-Z0-9 _\-]', '', label).strip()
         if cleaned and cleaned not in sanitized:  # Skip empty strings and duplicates
             sanitized.append(cleaned)
         elif not cleaned:
             logger.warning(f"TARGET_SERIES label '{label}' became empty after sanitization. Skipping.")
 
-    # Ensure "Other" is always present
+    # Ensure "Other" is always present.
+    # Only warn when the input looks like a full TARGET_SERIES list (more than
+    # one entry), to avoid false warnings when the function is called on a
+    # single label just for sanitization purposes.
     if "Other" not in sanitized:
-        logger.warning("'Other' not found in TARGET_SERIES. Adding it.")
+        if len(target_series) > 1:
+            logger.warning("'Other' not found in TARGET_SERIES. Adding it.")
         sanitized.append("Other")
 
     return sanitized
@@ -167,12 +190,13 @@ def get_nifti_name(study_id, label):
 
     Args:
         study_id: Study identifier (typically the study directory name)
-        label: Classification label (e.g., "T1", "T2", "FLAIR")
+        label: Classification label (e.g., "T1", "T2 FLAIR")
 
     Returns:
         str: NIfTI filename (without directory path)
     """
-    return f"{study_id}_{label.lower()}.nii.gz"
+    safe_label = label.lower().replace(' ', '_')
+    return f"{study_id}_{safe_label}.nii.gz"
 
 
 def get_nifti_prefix(study_id, label):
@@ -181,12 +205,13 @@ def get_nifti_prefix(study_id, label):
 
     Args:
         study_id: Study identifier (typically the study directory name)
-        label: Classification label (e.g., "T1", "T2", "FLAIR")
+        label: Classification label (e.g., "T1", "T2 FLAIR")
 
     Returns:
         str: NIfTI prefix for dcm2niix naming
     """
-    return f"{study_id}_{label.lower()}"
+    safe_label = label.lower().replace(' ', '_')
+    return f"{study_id}_{safe_label}"
 
 
 def get_symlink_dir_name(mrn, study_uid, series_uid, accn="", split_index=None):

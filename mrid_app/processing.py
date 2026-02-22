@@ -8,7 +8,7 @@ from .header import get_series_probabilities
 from .cnn import prepare_cnn_input_data
 from .config import OVERRIDE_THRESHOLD, PREFER_3D, DICOM_HEADER_FIELDS
 from .utils import (safe_get_dicom_attribute, get_nifti_prefix, extract_study_id_from_path,
-                     get_study_dir_name, get_study_csv_name)
+                     get_study_dir_name, get_study_csv_name, get_classified_outputs_dir)
 from .logging_config import get_logger
 
 logger = get_logger()
@@ -122,7 +122,7 @@ def background_conversion_worker(*args, convert=True, **kwargs):
         raise TypeError("background_conversion_worker requires (mrn, study_uid, output_root, dropdown_vars, series_dict) as the first five arguments")
 
 
-    study_out_dir = os.path.join(output_root, get_study_dir_name(mrn, study_uid, accn))
+    study_out_dir = os.path.join(get_classified_outputs_dir(output_root), get_study_dir_name(mrn, study_uid, accn))
     os.makedirs(study_out_dir, exist_ok=True)
     study_id = get_study_dir_name(mrn, study_uid, accn)
     csv_path = os.path.join(study_out_dir, get_study_csv_name(study_id))

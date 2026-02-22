@@ -4,7 +4,7 @@ import numpy as np
 import pickle
 import hashlib
 import multiprocessing as mp
-from .utils import extract_study_id_from_path, get_study_csv_name
+from .utils import extract_study_id_from_path, get_study_csv_name, get_classified_outputs_dir
 from .logging_config import get_logger
 
 logger = get_logger()
@@ -416,11 +416,17 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
     return model_path, best_accuracy
 
 
-def TrainImageClassifierLogic(output_dir, gui):
+def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
     """
     Aggregates classification CSVs, prepares CNN input data, encodes targets,
     and trains the CNN using train_cnn_model_logic. Updates the provided GUI
     (TrainClassifierGUI) with progress messages.
+
+    Args:
+        output_dir: Output directory (used for model_files and logging)
+        gui: TrainClassifierGUI instance
+        preloaded_df: Optional pre-loaded DataFrame to use instead of aggregating
+                      per-study CSVs. When provided, CSV scanning is skipped.
     """
     from .logging_config import update_log_file_location
 
@@ -444,35 +450,45 @@ def TrainImageClassifierLogic(output_dir, gui):
         return
 
     try:
-        gui.update_status("1/6: Aggregating data for Image Model...")
+        if preloaded_df is not None:
+            # ── Analyze mode: use the pre-loaded self-supervised DataFrame ────
+            gui.update_status("1/6: Using self-supervised classification data for Image Model…")
+            master_df = preloaded_df.copy()
+            model_files_dir = os.path.join(output_dir, "model_files")
+            os.makedirs(model_files_dir, exist_ok=True)
+        else:
+            # ── Normal mode: aggregate per-study classification CSVs ──────────
+            gui.update_status("1/6: Aggregating data for Image Model...")
 
-        # Collect classification CSV files
-        all_data = []
-        for study_folder in os.listdir(output_dir):
-            study_path = os.path.join(output_dir, study_folder)
-            if os.path.isdir(study_path):
-                study_id = extract_study_id_from_path(study_path)
-                csv_path = os.path.join(study_path, get_study_csv_name(study_id))
-                if os.path.exists(csv_path):
-                    try:
-                        df = pd.read_csv(csv_path)
-                        all_data.append(df)
-                    except Exception as e:
-                        logger.warning(f"Error reading {csv_path}: {e}")
+            # Collect classification CSV files
+            all_data = []
+            classified_dir = get_classified_outputs_dir(output_dir)
+            scan_root = classified_dir if os.path.isdir(classified_dir) else output_dir
+            for study_folder in os.listdir(scan_root):
+                study_path = os.path.join(scan_root, study_folder)
+                if os.path.isdir(study_path):
+                    study_id = extract_study_id_from_path(study_path)
+                    csv_path = os.path.join(study_path, get_study_csv_name(study_id))
+                    if os.path.exists(csv_path):
+                        try:
+                            df = pd.read_csv(csv_path)
+                            all_data.append(df)
+                        except Exception as e:
+                            logger.warning(f"Error reading {csv_path}: {e}")
 
-        if not all_data:
-            gui.update_status("❌ Error: No classification CSV files found to train on.")
-            time.sleep(2)
-            gui.close()
-            return
+            if not all_data:
+                gui.update_status("❌ Error: No classification CSV files found to train on.")
+                time.sleep(2)
+                gui.close()
+                return
 
-        master_df = pd.concat(all_data, ignore_index=True)
+            master_df = pd.concat(all_data, ignore_index=True)
 
-        # Create model_files directory
-        model_files_dir = os.path.join(output_dir, "model_files")
-        os.makedirs(model_files_dir, exist_ok=True)
+            # Create model_files directory
+            model_files_dir = os.path.join(output_dir, "model_files")
+            os.makedirs(model_files_dir, exist_ok=True)
 
-        master_df.to_csv(os.path.join(model_files_dir, "classification_data.csv"), index=False)
+            master_df.to_csv(os.path.join(model_files_dir, "classification_data.csv"), index=False)
 
         # Remove 'other' and 'none' labels
         master_df = master_df[master_df['Classification'].str.lower() != 'other'].copy()
