@@ -514,7 +514,11 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
 
         if candidates:
             # Apply PREFER_3D logic if enabled for this label
-            prefer_3d = PREFER_3D.get(label, False)
+            # PREFER_3D may be a bool (applies to all non-Other series) or a dict
+            if isinstance(PREFER_3D, bool):
+                prefer_3d = PREFER_3D if label != "Other" else False
+            else:
+                prefer_3d = PREFER_3D.get(label, False)
 
             if prefer_3d:
                 # Check if there's at least one 3D series

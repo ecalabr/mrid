@@ -11,15 +11,21 @@ def test_target_series_defined():
     assert "Other" in TARGET_SERIES
 
 def test_prefer_3d_defined():
-    """Test that PREFER_3D is properly defined."""
-    from mrid_app.config import PREFER_3D, TARGET_SERIES
-    assert PREFER_3D is not None
-    assert isinstance(PREFER_3D, dict)
+    """Test that PREFER_3D is properly defined.
 
-    # Check that all target series have a preference
-    for series in TARGET_SERIES:
-        assert series in PREFER_3D, f"{series} not in PREFER_3D"
-        assert isinstance(PREFER_3D[series], bool)
+    PREFER_3D may be:
+      - A bool: applied to all non-Other series.
+      - A dict: maps series names to bool; missing keys default to False,
+        extra keys are ignored.
+    """
+    from mrid_app.config import PREFER_3D
+    assert PREFER_3D is not None
+    assert isinstance(PREFER_3D, (bool, dict)), "PREFER_3D must be a bool or dict"
+
+    if isinstance(PREFER_3D, dict):
+        # Every value present must be a bool; missing keys are allowed (default False)
+        for series, value in PREFER_3D.items():
+            assert isinstance(value, bool), f"PREFER_3D['{series}'] must be bool"
 
 def test_override_threshold_valid():
     """Test that OVERRIDE_THRESHOLD is valid."""

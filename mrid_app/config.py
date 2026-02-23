@@ -1,9 +1,6 @@
 # ============================================================================
 # Filepath configuration options (modify only at beginning of project)
 # ============================================================================
-# Default directories (can be overridden by UI)
-DATA_DIR = "/media/ecalabr/raid/MRID-testing"
-OUT_DIR = "/media/ecalabr/raid/MRID-testing"
 # Output naming template
 STUDY_NAME_TEMPLATE = "{mrn}-{accn}"
 # Thumbnail generation settings
@@ -12,7 +9,7 @@ THUMBNAIL_QUALITY = 75  # JPEG quality (1-100, only used if THUMBNAIL_FORMAT='JP
 
 # Classification settings
 TARGET_SERIES = ["T1", "T2", "FLAIR", "T1c", "Other"]
-# prefer the 3D acquisition (MRAcquisitionType == '3D') even if it's not the highest probability
+# prefer the 3D acquisition (MRAcquisitionType == '3D') even if it's not the highest probability.
 PREFER_3D = {
     "T1": True,
     "T2": False,

@@ -1,11 +1,12 @@
 import os
+import json
 import threading
 import time
 import random
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from . import config
-from .config import DATA_DIR, OUT_DIR, NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LABELS, NUM_PARALLEL_WORKERS
+from .config import NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LABELS, NUM_PARALLEL_WORKERS
 from .header import TrainHeaderClassifierLogic
 from .cnn import SimpleCNN
 from .utils import (extract_study_id_from_path, get_study_csv_name, get_study_dir_name,
@@ -26,6 +27,51 @@ logger = get_logger()
 
 # Sanitize TARGET_SERIES to ensure safe filenames
 TARGET_SERIES = sanitize_target_series(config.TARGET_SERIES)
+
+
+# ---------------------------------------------------------------------------
+# Persistent last-used directory helpers
+# ---------------------------------------------------------------------------
+# Project root is one level above this file (mrid_app/gui.py → mrid/)
+_PREFS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".mrid_prefs.json")
+
+
+def _load_last_dirs():
+    """Return (input_dir, output_dir) from the prefs file, falling back to home."""
+    home = os.path.expanduser("~")
+    try:
+        if os.path.isfile(_PREFS_FILE):
+            with open(_PREFS_FILE, "r") as fh:
+                prefs = json.load(fh)
+            input_dir = prefs.get("last_input_dir", home)
+            output_dir = prefs.get("last_output_dir", home)
+            # Fall back to home if stored path no longer exists
+            if not os.path.isdir(input_dir):
+                input_dir = home
+            if not os.path.isdir(output_dir):
+                output_dir = home
+            return input_dir, output_dir
+    except Exception:
+        pass
+    return home, home
+
+
+def _save_last_dirs(input_dir: str, output_dir: str):
+    """Persist input_dir and output_dir to the prefs file."""
+    try:
+        prefs = {}
+        if os.path.isfile(_PREFS_FILE):
+            try:
+                with open(_PREFS_FILE, "r") as fh:
+                    prefs = json.load(fh)
+            except Exception:
+                prefs = {}
+        prefs["last_input_dir"] = input_dir
+        prefs["last_output_dir"] = output_dir
+        with open(_PREFS_FILE, "w") as fh:
+            json.dump(prefs, fh, indent=2)
+    except Exception as exc:
+        logger.debug(f"Could not save last-used directories to {_PREFS_FILE}: {exc}")
 
 
 # Global scaling factor to be calculated once
@@ -386,8 +432,9 @@ class MainApp:
         self.master = master
         master.title("DICOM Classification Tool")
         enable_tkinter_autoscaling(master)
-        self.input_dir = tk.StringVar(value=DATA_DIR)
-        self.output_dir = tk.StringVar(value=OUT_DIR)
+        _default_input, _default_output = _load_last_dirs()
+        self.input_dir = tk.StringVar(value=_default_input)
+        self.output_dir = tk.StringVar(value=_default_output)
         self.classification_mode = tk.StringVar(value="Manual")
         self.model_type = tk.StringVar(value="DICOM Header Model")
         self.rf_model = None
@@ -1005,6 +1052,9 @@ class MainApp:
                     existing_hierarchy = None
         except Exception:
             existing_hierarchy = None
+
+        # Persist the current directories so they are the default on next launch
+        _save_last_dirs(input_dir, output_dir)
 
         self.is_running = True
         self.stop_requested.clear()
@@ -2178,6 +2228,9 @@ class MainApp:
         if not scan_needed:
             logger.info("Existing hierarchy and thumbnails found — skipping scan.")
 
+        # Persist the current directories so they are the default on next launch
+        _save_last_dirs(input_dir, output_dir)
+
         # Lock UI
         self.is_running = True
         self.stop_requested.clear()
@@ -2534,6 +2587,7 @@ class MainApp:
 
             include_cb = tk.Checkbutton(
                 ctrl_frame,
+                font=("Arial", scale_value(10)),
                 text="Include",
                 variable=include_var,
             )
@@ -2547,6 +2601,7 @@ class MainApp:
 
             prefer3d_cb = tk.Checkbutton(
                 ctrl_frame,
+                font=("Arial", scale_value(10)),
                 text="Prefer 3D acquisition",
                 variable=prefer3d_var,
             )
@@ -2966,6 +3021,9 @@ class MainApp:
 
         logger.info("Starting verification workflow")
         logger.info(f"Output directory: {output_dir}")
+
+        # Persist the current directories so they are the default on next launch
+        _save_last_dirs(self.input_dir.get(), output_dir)
 
         self.is_running = True
         self.stop_requested.clear()

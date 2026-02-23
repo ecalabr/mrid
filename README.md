@@ -451,11 +451,7 @@ Everything else can be left at default values unless you have specific needs.
 ## Detailed Configuration Options
 
 ### Default Directories
-Specify default input/output directories for the classification GUI. Note that these can be changed in the GUI at runtime.
-```python
-DATA_DIR = "/path/to/my/dicoms/"
-OUT_DIR = "/path/to/my/outputs/"
-```
+The app automatically remembers the last-used input and output directories between sessions (stored in `.mrid_prefs.json` in the project root directory, alongside `run.py`). On first run it defaults to the current user's home directory.
 
 ### Output Naming Convention
 Outputs are named using the following template:
@@ -519,19 +515,31 @@ ANALYZE_COVERAGE_THRESHOLD = 0.1  # default: 10% of exams must contain a series 
 
 ### 3D Preference
 
-Prefer 3D acquisitions when multiple series exceed the classification threshold:
+Prefer 3D acquisitions when multiple series exceed the classification threshold.
 
+`PREFER_3D` can be set in two ways:
+
+**Per-series dict** (recommended) — explicit `True`/`False` for each series you care about:
 ```python
 PREFER_3D = {
     "T1": True,      # Prefer 3D T1
     "T2": False,     # Don't prefer 3D for T2
     "FLAIR": True,   # Prefer 3D FLAIR
     "T1c": True,     # Prefer 3D post-contrast
-    "Other": False   # N/A
+    "Other": False   # N/A (always ignored for Other)
 }
 ```
+- Any series **missing** from the dict defaults to `False` (no 3D preference).
+- Any **extra** keys in the dict (series not in `TARGET_SERIES`) are silently ignored.
 
-When `True`: If multiple series exceed `OVERRIDE_THRESHOLD` for a label, select the 3D acquisition even if it has lower probability.
+**Global bool** — applies the same preference to every series except `Other`:
+```python
+PREFER_3D = True   # Prefer 3D for all non-Other series
+# or
+PREFER_3D = False  # Never prefer 3D (default behaviour)
+```
+
+When the preference for a label is `True`: if multiple series exceed `OVERRIDE_THRESHOLD` for that label, the 3D acquisition is selected even if it has a slightly lower probability than a 2D candidate.
 
 ### Classification Thresholds
 
