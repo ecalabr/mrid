@@ -264,10 +264,11 @@ def _generate_color_map(labels):
 
 class TrainClassifierGUI:
     def __init__(self, master):
+        self._cancelled = False
         self.root = tk.Toplevel(master)
         enable_tkinter_autoscaling(self.root)
         self.root.title("Model Training In Progress...")
-        self.root.geometry(scale_geometry("450x120"))
+        self.root.geometry(scale_geometry("450x155"))
         self.root.protocol("WM_DELETE_WINDOW", self.do_nothing)
         self.root.grab_set()
         self.label = tk.StringVar(value="Initializing training process...")
@@ -276,7 +277,26 @@ class TrainClassifierGUI:
                                         length=scale_value(400), mode="indeterminate")
         self.progress.pack(pady=scale_value(5), padx=scale_value(20))
         self.progress.start(10)
+        self.cancel_button = tk.Button(
+            self.root,
+            text="Cancel",
+            command=self._on_cancel,
+            bg="#ff5f5f",
+            activebackground="#ff3333",
+            width=scale_value(10),
+        )
+        self.cancel_button.pack(pady=scale_value(8))
         self.root.update()
+
+    def _on_cancel(self):
+        """Called when the Cancel button is pressed."""
+        self._cancelled = True
+        self.cancel_button.config(state="disabled", text="Cancelling…")
+        self.label.set("Cancelling – please wait…")
+
+    def is_cancelled(self):
+        """Return True if the user has requested cancellation."""
+        return self._cancelled
 
     def update_status(self, new_text):
         self.root.after(0, lambda: self.label.set(new_text))
@@ -436,7 +456,7 @@ class MainApp:
         self.input_dir = tk.StringVar(value=_default_input)
         self.output_dir = tk.StringVar(value=_default_output)
         self.classification_mode = tk.StringVar(value="Manual")
-        self.model_type = tk.StringVar(value="DICOM Header Model")
+        self.model_type = tk.StringVar(value="Header + Image Model")
         self.rf_model = None
         self.rf_target_encoder = None
         self.rf_feature_encoder = None
@@ -543,6 +563,7 @@ class MainApp:
         self._train_button_tooltip = _ToolTip(self.train_button, "")
         self.load_button = tk.Button(control_frame, text="Load Model(s)", font=("Arial", scale_value(12)), command=self._load_model_handler)
         self.load_button.pack(side="right", padx=scale_value(5))
+        self._load_button_tooltip = _ToolTip(self.load_button, "")
         self._check_model_status()
 
     def browse_dir(self, var, title):
@@ -722,6 +743,27 @@ class MainApp:
             self.cnn_model = None
             self.cnn_target_encoder = None
 
+    def _count_classified_cases(self):
+        """Return the number of study folders in classified_outputs that contain a classification-results CSV."""
+        output_dir = self.output_dir.get()
+        if not output_dir:
+            return 0
+        classified_dir = get_classified_outputs_dir(output_dir)
+        if not os.path.isdir(classified_dir):
+            return 0
+        count = 0
+        try:
+            for name in os.listdir(classified_dir):
+                folder = os.path.join(classified_dir, name)
+                if not os.path.isdir(folder):
+                    continue
+                csv_name = get_study_csv_name(name)
+                if os.path.isfile(os.path.join(folder, csv_name)):
+                    count += 1
+        except Exception:
+            pass
+        return count
+
     def _check_model_status(self, event=None):
         model_type = self.model_type.get()
         mode = self.classification_mode.get()
@@ -767,27 +809,71 @@ class MainApp:
             self.start_button.config(text="▶ Start Classification", state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
 
         # Update load button
+        _MIN_CASES = 10
         if models_loaded:
             self.load_button.config(text="Model(s) Loaded", state="disabled", bg="#4fff5b", activebackground="#4fff5b")
-        elif mode_is_manual or mode_is_verify or mode_is_analyze:
+            load_tip = ""
+        elif mode_is_analyze:
             self.load_button.config(text="Load Model(s)", state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
+            load_tip = "Cannot load models in Analyze mode"
+        elif mode_is_verify:
+            self.load_button.config(text="Load Model(s)", state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
+            load_tip = "Cannot load models in Verify mode"
+        elif mode_is_manual:
+            self.load_button.config(text="Load Model(s)", state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
+            load_tip = "Cannot load models in Manual mode"
         else:
-            self.load_button.config(text="Load Model(s)", state="normal", bg="#ff4f4f", activebackground="#ff4f4f")
+            # Semi-Auto / Full-Auto: check whether model files exist
+            output_dir = self.output_dir.get()
+            model_files_dir = os.path.join(output_dir, "model_files")
+            rf_needed = model_type in ["DICOM Header Model", "Header + Image Model"]
+            cnn_needed = model_type in ["Image-Based Model", "Header + Image Model"]
+            rf_exists = os.path.exists(os.path.join(model_files_dir, "rf_classifier_model.joblib")) if rf_needed else True
+            cnn_exists = os.path.exists(os.path.join(model_files_dir, "cnn_classifier_model.pth")) if cnn_needed else True
+            models_exist = rf_exists and cnn_exists
+            n_cases = self._count_classified_cases()
 
-        train_available = True
+            if models_exist:
+                # Models on disk — always allow load
+                self.load_button.config(text="Load Model(s)", state="normal", bg="#ff4f4f", activebackground="#ff4f4f")
+                load_tip = ""
+            elif n_cases >= _MIN_CASES:
+                # No models yet but enough data to train — allow (will offer to train)
+                self.load_button.config(text="Load Model(s)", state="normal", bg="#ff4f4f", activebackground="#ff4f4f")
+                load_tip = ""
+            else:
+                # No models and not enough data yet
+                self.load_button.config(text="Load Model(s)", state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
+                load_tip = f"Classify at least {_MIN_CASES} cases to enable model loading/training"
+
+        try:
+            self._load_button_tooltip.update_text(load_tip)
+        except Exception:
+            pass
+
+        # ── Train button state ────────────────────────────────────────────────
+        _MIN_CASES = 10
         if mode == "Analyze":
             train_available = self._analyze_csv_ready
-            tip = "" if train_available else "Run Analyze first"
-            try:
-                self._train_button_tooltip.update_text(tip)
-            except Exception:
-                pass
+            tip = "" if train_available else "Analyze first"
+        elif mode == "Verify":
+            train_available = False
+            tip = "Cannot train models in Verify mode"
         else:
-            try:
-                self._train_button_tooltip.update_text("")
-            except Exception:
-                pass
-        self.train_button.config(state="normal" if train_available else "disabled")
+            # Manual / Semi-Auto / Full-Auto: need ≥ _MIN_CASES classified cases
+            n_cases = self._count_classified_cases()
+            train_available = n_cases >= _MIN_CASES
+            tip = "" if train_available else f"Classify at least {_MIN_CASES} cases to enable model training"
+
+        try:
+            self._train_button_tooltip.update_text(tip)
+        except Exception:
+            pass
+
+        if train_available:
+            self.train_button.config(state="normal", bg="#4fff5b", activebackground="#4fff5b")
+        else:
+            self.train_button.config(state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
 
     def _train_model(self):
         if self.is_running:
@@ -867,6 +953,7 @@ class MainApp:
         self.start_button.config(state="disabled")
         self.train_button.config(state="disabled")
         training_gui = TrainClassifierGUI(self.master)
+        self._active_training_gui = training_gui
         training_thread = threading.Thread(
             target=TrainHeaderClassifierLogic,
             args=(output_dir, training_gui, prompt_update_missing_fields),
@@ -874,7 +961,7 @@ class MainApp:
             daemon=True
         )
         training_thread.start()
-        self.master.after(100, self._poll_training_status, training_thread)
+        self.master.after(100, self._poll_training_status, training_thread, training_gui)
 
     def train_classifier_cnn(self, preloaded_csv=None):
         if self.is_running: return
@@ -901,13 +988,14 @@ class MainApp:
         self.start_button.config(state="disabled")
         self.train_button.config(state="disabled")
         training_gui = TrainClassifierGUI(self.master)
+        self._active_training_gui = training_gui
         training_thread = threading.Thread(
             target=self._train_cnn_background,
             args=(output_dir, training_gui, preloaded_df),
             daemon=True
         )
         training_thread.start()
-        self.master.after(100, self._poll_training_status, training_thread)
+        self.master.after(100, self._poll_training_status, training_thread, training_gui)
 
     def _train_cnn_background(self, output_dir, training_gui, preloaded_df=None):
         # Delegate the full image-model training flow to the cnn module's TrainImageClassifierLogic
@@ -921,12 +1009,19 @@ class MainApp:
             except Exception:
                 pass
 
-    def _poll_training_status(self, thread):
+    def _poll_training_status(self, thread, training_gui=None):
         if thread.is_alive():
-            self.master.after(100, self._poll_training_status, thread)
+            self.master.after(100, self._poll_training_status, thread, training_gui)
         else:
-            # Training completed
+            # Training completed (or was cancelled)
             self.start_button.config(state="normal")
+
+            # Check if training was cancelled — skip auto-load and model check
+            was_cancelled = training_gui is not None and training_gui.is_cancelled()
+            if was_cancelled:
+                self._auto_load_after_training = False
+                self._check_model_status()
+                return
 
             # If auto-load flag is set, load the models
             if self._auto_load_after_training:
@@ -2565,10 +2660,11 @@ class MainApp:
             include_var = tk.BooleanVar(value=True)
 
             # Include checkbox – toggling dims/restores the row visually
-            def _make_toggle(rf, nv, p3v, iv):
+            def _make_toggle(rf, nv, p3v, iv, ne):
                 def _toggle(*_):
-                    state = "normal" if iv.get() else "disabled"
-                    fg = "black" if iv.get() else "#aaaaaa"
+                    included = iv.get()
+                    state = "normal" if included else "disabled"
+                    fg = "black" if included else "#aaaaaa"
                     rf.config(fg=fg)
                     for child in rf.winfo_children():
                         try:
@@ -2579,25 +2675,34 @@ class MainApp:
                     for child in ctrl_frame.winfo_children():
                         if getattr(child, '_is_include_cb', False):
                             child.config(state="normal")
+                    # shade the name entry red when excluded, white when included
+                    try:
+                        if included:
+                            ne.config(state="normal", bg="white")
+                        else:
+                            ne.config(state="disabled", bg="#ffaaaa")
+                    except Exception:
+                        pass
                 return _toggle
 
             include_cb = tk.Checkbutton(
                 ctrl_frame,
-                font=("Arial", scale_value(10)),
+                font=("Arial", scale_value(8)),
                 text="Include",
                 variable=include_var,
             )
             include_cb._is_include_cb = True
             include_cb.grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
-            include_var.trace_add("write", _make_toggle(row_frame, name_var, prefer3d_var, include_var))
 
             tk.Label(ctrl_frame, text="Series name:").grid(row=1, column=0, sticky="w", pady=2)
             name_entry = tk.Entry(ctrl_frame, textvariable=name_var, width=20)
             name_entry.grid(row=1, column=1, sticky="w", padx=PAD, pady=2)
 
+            include_var.trace_add("write", _make_toggle(row_frame, name_var, prefer3d_var, include_var, name_entry))
+
             prefer3d_cb = tk.Checkbutton(
                 ctrl_frame,
-                font=("Arial", scale_value(10)),
+                font=("Arial", scale_value(8)),
                 text="Prefer 3D acquisition",
                 variable=prefer3d_var,
             )
@@ -2724,15 +2829,6 @@ class MainApp:
         TARGET_SERIES = sanitize_target_series(names)
         logger.info(f"Updated TARGET_SERIES={names}, PREFER_3D={prefer3d_dict}")
 
-        # Notify user that memory is updated
-        messagebox.showinfo(
-            "Analysis Applied",
-            f"Series types have been updated:\n\n"
-            f"TARGET_SERIES = {names}\n\n"
-            f"PREFER_3D = {prefer3d_dict}\n\n"
-            "Attempting to persist changes to config.py…",
-            parent=self.master
-        )
 
         # ── 2. Determine which config file to update ──────────────────────────
         config_file_path = None
@@ -2769,11 +2865,6 @@ class MainApp:
                 fh.write(new_source)
 
             logger.info(f"Config file updated: {config_file_path}")
-            messagebox.showinfo(
-                "Config Saved",
-                f"Changes written to:\n{config_file_path}",
-                parent=self.master
-            )
         except Exception as e:
             logger.error(f"Failed to write config file: {e}")
             messagebox.showwarning(
@@ -2992,8 +3083,10 @@ class MainApp:
                 self._selfsupervised_csv_path = csv_out
                 self._check_model_status()
                 messagebox.showinfo(
-                    "Self-Supervised CSV Saved",
-                    f"Saved {total_written} labelled series to:\n{csv_out}",
+                    "Analysis Complete",
+                    f"Analysis complete — {total_written} labelled series saved.\n\n"
+                    "The Train Model(s) button is now active. Select your desired model type "
+                    "and click Train Model(s) to train using the self-supervised data.",
                     parent=self.master
                 )
 

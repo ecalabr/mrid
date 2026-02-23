@@ -53,6 +53,10 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
             # ── Normal mode: check for missing fields then aggregate CSVs ─────
             # Check for missing fields in existing CSVs
             gui.update_status("Checking for missing DICOM header fields...")
+            if gui.is_cancelled():
+                logger.info("Header model training cancelled by user.")
+                gui.close()
+                return
             classified_dir = get_classified_outputs_dir(output_dir)
             scan_root = classified_dir if os.path.isdir(classified_dir) else output_dir
             csv_missing_map = scan_for_missing_fields(scan_root)
@@ -128,6 +132,10 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
             master_df.to_csv(os.path.join(model_files_dir, "classification_data.csv"), index=False)
 
         gui.update_status("2/6: Preprocessing and detecting field types...")
+        if gui.is_cancelled():
+            logger.info("Header model training cancelled by user.")
+            gui.close()
+            return
         master_df = master_df[master_df['Classification'].str.lower() != 'none'].copy()
         master_df = master_df[master_df['Classification'].str.lower() != 'other'].copy()
         if master_df.empty:
@@ -144,6 +152,10 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
         y = master_df['Classification']
 
         gui.update_status("3/6: Encoding categorical features and target...")
+        if gui.is_cancelled():
+            logger.info("Header model training cancelled by user.")
+            gui.close()
+            return
 
         model_files_dir = os.path.join(output_dir, "model_files")
         os.makedirs(model_files_dir, exist_ok=True)
@@ -168,6 +180,10 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
             X_final = pd.concat([X_final_num] + embedded_features_dfs, axis=1)
 
         gui.update_status(f"4/6: Training RandomForestClassifier ({N_ESTIMATORS} trees)...")
+        if gui.is_cancelled():
+            logger.info("Header model training cancelled by user.")
+            gui.close()
+            return
         from sklearn.model_selection import train_test_split
         X_train, X_test, y_train, y_test = train_test_split(X_final, y_encoded, test_size=0.3, random_state=42, stratify=y_encoded)
 
@@ -175,6 +191,10 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
         model.fit(X_train, y_train)
 
         gui.update_status("5/6: Saving model, encoders, and field types...")
+        if gui.is_cancelled():
+            logger.info("Header model training cancelled by user.")
+            gui.close()
+            return
         model_files_dir = os.path.join(output_dir, "model_files")
         os.makedirs(model_files_dir, exist_ok=True)
 

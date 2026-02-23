@@ -335,7 +335,7 @@ class AugmentedImageDataset(Dataset):
         return image, label
 
 
-def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNClass=None, progress_callback=None):
+def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNClass=None, progress_callback=None, cancel_check=None):
     """
     Train CNN model with optional progress reporting.
 
@@ -346,6 +346,7 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
         output_dir: Directory to save model
         SimpleCNNClass: Optional custom CNN class
         progress_callback: Optional callback function(current_epoch, total_epochs, loss, accuracy, message)
+        cancel_check: Optional callable returning True if training should be aborted
     """
     if torch is None:
         return None, None
@@ -377,6 +378,11 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
     best_accuracy = 0.0
 
     for epoch in range(NUM_EPOCHS):
+        # Check for cancellation at the start of each epoch
+        if cancel_check is not None and cancel_check():
+            logger.info("CNN training cancelled by user during epoch loop.")
+            return model_path if best_accuracy > 0 else None, best_accuracy
+
         model.train()
         running_loss = 0.0
         for inputs, labels in train_loader:
@@ -501,6 +507,10 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
 
         # Prepare image tensors
         gui.update_status("2/6: Preparing image data (center slices)...")
+        if gui.is_cancelled():
+            logger.info("CNN training cancelled by user.")
+            gui.close()
+            return
         dicom_paths = master_df['Path']
 
         # Set up progress callback for preprocessing
@@ -523,6 +533,11 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
 
         # Switch back to indeterminate mode
         gui.set_indeterminate_mode()
+
+        if gui.is_cancelled():
+            logger.info("CNN training cancelled by user.")
+            gui.close()
+            return
 
         if cache_path is None:
             gui.update_status("❌ Error: Failed to prepare CNN input data (missing torchvision or no images).")
@@ -576,6 +591,10 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
             return
 
         gui.update_status(f"4/6: Training SimpleCNN (Num Classes: {num_classes})...")
+        if gui.is_cancelled():
+            logger.info("CNN training cancelled by user.")
+            gui.close()
+            return
 
         # Set up progress callback for training
         gui.set_determinate_mode(NUM_EPOCHS)
@@ -589,7 +608,8 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
         try:
             model_path, best_accuracy = train_cnn_model_logic(
                 X, y_encoded, num_classes, output_dir,
-                progress_callback=training_progress
+                progress_callback=training_progress,
+                cancel_check=gui.is_cancelled,
             )
         except Exception as e:
             gui.update_status(f"❌ Error during CNN training: {e}")
@@ -599,6 +619,12 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
 
         # Switch back to indeterminate mode
         gui.set_indeterminate_mode()
+
+        # If cancelled, close immediately without saving summary
+        if gui.is_cancelled():
+            logger.info("CNN training cancelled by user — skipping model save summary.")
+            gui.close()
+            return
 
         # Save the target encoder
         try:
