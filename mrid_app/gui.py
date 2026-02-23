@@ -1957,9 +1957,7 @@ class MainApp:
 
             # Re-import specific values that are used directly in this module
             # Note: We use config.VARIABLE_NAME elsewhere, so those will automatically update
-            global DATA_DIR, OUT_DIR, TARGET_SERIES, NUM_COLUMNS, ALLOW_DUPLICATE_LABELS
-            DATA_DIR = config.DATA_DIR
-            OUT_DIR = config.OUT_DIR
+            global TARGET_SERIES, NUM_COLUMNS, ALLOW_DUPLICATE_LABELS
             TARGET_SERIES = sanitize_target_series(config.TARGET_SERIES)
             NUM_COLUMNS = config.NUM_COLUMNS
             ALLOW_DUPLICATE_LABELS = config.ALLOW_DUPLICATE_LABELS
@@ -2077,9 +2075,7 @@ class MainApp:
                     setattr(config, var_name, getattr(temp_module, var_name))
 
             # Update local globals that are imported directly
-            global DATA_DIR, OUT_DIR, TARGET_SERIES, NUM_COLUMNS, ALLOW_DUPLICATE_LABELS
-            DATA_DIR = config.DATA_DIR
-            OUT_DIR = config.OUT_DIR
+            global TARGET_SERIES, NUM_COLUMNS, ALLOW_DUPLICATE_LABELS
             TARGET_SERIES = sanitize_target_series(config.TARGET_SERIES)
             NUM_COLUMNS = config.NUM_COLUMNS
             ALLOW_DUPLICATE_LABELS = config.ALLOW_DUPLICATE_LABELS
