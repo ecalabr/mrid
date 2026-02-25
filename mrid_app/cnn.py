@@ -23,12 +23,13 @@ _CNN_TRANSFORMS = None
 _AUGMENTATION_TRANSFORMS = None
 
 try:
-    from .config import IMAGE_SIZE, NUM_EPOCHS, BATCH_SIZE, LR
+    from .config import IMAGE_SIZE, NUM_EPOCHS, BATCH_SIZE, LR, NUM_PARALLEL_WORKERS
 except Exception:
     IMAGE_SIZE = 64
     NUM_EPOCHS = 200
     BATCH_SIZE = 8
     LR = 0.001
+    NUM_PARALLEL_WORKERS = 8
 
 
 def _get_transforms():
@@ -201,7 +202,7 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output
 
     # Determine number of workers
     if num_workers is None:
-        num_workers = max(1, mp.cpu_count() - 1)
+        num_workers = max(1, min(mp.cpu_count() - 1, NUM_PARALLEL_WORKERS))
 
     # Prepare arguments for parallel processing
     args_list = [(idx, path, label) for idx, (path, label) in enumerate(zip(filepaths, labels))]

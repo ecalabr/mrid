@@ -208,7 +208,11 @@ def scan_dicom_directory(input_dir, output_dir, num_workers=None):
 
     # Parallel processing with batched workers
     if num_workers is None:
-        num_workers = mp.cpu_count()
+        try:
+            from mrid_app.config import NUM_PARALLEL_WORKERS
+        except Exception:
+            NUM_PARALLEL_WORKERS = 8
+        num_workers = max(1, min(mp.cpu_count() - 1, NUM_PARALLEL_WORKERS))
 
     pool = mp.Pool(num_workers)
     results = []

@@ -10,8 +10,14 @@ def _get_semantic_model():
     from . import config
     if config.SEMANTIC_MODEL is None:
         try:
+            import logging
             from sentence_transformers import SentenceTransformer
+            # Suppress noisy key-mismatch warnings from transformers during model load
+            _transformers_logger = logging.getLogger("transformers.modeling_utils")
+            _prev_level = _transformers_logger.level
+            _transformers_logger.setLevel(logging.ERROR)
             config.SEMANTIC_MODEL = SentenceTransformer(SEMANTIC_MODEL_NAME)
+            _transformers_logger.setLevel(_prev_level)
             logger.info(f"Loaded semantic model: {SEMANTIC_MODEL_NAME}")
         except Exception:
             config.SEMANTIC_MODEL = None

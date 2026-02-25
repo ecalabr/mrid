@@ -1240,7 +1240,7 @@ class MainApp:
                 gui = ProgressGUI(total_files=total_files)
 
                 # 3. Parallel processing (scan) — use batched workers to reduce per-file overhead
-                pool = mp.Pool(mp.cpu_count())
+                pool = mp.Pool(max(1, min(mp.cpu_count() - 1, NUM_PARALLEL_WORKERS)))
                 results = []
 
                 try:
@@ -2374,7 +2374,7 @@ class MainApp:
                 total_files = len(all_files)
                 gui = ProgressGUI(total_files=total_files, title="Analyze — Scanning…")
 
-                pool = mp.Pool(mp.cpu_count())
+                pool = mp.Pool(max(1, min(mp.cpu_count() - 1, NUM_PARALLEL_WORKERS)))
                 results = []
                 try:
                     from .scanner import check_dicom_batch
