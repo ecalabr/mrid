@@ -202,12 +202,16 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output
     if hasattr(labels, 'tolist'):
         labels = labels.tolist()
 
-    # Determine number of workers.
-    # results back through the multiprocessing pipe.
+    # Determine number of workers. Re-read from config at call time to respect
+    # any runtime changes the user may have made since module import.
     if num_workers is None:
-        num_workers = max(1, min(mp.cpu_count() - 1, NUM_PARALLEL_WORKERS))
+        try:
+            from .config import NUM_PARALLEL_WORKERS as _npw
+        except Exception:
+            _npw = NUM_PARALLEL_WORKERS
+        num_workers = max(1, min(mp.cpu_count() - 1, _npw))
     else:
-        num_workers = max(1, min(num_workers))
+        num_workers = max(1, num_workers)
 
     # Use a chunksize proportional to the dataset size to reduce IPC overhead.
     chunksize = max(1, total_files // (num_workers * 10))
@@ -536,13 +540,20 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
             gui.update_progress(current)
             gui.update_status(f"2/6: {message}")
 
+        # Re-read NUM_PARALLEL_WORKERS at call time to respect any runtime changes
+        try:
+            from .config import NUM_PARALLEL_WORKERS as _npw
+        except Exception:
+            _npw = NUM_PARALLEL_WORKERS
+
         # Try to load from cache first, or preprocess and cache
         cache_path = prepare_and_cache_cnn_data(
             dicom_paths.tolist(),
             master_df['Classification'].tolist(),
             load_center_slice_func=processing_module.load_center_slice,
             output_dir=output_dir,
-            progress_callback=preprocessing_progress
+            progress_callback=preprocessing_progress,
+            num_workers=_npw,
         )
 
         # Switch back to indeterminate mode
