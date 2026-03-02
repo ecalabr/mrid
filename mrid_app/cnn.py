@@ -119,31 +119,33 @@ def _process_single_image(args):
     Worker function for parallel image preprocessing.
 
     Args:
-        args: Tuple of (idx, path, label)
+        args: Tuple of (idx, path, label, image_size)
 
     Returns:
-        Tuple of (idx, tensor, label) or (idx, None, None) if failed
+        Tuple of (idx, numpy_array, label) or (idx, None, None) if failed.
+        Returns a numpy array (not a tensor) to avoid passing PyTorch shared-memory
+        file descriptors through the multiprocessing pipe, which causes
+        "received 0 items of ancdata" errors on Linux.
     """
-    idx, path, label = args
+    idx, path, label, image_size = args
 
     try:
         # Import here to avoid pickling issues
         from . import processing as processing_module
-
-        # Get transforms
-        transforms = _get_transforms()
-        if transforms is None:
-            return (idx, None, None)
+        from PIL import Image as PILImage
+        import numpy as np
 
         # Load and process image
         slice_img = processing_module.load_center_slice([path])
         if slice_img is None:
             return (idx, None, None)
 
-        img = slice_img.convert('L')
-        tensor = transforms(img)
+        img = slice_img.convert('L').resize((image_size, image_size), PILImage.BILINEAR)
+        arr = np.array(img, dtype=np.float32) / 255.0  # [0, 1]
+        arr = (arr - 0.5) / 0.5  # normalize to [-1, 1], matching ToTensor + Normalize(0.5, 0.5)
+        arr = arr[np.newaxis, :, :]  # add channel dim -> (1, H, W)
 
-        return (idx, tensor, label)
+        return (idx, arr, label)
     except Exception as e:
         logger.debug(f"Error processing {path}: {e}")
         return (idx, None, None)
@@ -200,21 +202,29 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output
     if hasattr(labels, 'tolist'):
         labels = labels.tolist()
 
-    # Determine number of workers
+    # Determine number of workers.
+    # results back through the multiprocessing pipe.
     if num_workers is None:
         num_workers = max(1, min(mp.cpu_count() - 1, NUM_PARALLEL_WORKERS))
+    else:
+        num_workers = max(1, min(num_workers))
 
-    # Prepare arguments for parallel processing
-    args_list = [(idx, path, label) for idx, (path, label) in enumerate(zip(filepaths, labels))]
+    # Use a chunksize proportional to the dataset size to reduce IPC overhead.
+    chunksize = max(1, total_files // (num_workers * 10))
 
-    # Process images in parallel with progress tracking
+    # Prepare arguments for parallel processing — include IMAGE_SIZE so the
+    # worker never needs to import torchvision transforms (avoids pickling issues).
+    args_list = [(idx, path, label, IMAGE_SIZE) for idx, (path, label) in enumerate(zip(filepaths, labels))]
+
+    # Process images in parallel with progress tracking.
+    # Workers return plain numpy arrays (no PyTorch tensors / shared-memory fds),
+    # which are safe to pass through the pool pipe without ancdata limits.
     processed_results = []
     completed = 0
 
     try:
-        # Use Pool with imap_unordered for progress tracking
         with mp.Pool(processes=num_workers) as pool:
-            for result in pool.imap_unordered(_process_single_image, args_list, chunksize=1):
+            for result in pool.imap_unordered(_process_single_image, args_list, chunksize=chunksize):
                 completed += 1
 
                 # Only keep successful results
@@ -235,11 +245,14 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output
             if slice_img is None:
                 continue
             try:
-                img = slice_img.convert('L')
-                tensor = transforms(img)
-                processed_results.append((idx, tensor, labels[idx]))
-            except Exception as e:
-                logger.debug(f"Error processing {path}: {e}")
+                from PIL import Image as _PILImage
+                img = slice_img.convert('L').resize((IMAGE_SIZE, IMAGE_SIZE), _PILImage.BILINEAR)
+                arr = np.array(img, dtype=np.float32) / 255.0
+                arr = (arr - 0.5) / 0.5
+                arr = arr[np.newaxis, :, :]
+                processed_results.append((idx, arr, labels[idx]))
+            except Exception as ex:
+                logger.debug(f"Error processing {path}: {ex}")
 
             # Update progress every 10 images or on last image
             if progress_callback and (idx % 10 == 0 or idx == total_files - 1):
@@ -252,15 +265,15 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output
     # Sort results by original index to maintain order
     processed_results.sort(key=lambda x: x[0])
 
-    # Extract tensors and labels
-    processed_images = [result[1] for result in processed_results]
+    # Convert numpy arrays → tensors in the main process (safe: no IPC involved)
+    processed_arrays = [result[1] for result in processed_results]
     valid_labels = [result[2] for result in processed_results]
 
     # Stack tensors and save to cache
     if progress_callback:
         progress_callback(total_files, total_files, "Saving preprocessed data to cache...")
 
-    X = torch.stack(processed_images)
+    X = torch.from_numpy(np.stack(processed_arrays))
     y = np.array(valid_labels)
 
     cached_data = {'X': X, 'y': y}
