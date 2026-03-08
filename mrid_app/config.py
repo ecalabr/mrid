@@ -30,6 +30,7 @@ ANALYZE_COVERAGE_THRESHOLD = 0.1  # clusters will only be considered if this pro
 # Classification UI options
 NUM_COLUMNS = 6  # max number of columns in classification/verification UI
 NUM_ROWS = 4  # max number of rows in verification UI
+THUMBNAIL_SCALE_FACTOR = 1.0  # additional static scale multiplier applied to thumbnail size only (e.g. 0.75 to shrink, 1.5 to enlarge)
 OVERRIDE_THRESHOLD = 0.5  # probability threshold for auto-classification
 ALLOW_DUPLICATE_LABELS = False  # allow multiple series to have the same label for manual classification
 NUM_PARALLEL_WORKERS = 8  # number of parallel threads for various file loading operations

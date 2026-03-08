@@ -6,7 +6,7 @@ import random
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from . import config
-from .config import NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LABELS, NUM_PARALLEL_WORKERS
+from .config import NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LABELS, NUM_PARALLEL_WORKERS, THUMBNAIL_SCALE_FACTOR
 from .header import TrainHeaderClassifierLogic
 from .cnn import SimpleCNN
 from .utils import (extract_study_id_from_path, get_study_csv_name, get_study_dir_name,
@@ -205,6 +205,19 @@ def scale_value(value):
     if _SCALE_FACTOR is None:
         return value
     return int(value * _SCALE_FACTOR)
+
+
+def scale_thumbnail(value):
+    """Scale a thumbnail pixel size by both the DPI scale factor and the user-configurable THUMBNAIL_SCALE_FACTOR.
+    Reads THUMBNAIL_SCALE_FACTOR directly from the config module so it always
+    reflects the current value even after a config reload."""
+    global _SCALE_FACTOR
+    sf = _SCALE_FACTOR if _SCALE_FACTOR is not None else 1.0
+    try:
+        tsf = config.THUMBNAIL_SCALE_FACTOR
+    except Exception:
+        tsf = 1.0
+    return int(value * sf * tsf)
 
 
 class _ToolTip:
@@ -2052,10 +2065,12 @@ class MainApp:
 
             # Re-import specific values that are used directly in this module
             # Note: We use config.VARIABLE_NAME elsewhere, so those will automatically update
-            global TARGET_SERIES, NUM_COLUMNS, ALLOW_DUPLICATE_LABELS
+            global TARGET_SERIES, NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LABELS, THUMBNAIL_SCALE_FACTOR
             TARGET_SERIES = sanitize_target_series(config.TARGET_SERIES)
             NUM_COLUMNS = config.NUM_COLUMNS
+            NUM_ROWS = config.NUM_ROWS
             ALLOW_DUPLICATE_LABELS = config.ALLOW_DUPLICATE_LABELS
+            THUMBNAIL_SCALE_FACTOR = config.THUMBNAIL_SCALE_FACTOR
 
             # Update the UI elements if they need to reflect updated values
             # (input_dir and output_dir StringVars are set from these at startup)
@@ -2170,10 +2185,12 @@ class MainApp:
                     setattr(config, var_name, getattr(temp_module, var_name))
 
             # Update local globals that are imported directly
-            global TARGET_SERIES, NUM_COLUMNS, ALLOW_DUPLICATE_LABELS
+            global TARGET_SERIES, NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LABELS, THUMBNAIL_SCALE_FACTOR
             TARGET_SERIES = sanitize_target_series(config.TARGET_SERIES)
             NUM_COLUMNS = config.NUM_COLUMNS
+            NUM_ROWS = config.NUM_ROWS
             ALLOW_DUPLICATE_LABELS = config.ALLOW_DUPLICATE_LABELS
+            THUMBNAIL_SCALE_FACTOR = config.THUMBNAIL_SCALE_FACTOR
 
             # Track that we're now using a custom config
             self.active_config_path = config_path
@@ -3515,6 +3532,141 @@ def _derive_thumbnail_path_from_dicom(dicom_path, output_dir):
         return None
 
 
+def _fit_window_to_screen(root, content_frame, button_frame, pad_x=0, pad_y=0):
+    """
+    Resize *root* so it is as large as its scrollable content requires, but
+    never larger than the screen.  Also repositions the window so it stays
+    fully on-screen.
+
+    Because the content lives inside a Canvas (for scrolling), querying
+    root.winfo_reqwidth/height returns only the canvas minimum, not the
+    actual content size.  We therefore measure content_frame and button_frame
+    directly and reconstruct the desired window size from those values.
+
+    Parameters
+    ----------
+    root         : Toplevel window
+    content_frame: the inner Frame whose required size drives the width/height
+    button_frame : the static button row frame (always fully visible)
+    pad_x, pad_y : padding applied around the canvas area (same values passed
+                   to _make_scrollable_frame)
+    """
+    try:
+        root.update_idletasks()
+
+        screen_w = root.winfo_screenwidth()
+        screen_h = root.winfo_screenheight()
+
+        # Content (thumbnail grid) required size
+        content_w = content_frame.winfo_reqwidth()
+        content_h = content_frame.winfo_reqheight()
+
+        # Button row required size
+        btn_h = button_frame.winfo_reqheight()
+
+        # Scrollbar width — read from the actual scrollbar widget if possible,
+        # otherwise fall back to a safe default
+        scrollbar_w = scale_value(20)
+        try:
+            # The scrollbar is the second child of the outer frame (canvas sibling)
+            outer = content_frame.master.master  # content_frame → canvas → outer
+            for child in outer.winfo_children():
+                if isinstance(child, ttk.Scrollbar):
+                    child.update_idletasks()
+                    scrollbar_w = child.winfo_reqwidth()
+                    break
+        except Exception:
+            pass
+
+        # Total desired window size:
+        #   width  = content width + scrollbar + horizontal padding on both sides
+        #   height = content height + button row + vertical padding on both sides
+        desired_w = content_w + scrollbar_w + 2 * pad_x
+        desired_h = content_h + btn_h + 2 * pad_y
+
+        win_w = min(desired_w, screen_w)
+        win_h = min(desired_h, screen_h)
+
+        # Try to keep the current top-left position; clamp so the window fits
+        try:
+            cur_x = root.winfo_x()
+            cur_y = root.winfo_y()
+        except Exception:
+            cur_x, cur_y = 0, 0
+
+        x = max(0, min(cur_x, screen_w - win_w))
+        y = max(0, min(cur_y, screen_h - win_h))
+
+        root.geometry(f"{win_w}x{win_h}+{x}+{y}")
+        root.update_idletasks()
+    except Exception:
+        pass
+
+
+def _make_scrollable_frame(root, pad_x=0, pad_y=0):
+    """
+    Replace the bare content frame with a Canvas + vertical Scrollbar.
+
+    Returns (canvas, content_frame) where content_frame is the inner Frame
+    that callers should populate with widgets.  The canvas occupies grid row 0
+    of *root*; callers should place any static bottom widgets in row 1.
+
+    Mouse-wheel scrolling is bound for Windows (<MouseWheel>), Linux
+    (<Button-4> / <Button-5>), and macOS (<MouseWheel> with delta/120).
+    """
+    # Outer frame holds canvas + scrollbar side-by-side
+    outer = tk.Frame(root)
+    outer.grid(row=0, column=0, padx=pad_x, pady=pad_y, sticky="nsew")
+    root.grid_rowconfigure(0, weight=1)
+    root.grid_columnconfigure(0, weight=1)
+    outer.grid_rowconfigure(0, weight=1)
+    outer.grid_columnconfigure(0, weight=1)
+
+    canvas = tk.Canvas(outer, highlightthickness=0)
+    canvas.grid(row=0, column=0, sticky="nsew")
+
+    scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+    scrollbar.grid(row=0, column=1, sticky="ns")
+    canvas.configure(yscrollcommand=scrollbar.set)
+
+    content_frame = tk.Frame(canvas)
+    canvas_window = canvas.create_window((0, 0), window=content_frame, anchor="nw")
+
+    def _on_frame_configure(event):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def _on_canvas_configure(event):
+        # Make the inner frame as wide as the canvas
+        canvas.itemconfig(canvas_window, width=event.width)
+
+    content_frame.bind("<Configure>", _on_frame_configure)
+    canvas.bind("<Configure>", _on_canvas_configure)
+
+    def _scroll(delta):
+        canvas.yview_scroll(int(-1 * delta), "units")
+
+    def _on_mousewheel(event):
+        # Windows & macOS give event.delta in multiples of 120
+        _scroll(event.delta / 120)
+
+    def _on_button4(event):
+        # Linux scroll up
+        _scroll(1)
+
+    def _on_button5(event):
+        # Linux scroll down
+        _scroll(-1)
+
+    canvas.bind("<MouseWheel>", _on_mousewheel)
+    canvas.bind("<Button-4>", _on_button4)
+    canvas.bind("<Button-5>", _on_button5)
+    content_frame.bind("<MouseWheel>", _on_mousewheel)
+    content_frame.bind("<Button-4>", _on_button4)
+    content_frame.bind("<Button-5>", _on_button5)
+
+    return canvas, content_frame
+
+
 def show_verification_gui(batch_df, target_series, batch_start, total_series,
                          stop_event, done_event, incorrect_studies, stop_all, output_dir):
     """
@@ -3540,20 +3692,22 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
     root.protocol("WM_DELETE_WINDOW", lambda: None)
     root.grab_set()
 
-    # Main content frame
-    content_frame = tk.Frame(root)
-    content_frame.grid(row=0, column=0, padx=scale_value(20), pady=scale_value(20), sticky="nsew")
-    root.grid_rowconfigure(0, weight=1)
-    root.grid_columnconfigure(0, weight=1)
+    # Cap window height to screen height so the bottom buttons are always reachable
+    screen_h = root.winfo_screenheight()
+    root.maxsize(root.winfo_screenwidth(), screen_h)
+
+    # Scrollable content area (canvas + scrollbar in row 0)
+    _canvas, content_frame = _make_scrollable_frame(root, pad_x=scale_value(20), pad_y=scale_value(20))
 
     # Configure grid columns
     for i in range(NUM_COLUMNS):
         content_frame.grid_columnconfigure(i, weight=1)
 
-    # Create placeholder image
+    # Thumbnail pixel size (DPI-scaled + user scale factor)
+    thumb_px = scale_thumbnail(256)
 
-    # Create loading indicator image (with text)
-    loading_img = Image.new("RGB", (scale_value(256), scale_value(256)), (220, 220, 220))
+    # Create loading indicator image
+    loading_img = Image.new("RGB", (thumb_px, thumb_px), (220, 220, 220))
     tk_loading = ImageTk.PhotoImage(loading_img)
 
     # Store toggle states and widgets
@@ -3581,13 +3735,13 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
             row_num += 1
 
         # Image panel with loading indicator
-        panel = tk.Label(series_frame, image=tk_loading, width=scale_value(256), height=scale_value(256))
+        panel = tk.Label(series_frame, image=tk_loading, width=thumb_px, height=thumb_px)
         panel.image = tk_loading
         panel.grid(row=0, column=0, pady=(0, scale_value(5)))
         panel_widgets[series_path] = panel
 
         # Series description label
-        tk.Label(series_frame, text=series_desc, wraplength=scale_value(250), justify="center").grid(
+        tk.Label(series_frame, text=series_desc, wraplength=scale_thumbnail(250), justify="center").grid(
             row=1, column=0, pady=scale_value(5))
 
         # Toggle button for Correct/Incorrect
@@ -3642,7 +3796,7 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
                 return None
 
             # Resize to target size
-            target_size = scale_value(256)
+            target_size = scale_thumbnail(256)
             pil_img = pil_img.resize((target_size, target_size))
 
             return pil_img
@@ -3771,7 +3925,8 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
     root.bind("<s>", lambda event: btn_skip.invoke())
     root.bind("<d>", lambda event: btn_approve.invoke())
 
-    root.update()
+    _fit_window_to_screen(root, content_frame, button_frame,
+                          pad_x=scale_value(20), pad_y=scale_value(20))
 
 
 def load_image_worker(dicom_paths, panel_label_ref, root):
@@ -3779,8 +3934,8 @@ def load_image_worker(dicom_paths, panel_label_ref, root):
     of the PhotoImage on the main thread. The worker only does PIL work; the
     PhotoImage is constructed on the Tk main thread to avoid invisible images.
     """
-    # Calculate target size based on scale factor
-    target_size = scale_value(256)
+    # Calculate target size based on scale factor + thumbnail scale factor
+    target_size = scale_thumbnail(256)
 
     try:
         pil_img = processing.load_center_slice(dicom_paths)
@@ -3858,10 +4013,12 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     root.protocol("WM_DELETE_WINDOW", lambda: None)
     root.grab_set()
 
-    content_frame = tk.Frame(root)
-    content_frame.grid(row=0, column=0, padx=scale_value(20), pady=scale_value(20), sticky="nsew")
-    root.grid_rowconfigure(0, weight=1)
-    root.grid_columnconfigure(0, weight=1)
+    # Cap window height to screen height so the bottom buttons are always reachable
+    screen_h = root.winfo_screenheight()
+    root.maxsize(root.winfo_screenwidth(), screen_h)
+
+    # Scrollable content area (canvas + scrollbar in row 0)
+    _canvas, content_frame = _make_scrollable_frame(root, pad_x=scale_value(20), pad_y=scale_value(20))
 
     for i in range(NUM_COLUMNS):
         content_frame.grid_columnconfigure(i, weight=1)
@@ -3876,7 +4033,10 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     except Exception:
         color_map = {k: (None, None) for k in dropdown_values}
 
-    placeholder_img = Image.new("RGB", (scale_value(256), scale_value(256)), (200, 200, 200))
+    # Thumbnail pixel size (DPI-scaled + user scale factor)
+    thumb_px = scale_thumbnail(256)
+
+    placeholder_img = Image.new("RGB", (thumb_px, thumb_px), (200, 200, 200))
     tk_placeholder = ImageTk.PhotoImage(placeholder_img)
 
     optimized_assignments = {}
@@ -3915,10 +4075,10 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
             col_num = 0
             row_num += 1
 
-        panel = tk.Label(series_frame, image=tk_placeholder, width=scale_value(256), height=scale_value(256))
+        panel = tk.Label(series_frame, image=tk_placeholder, width=thumb_px, height=thumb_px)
         panel.image = tk_placeholder
         panel.grid(row=0, column=0, pady=(0, scale_value(5)))
-        tk.Label(series_frame, text=series_desc, wraplength=scale_value(250), justify="center").grid(row=1, column=0, pady=scale_value(5))
+        tk.Label(series_frame, text=series_desc, wraplength=scale_thumbnail(250), justify="center").grid(row=1, column=0, pady=scale_value(5))
 
         # Extract DICOM and thumbnail paths from hierarchy entry
         first_entry = dicom_paths[0]
@@ -4190,7 +4350,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 return None
 
             # Resize to target size
-            target_size = scale_value(256)
+            target_size = scale_thumbnail(256)
             pil_img = pil_img.resize((target_size, target_size))
 
             return pil_img
@@ -4299,4 +4459,5 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     root.bind("<s>", lambda event: btn_skip.invoke())
     root.bind("<d>", lambda event: btn_done.invoke())
 
-    root.update()
+    _fit_window_to_screen(root, content_frame, button_frame,
+                          pad_x=scale_value(20), pad_y=scale_value(20))

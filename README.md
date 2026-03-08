@@ -574,8 +574,9 @@ Controls whether manually selecting a classification label for one series automa
 ### UI Grid Layout
 
 ```python
-NUM_COLUMNS = 6  # Number of columns in classification/verification grid
-NUM_ROWS = 4     # Max number of rows in verification mode grid
+NUM_COLUMNS = 6          # Number of columns in classification/verification grid
+NUM_ROWS = 4             # Max number of rows in verification mode grid
+THUMBNAIL_SCALE_FACTOR = 1.0  # Additional static scale multiplier for thumbnail size only
 ```
 
 Controls the grid layout for classification and verification interfaces:
@@ -583,6 +584,11 @@ Controls the grid layout for classification and verification interfaces:
 - **NUM_COLUMNS**: Maximum number of series displayed horizontally (applies to all modes)
 - **NUM_ROWS**: Maximum number of series displayed vertically in Verify mode
 - **Grid Size**: In Verify mode, up to `NUM_COLUMNS × NUM_ROWS` images displayed per batch
+- **THUMBNAIL_SCALE_FACTOR**: Multiplies only the thumbnail (image panel) pixel size on top of the automatic DPI scaling. Does not affect fonts, buttons, or other non-thumbnail elements.
+  - `1.0` (default) — no additional scaling
+  - `0.75` — 25 % smaller thumbnails, more thumbnails visible without scrolling
+  - `1.5` — 50 % larger thumbnails for high-resolution monitors
+- **Vertical scrollbar**: Both the classification (Manual/Semi-Auto) and Verify windows always include a vertical scrollbar so any content that extends beyond the screen height remains accessible. The windows are also capped to the screen height to ensure the bottom button row is never hidden off-screen.
 - **Recommendations**:
   - Standard monitors: 6 columns × 3-4 rows (18-24 images)
   - Large monitors: 8 columns × 5-6 rows (40-48 images)
