@@ -582,7 +582,22 @@ class MainApp:
     def browse_dir(self, var, title):
         directory = filedialog.askdirectory(title=title, initialdir=var.get())
         if directory:
+            # If the output directory is changing, unload any loaded models so
+            # they are not accidentally used against a different project/dataset.
+            if var is self.output_dir and directory != var.get():
+                self._unload_models()
             var.set(directory)
+
+    def _unload_models(self):
+        """Unload all classification models and update UI state."""
+        self.rf_model = None
+        self.rf_target_encoder = None
+        self.rf_feature_encoder = None
+        self.rf_field_types = None
+        self.cnn_model = None
+        self.cnn_target_encoder = None
+        logger.info("Classification models unloaded (output directory changed).")
+        self._check_model_status()
 
     def _on_toggle_convert(self):
         """Handler for the convert-to-nifti toggle. If enabling, check for dcm2niix in PATH.
