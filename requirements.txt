@@ -1,5 +1,6 @@
 pydicom
 python-gdcm    # For compressed DICOM support
+customtkinter  # Modern dark-mode GUI
 numpy
 pillow
 PyYAML

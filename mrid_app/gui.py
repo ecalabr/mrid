@@ -4,8 +4,12 @@ import threading
 import time
 import random
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import filedialog, messagebox
+import customtkinter as ctk
 from . import config
+from . import ui_theme
+from .ui_theme import (scale_value, scale_thumbnail, cascade, place_main_window,
+                       ThemedProgressBar, TitledFrame)
 from .config import NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LABELS, NUM_PARALLEL_WORKERS, THUMBNAIL_SCALE_FACTOR
 from .header import TrainHeaderClassifierLogic
 from .cnn import load_cnn_model
@@ -74,152 +78,6 @@ def _save_last_dirs(input_dir: str, output_dir: str):
         logger.debug(f"Could not save last-used directories to {_PREFS_FILE}: {exc}")
 
 
-# Global scaling factor to be calculated once
-_SCALE_FACTOR = None
-
-
-def _calculate_scale_factor(window):
-    """Calculate the appropriate scaling factor based on DPI and platform."""
-    try:
-        # Get DPI from the window
-        dpi = window.winfo_fpixels('1i')
-
-        # Base DPI reference (standard 96 DPI for Windows, 72 for Mac)
-        if platform.system() == 'Darwin':  # macOS
-            base_dpi = 72.0
-        else:  # Windows/Linux
-            base_dpi = 96.0
-
-        # Calculate scaling factor
-        scale = dpi / base_dpi
-
-        # Clamp the scaling factor to reasonable bounds
-        scale = max(0.75, min(scale, 3.0))
-
-        return scale
-    except Exception:
-        return 1.0
-
-
-def _enable_dpi_awareness():
-    """Enable DPI awareness for Windows to get correct DPI values."""
-    if platform.system() == 'Windows':
-        try:
-            from ctypes import windll
-            # Try SetProcessDpiAwareness first (Windows 8.1+)
-            try:
-                windll.shcore.SetProcessDpiAwareness(1)
-            except Exception:
-                # Fall back to SetProcessDPIAware (Windows Vista+)
-                try:
-                    windll.user32.SetProcessDPIAware()
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-
-def enable_tkinter_autoscaling(window):
-    """
-    Enable DPI-aware autoscaling for tkinter windows.
-    Call this once on the root window, and once on each Toplevel window.
-    """
-    global _SCALE_FACTOR
-
-    # Enable DPI awareness on Windows (only needs to be done once)
-    if _SCALE_FACTOR is None:
-        _enable_dpi_awareness()
-
-    # Calculate scale factor if not already done
-    if _SCALE_FACTOR is None:
-        _SCALE_FACTOR = _calculate_scale_factor(window)
-
-    # Apply tk scaling
-    try:
-        window.tk.call('tk', 'scaling', _SCALE_FACTOR * 1.33)
-    except Exception:
-        pass
-
-    # Scale fonts
-    try:
-        import tkinter.font as tkfont
-
-        # Default font sizes at 96 DPI
-        default_sizes = {
-            "TkDefaultFont": 9,
-            "TkTextFont": 9,
-            "TkFixedFont": 9,
-            "TkMenuFont": 9,
-            "TkHeadingFont": 9,
-            "TkCaptionFont": 9,
-            "TkSmallCaptionFont": 8,
-            "TkIconFont": 9,
-            "TkTooltipFont": 8,
-        }
-
-        for name, default_size in default_sizes.items():
-            try:
-                font = tkfont.nametofont(name)
-                # Scale the default size, not the current size
-                new_size = int(default_size * _SCALE_FACTOR)
-                # Ensure minimum readable size
-                new_size = max(8, new_size)
-                font.configure(size=new_size)
-            except Exception:
-                continue
-    except Exception:
-        pass
-
-
-def scale_geometry(geometry_string):
-    """
-    Scale a geometry string (e.g., "500x300") by the global scale factor.
-    Returns the scaled geometry string.
-    """
-    global _SCALE_FACTOR
-    if _SCALE_FACTOR is None:
-        return geometry_string
-
-    try:
-        # Parse geometry string like "500x300" or "500x300+100+100"
-        parts = geometry_string.split('+')
-        size_part = parts[0]
-        position_parts = parts[1:] if len(parts) > 1 else []
-
-        width, height = map(int, size_part.split('x'))
-        scaled_width = int(width * _SCALE_FACTOR)
-        scaled_height = int(height * _SCALE_FACTOR)
-
-        result = f"{scaled_width}x{scaled_height}"
-        if position_parts:
-            result += '+' + '+'.join(position_parts)
-
-        return result
-    except Exception:
-        return geometry_string
-
-
-def scale_value(value):
-    """Scale a numeric value by the global scale factor."""
-    global _SCALE_FACTOR
-    if _SCALE_FACTOR is None:
-        return value
-    return int(value * _SCALE_FACTOR)
-
-
-def scale_thumbnail(value):
-    """Scale a thumbnail pixel size by both the DPI scale factor and the user-configurable THUMBNAIL_SCALE_FACTOR.
-    Reads THUMBNAIL_SCALE_FACTOR directly from the config module so it always
-    reflects the current value even after a config reload."""
-    global _SCALE_FACTOR
-    sf = _SCALE_FACTOR if _SCALE_FACTOR is not None else 1.0
-    try:
-        tsf = config.THUMBNAIL_SCALE_FACTOR
-    except Exception:
-        tsf = 1.0
-    return int(value * sf * tsf)
-
-
 class _ToolTip:
     """Simple hover tooltip for a tkinter widget."""
 
@@ -243,7 +101,8 @@ class _ToolTip:
             tw.wm_overrideredirect(True)
             tw.wm_geometry(f"+{x}+{y}")
             tk.Label(tw, text=self.text, justify="left",
-                     background="#ffffe0", relief="solid", borderwidth=1,
+                     background=ui_theme.TOOLTIP_BG, foreground=ui_theme.TOOLTIP_FG,
+                     relief="solid", borderwidth=1,
                      font=("TkDefaultFont", 9)).pack()
         except Exception:
             pass
@@ -278,25 +137,24 @@ def _generate_color_map(labels):
 class TrainClassifierGUI:
     def __init__(self, master):
         self._cancelled = False
-        self.root = tk.Toplevel(master)
-        enable_tkinter_autoscaling(self.root)
+        self.root = ctk.CTkToplevel(master)
         self.root.title("Model Training In Progress...")
-        self.root.geometry(scale_geometry("450x155"))
+        self.root.geometry("460x170")
+        cascade(self.root, master)
         self.root.protocol("WM_DELETE_WINDOW", self.do_nothing)
         self.root.grab_set()
         self.label = tk.StringVar(value="Initializing training process...")
-        tk.Label(self.root, textvariable=self.label).pack(pady=scale_value(10))
-        self.progress = ttk.Progressbar(self.root, orient="horizontal",
-                                        length=scale_value(400), mode="indeterminate")
+        ctk.CTkLabel(self.root, textvariable=self.label).pack(pady=scale_value(10))
+        self.progress = ThemedProgressBar(self.root, length=400, mode="indeterminate")
         self.progress.pack(pady=scale_value(5), padx=scale_value(20))
         self.progress.start(10)
-        self.cancel_button = tk.Button(
+        self.cancel_button = ctk.CTkButton(
             self.root,
             text="Cancel",
             command=self._on_cancel,
-            bg="#ff5f5f",
-            activebackground="#ff3333",
-            width=scale_value(10),
+            fg_color=ui_theme.RED,
+            hover_color=ui_theme.RED_HOVER,
+            width=100,
         )
         self.cancel_button.pack(pady=scale_value(8))
         self.root.update()
@@ -304,7 +162,7 @@ class TrainClassifierGUI:
     def _on_cancel(self):
         """Called when the Cancel button is pressed."""
         self._cancelled = True
-        self.cancel_button.config(state="disabled", text="Cancelling…")
+        self.cancel_button.configure(state="disabled", text="Cancelling…")
         self.label.set("Cancelling – please wait…")
 
     def is_cancelled(self):
@@ -376,40 +234,37 @@ class TrainClassifierGUI:
 class ProgressGUI:
     def __init__(self, total_files, title="Scanning DICOM Files...", label_text="Scanning files..."):
         try:
-            self.root = tk.Toplevel(tk._default_root)
+            self.root = ctk.CTkToplevel(tk._default_root)
         except AttributeError:
-            self.root = tk.Toplevel()
-        enable_tkinter_autoscaling(self.root)
+            self.root = ctk.CTkToplevel()
         try:
             self.root.title(title)
         except Exception:
             pass
-        self.root.geometry(scale_geometry("500x320"))
+        self.root.geometry("500x320")
+        cascade(self.root, tk._default_root)
         self.root.protocol("WM_DELETE_WINDOW", self.do_nothing)
 
         # First progress bar: Scanning files
-        self.label = tk.Label(self.root, text=label_text)
+        self.label = ctk.CTkLabel(self.root, text=label_text)
         self.label.pack(pady=scale_value(5))
-        self.progress = ttk.Progressbar(self.root, orient="horizontal",
-                                        length=scale_value(400), mode="determinate",
-                                        maximum=total_files)
+        self.progress = ThemedProgressBar(self.root, length=400, mode="determinate",
+                                          maximum=total_files)
         self.progress.pack(pady=scale_value(3))
-        self.count_label = tk.Label(self.root, text="0 / 0")
+        self.count_label = ctk.CTkLabel(self.root, text="0 / 0")
         self.count_label.pack(pady=scale_value(3))
 
         # Second progress bar: Organizing series (initially hidden)
-        self.organize_label = tk.Label(self.root, text="")
-        self.organize_progress = ttk.Progressbar(self.root, orient="horizontal",
-                                                  length=scale_value(400), mode="determinate",
-                                                  maximum=100)
-        self.organize_count_label = tk.Label(self.root, text="")
+        self.organize_label = ctk.CTkLabel(self.root, text="")
+        self.organize_progress = ThemedProgressBar(self.root, length=400, mode="determinate",
+                                                   maximum=100)
+        self.organize_count_label = ctk.CTkLabel(self.root, text="")
 
         # Third progress bar: Generating thumbnails (initially hidden)
-        self.thumbnail_label = tk.Label(self.root, text="")
-        self.thumbnail_progress = ttk.Progressbar(self.root, orient="horizontal",
-                                                  length=scale_value(400), mode="determinate",
-                                                  maximum=100)
-        self.thumbnail_count_label = tk.Label(self.root, text="")
+        self.thumbnail_label = ctk.CTkLabel(self.root, text="")
+        self.thumbnail_progress = ThemedProgressBar(self.root, length=400, mode="determinate",
+                                                    maximum=100)
+        self.thumbnail_count_label = ctk.CTkLabel(self.root, text="")
 
         self.root.update()
 
@@ -418,12 +273,12 @@ class ProgressGUI:
         self.progress["value"] = value
         if total is None:
             total = self.progress["maximum"]
-        self.count_label.config(text=f"{value} / {int(total)}")
+        self.count_label.configure(text=f"{value} / {int(total)}")
         self.root.update_idletasks()
 
     def show_organize_progress(self, label_text="Organizing series...", total=1):
         """Show the second progress bar for organizing series."""
-        self.organize_label.config(text=label_text)
+        self.organize_label.configure(text=label_text)
         self.organize_label.pack(pady=scale_value(5))
         self.organize_progress["maximum"] = total
         self.organize_progress.pack(pady=scale_value(3))
@@ -434,12 +289,12 @@ class ProgressGUI:
         """Update organizing progress bar and count text."""
         self.organize_progress["maximum"] = total
         self.organize_progress["value"] = current
-        self.organize_count_label.config(text=f"{current} / {total}")
+        self.organize_count_label.configure(text=f"{current} / {total}")
         self.root.update_idletasks()
 
     def show_thumbnail_progress(self, label_text="Generating thumbnails...", total=1):
         """Show the third progress bar for thumbnail generation."""
-        self.thumbnail_label.config(text=label_text)
+        self.thumbnail_label.configure(text=label_text)
         self.thumbnail_label.pack(pady=scale_value(5))
         self.thumbnail_progress["maximum"] = total
         self.thumbnail_progress.pack(pady=scale_value(3))
@@ -450,7 +305,7 @@ class ProgressGUI:
         """Update thumbnail progress bar and count text."""
         self.thumbnail_progress["maximum"] = total
         self.thumbnail_progress["value"] = current
-        self.thumbnail_count_label.config(text=f"{current} / {total}")
+        self.thumbnail_count_label.configure(text=f"{current} / {total}")
         self.root.update_idletasks()
 
     def close(self):
@@ -463,8 +318,8 @@ class ProgressGUI:
 class MainApp:
     def __init__(self, master):
         self.master = master
-        master.title("DICOM Classification Tool")
-        enable_tkinter_autoscaling(master)
+        master.title("MRID — DICOM Classification Tool")
+        place_main_window(master)
         _default_input, _default_output = _load_last_dirs()
         self.input_dir = tk.StringVar(value=_default_input)
         self.output_dir = tk.StringVar(value=_default_output)
@@ -508,51 +363,42 @@ class MainApp:
         config_menu.add_command(label="Reload Config File", command=self._reload_config_menu)
 
         # UI layout
-        dir_frame = tk.LabelFrame(master, text="Directories", padx=scale_value(10), pady=scale_value(10))
+        dir_frame = TitledFrame(master, title="Directories")
         dir_frame.pack(padx=scale_value(20), pady=scale_value(10), fill="x")
-        tk.Label(dir_frame, text="Input DIR:").grid(row=0, column=0, padx=scale_value(5), pady=scale_value(5), sticky="w")
-        tk.Entry(dir_frame, textvariable=self.input_dir, width=50).grid(row=0, column=1, padx=scale_value(5), pady=scale_value(5), sticky="ew")
-        tk.Button(dir_frame, text="Browse", command=lambda: self.browse_dir(self.input_dir, "Select INPUT directory")).grid(row=0, column=2, padx=scale_value(5), pady=scale_value(5))
-        tk.Label(dir_frame, text="Output DIR:").grid(row=1, column=0, padx=scale_value(5), pady=scale_value(5), sticky="w")
-        tk.Entry(dir_frame, textvariable=self.output_dir, width=50).grid(row=1, column=1, padx=scale_value(5), pady=scale_value(5), sticky="ew")
-        tk.Button(dir_frame, text="Browse", command=lambda: self.browse_dir(self.output_dir, "Select OUTPUT directory")).grid(row=1, column=2, padx=scale_value(5), pady=scale_value(5))
-        dir_frame.columnconfigure(1, weight=1)
+        dirs = dir_frame.content
+        ctk.CTkLabel(dirs, text="Input DIR:").grid(row=0, column=0, padx=scale_value(5), pady=scale_value(5), sticky="w")
+        ctk.CTkEntry(dirs, textvariable=self.input_dir, width=420).grid(row=0, column=1, padx=scale_value(5), pady=scale_value(5), sticky="ew")
+        ctk.CTkButton(dirs, text="Browse", width=90, command=lambda: self.browse_dir(self.input_dir, "Select INPUT directory")).grid(row=0, column=2, padx=scale_value(5), pady=scale_value(5))
+        ctk.CTkLabel(dirs, text="Output DIR:").grid(row=1, column=0, padx=scale_value(5), pady=scale_value(5), sticky="w")
+        ctk.CTkEntry(dirs, textvariable=self.output_dir, width=420).grid(row=1, column=1, padx=scale_value(5), pady=scale_value(5), sticky="ew")
+        ctk.CTkButton(dirs, text="Browse", width=90, command=lambda: self.browse_dir(self.output_dir, "Select OUTPUT directory")).grid(row=1, column=2, padx=scale_value(5), pady=scale_value(5))
+        dirs.columnconfigure(1, weight=1)
 
-        control_frame = tk.Frame(master, padx=scale_value(20), pady=scale_value(10))
-        control_frame.pack(fill="x")
-        mode_frame = tk.Frame(control_frame)
+        control_frame = ctk.CTkFrame(master, fg_color="transparent")
+        control_frame.pack(fill="x", padx=scale_value(20), pady=scale_value(10))
+        mode_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
         mode_frame.pack(side="right", padx=scale_value(5))
-        tk.Label(mode_frame, text="Mode:").pack(side="left", padx=scale_value(5))
+        ctk.CTkLabel(mode_frame, text="Mode:").pack(side="left", padx=scale_value(5))
         mode_options = ["Analyze", "Manual", "Semi-Auto", "Full-Auto", "Verify"]
-        # Replaced ttk.Combobox with tk.OptionMenu. Keep using the same
-        # StringVar (self.classification_mode) and call _check_model_status via
-        # the OptionMenu 'command' so existing logic that relies on the
-        # variable and event handling remains unchanged.
-        mode_menu = tk.OptionMenu(mode_frame, self.classification_mode, *mode_options, command=self._check_model_status)
-        try:
-            mode_menu.config(width=12)
-        except Exception:
-            pass
+        mode_menu = ctk.CTkOptionMenu(mode_frame, variable=self.classification_mode,
+                                      values=mode_options, width=130,
+                                      command=self._check_model_status)
         mode_menu.pack(side="left", padx=scale_value(5))
-        model_type_frame = tk.Frame(control_frame)
+        model_type_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
         model_type_frame.pack(side="right", padx=scale_value(5))
-        tk.Label(model_type_frame, text="Model Type:").pack(side="left", padx=scale_value(5))
+        ctk.CTkLabel(model_type_frame, text="Model Type:").pack(side="left", padx=scale_value(5))
         model_options = ["DICOM Header Model", "Image-Based Model", "Header + Image Model"]
-        # Replace model-type Combobox with OptionMenu; preserve self.model_type
-        # StringVar and call _check_model_status on selection changes.
-        model_menu = tk.OptionMenu(model_type_frame, self.model_type, *model_options, command=self._check_model_status)
-        try:
-            model_menu.config(width=20)
-        except Exception:
-            pass
+        model_menu = ctk.CTkOptionMenu(model_type_frame, variable=self.model_type,
+                                       values=model_options, width=200,
+                                       command=self._check_model_status)
         model_menu.pack(side="left", padx=scale_value(5))
 
-        # New convert toggle (Yes/No)
-        convert_frame = tk.Frame(control_frame)
+        # Convert toggle (Yes/No)
+        convert_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
         convert_frame.pack(side="right", padx=scale_value(10))
-        tk.Label(convert_frame, text="Convert to NIfTI:").pack(side="left", padx=(0, scale_value(5)))
+        ctk.CTkLabel(convert_frame, text="Convert to NIfTI:").pack(side="left", padx=(0, scale_value(5)))
 
-        # Single Button toggle showing Yes/No. Clicking flips the underlying BooleanVar
+        # Single button toggle showing Yes/No. Clicking flips the underlying BooleanVar
         def _convert_button_toggle():
             new_state = not bool(self.convert_to_nifti.get())
             self.convert_to_nifti.set(new_state)
@@ -560,21 +406,30 @@ class MainApp:
             self._on_toggle_convert()
             # reflect final state on the button text
             try:
-                self._convert_button.config(text=("Yes" if self.convert_to_nifti.get() else "No"))
+                self._convert_button.configure(text=("Yes" if self.convert_to_nifti.get() else "No"))
             except Exception:
                 pass
 
-        self._convert_button = tk.Button(convert_frame, text=("Yes" if self.convert_to_nifti.get() else "No"), command=_convert_button_toggle, bd=1, relief='raised')
+        self._convert_button = ctk.CTkButton(convert_frame, width=60,
+                                             fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
+                                             text=("Yes" if self.convert_to_nifti.get() else "No"),
+                                             command=_convert_button_toggle)
         self._convert_button.pack(side="left")
 
-        self.start_button = tk.Button(control_frame, text="▶ Start Classification", font=("Arial", scale_value(12), "bold"), command=self.start_classification, state="normal")
+        button_font = ctk.CTkFont(size=13, weight="bold")
+        self.start_button = ctk.CTkButton(control_frame, text="▶ Start Classification", font=button_font,
+                                          command=self.start_classification, state="normal")
         self.start_button.pack(side="left", padx=scale_value(5))
-        self.stop_button = tk.Button(control_frame, text="Stop", font=("Arial", scale_value(12)), command=self.stop_classification, state="disabled")
+        self.stop_button = ctk.CTkButton(control_frame, text="Stop", width=70,
+                                         fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
+                                         command=self.stop_classification, state="disabled")
         self.stop_button.pack(side="left", padx=scale_value(5))
-        self.train_button = tk.Button(control_frame, text="Train Model(s)", font=("Arial", scale_value(12)), command=self._train_model)
+        self.train_button = ctk.CTkButton(control_frame, text="Train Model(s)", width=120,
+                                          command=self._train_model)
         self.train_button.pack(side="right", padx=scale_value(5))
         self._train_button_tooltip = _ToolTip(self.train_button, "")
-        self.load_button = tk.Button(control_frame, text="Load Model(s)", font=("Arial", scale_value(12)), command=self._load_model_handler)
+        self.load_button = ctk.CTkButton(control_frame, text="Load Model(s)", width=120,
+                                         command=self._load_model_handler)
         self.load_button.pack(side="right", padx=scale_value(5))
         self._load_button_tooltip = _ToolTip(self.load_button, "")
         self._check_model_status()
@@ -607,7 +462,7 @@ class MainApp:
         try:
             # update the main toggle button to reflect the state
             if hasattr(self, '_convert_button'):
-                self._convert_button.config(text=("Yes" if enabled else "No"))
+                self._convert_button.configure(text=("Yes" if enabled else "No"))
         except Exception:
             pass
 
@@ -623,7 +478,7 @@ class MainApp:
                 self.convert_to_nifti.set(False)
                 try:
                     if hasattr(self, '_convert_button'):
-                        self._convert_button.config(text="No")
+                        self._convert_button.configure(text="No")
                 except Exception:
                     pass
                 return
@@ -820,27 +675,27 @@ class MainApp:
         # Update start button
         if can_start:
             if mode_is_analyze:
-                self.start_button.config(text="▶ Start Analysis", state="normal", bg="#4fff5b", activebackground="#4fff5b")
+                self.start_button.configure(text="▶ Start Analysis", state="normal", fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER)
             elif mode_is_verify:
-                self.start_button.config(text="▶ Start Verification", state="normal", bg="#4fff5b", activebackground="#4fff5b")
+                self.start_button.configure(text="▶ Start Verification", state="normal", fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER)
             else:
-                self.start_button.config(text="▶ Start Classification", state="normal", bg="#4fff5b", activebackground="#4fff5b")
+                self.start_button.configure(text="▶ Start Classification", state="normal", fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER)
         else:
-            self.start_button.config(text="▶ Start Classification", state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
+            self.start_button.configure(text="▶ Start Classification", state="disabled", fg_color=ui_theme.DISABLED)
 
         # Update load button
         _MIN_CASES = 10
         if models_loaded:
-            self.load_button.config(text="Model(s) Loaded", state="disabled", bg="#4fff5b", activebackground="#4fff5b")
+            self.load_button.configure(text="Model(s) Loaded", state="disabled", fg_color=ui_theme.GREEN)
             load_tip = ""
         elif mode_is_analyze:
-            self.load_button.config(text="Load Model(s)", state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
+            self.load_button.configure(text="Load Model(s)", state="disabled", fg_color=ui_theme.DISABLED)
             load_tip = "Cannot load models in Analyze mode"
         elif mode_is_verify:
-            self.load_button.config(text="Load Model(s)", state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
+            self.load_button.configure(text="Load Model(s)", state="disabled", fg_color=ui_theme.DISABLED)
             load_tip = "Cannot load models in Verify mode"
         elif mode_is_manual:
-            self.load_button.config(text="Load Model(s)", state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
+            self.load_button.configure(text="Load Model(s)", state="disabled", fg_color=ui_theme.DISABLED)
             load_tip = "Cannot load models in Manual mode"
         else:
             # Semi-Auto / Full-Auto: check whether model files exist
@@ -855,15 +710,15 @@ class MainApp:
 
             if models_exist:
                 # Models on disk — always allow load
-                self.load_button.config(text="Load Model(s)", state="normal", bg="#ff4f4f", activebackground="#ff4f4f")
+                self.load_button.configure(text="Load Model(s)", state="normal", fg_color=ui_theme.RED, hover_color=ui_theme.RED_HOVER)
                 load_tip = ""
             elif n_cases >= _MIN_CASES:
                 # No models yet but enough data to train — allow (will offer to train)
-                self.load_button.config(text="Load Model(s)", state="normal", bg="#ff4f4f", activebackground="#ff4f4f")
+                self.load_button.configure(text="Load Model(s)", state="normal", fg_color=ui_theme.RED, hover_color=ui_theme.RED_HOVER)
                 load_tip = ""
             else:
                 # No models and not enough data yet
-                self.load_button.config(text="Load Model(s)", state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
+                self.load_button.configure(text="Load Model(s)", state="disabled", fg_color=ui_theme.DISABLED)
                 load_tip = f"Classify at least {_MIN_CASES} cases to enable model loading/training"
 
         try:
@@ -891,9 +746,9 @@ class MainApp:
             pass
 
         if train_available:
-            self.train_button.config(state="normal", bg="#4fff5b", activebackground="#4fff5b")
+            self.train_button.configure(state="normal", fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER)
         else:
-            self.train_button.config(state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
+            self.train_button.configure(state="disabled", fg_color=ui_theme.DISABLED)
 
     def _train_model(self):
         if self.is_running:
@@ -970,8 +825,8 @@ class MainApp:
             )
             return response
 
-        self.start_button.config(state="disabled")
-        self.train_button.config(state="disabled")
+        self.start_button.configure(state="disabled")
+        self.train_button.configure(state="disabled")
         training_gui = TrainClassifierGUI(self.master)
         self._active_training_gui = training_gui
         training_thread = threading.Thread(
@@ -1005,8 +860,8 @@ class MainApp:
                 return
 
         logger.info("Starting Image-Based Model (CNN) training")
-        self.start_button.config(state="disabled")
-        self.train_button.config(state="disabled")
+        self.start_button.configure(state="disabled")
+        self.train_button.configure(state="disabled")
         training_gui = TrainClassifierGUI(self.master)
         self._active_training_gui = training_gui
         training_thread = threading.Thread(
@@ -1034,7 +889,7 @@ class MainApp:
             self.master.after(100, self._poll_training_status, thread, training_gui)
         else:
             # Training completed (or was cancelled)
-            self.start_button.config(state="normal")
+            self.start_button.configure(state="normal")
 
             # Check if training was cancelled — skip auto-load and model check
             was_cancelled = training_gui is not None and training_gui.is_cancelled()
@@ -1173,18 +1028,18 @@ class MainApp:
 
         self.is_running = True
         self.stop_requested.clear()
-        self.start_button.config(state="disabled")
-        self.stop_button.config(state="normal")
-        self.train_button.config(state="disabled")
+        self.start_button.configure(state="disabled")
+        self.stop_button.configure(state="normal")
+        self.train_button.configure(state="disabled")
 
-        self.progress_frame = tk.Frame(self.master)
-        self.progress_frame.pack(padx=20, pady=10, fill='x')
+        self.progress_frame = ctk.CTkFrame(self.master, fg_color="transparent")
+        self.progress_frame.pack(padx=scale_value(20), pady=scale_value(10), fill='x')
 
         self.progress_label = tk.StringVar(value="Starting...")
-        tk.Label(self.progress_frame, textvariable=self.progress_label).pack(side="top")
+        ctk.CTkLabel(self.progress_frame, textvariable=self.progress_label).pack(side="top")
 
-        self.progress_bar = ttk.Progressbar(self.progress_frame, orient="horizontal", mode="determinate")
-        self.progress_bar.pack(fill='x', pady=5)
+        self.progress_bar = ThemedProgressBar(self.progress_frame, mode="determinate")
+        self.progress_bar.pack(fill='x', pady=scale_value(5))
 
         # Pass existing_hierarchy into the background worker so it can skip scanning when appropriate
         classification_thread = threading.Thread(
@@ -1198,7 +1053,7 @@ class MainApp:
     def stop_classification(self):
         if not self.is_running: return
         self.stop_requested.set()
-        self.stop_button.config(text="Stopping...", state="disabled")
+        self.stop_button.configure(text="Stopping...", state="disabled")
 
     def _poll_classification_status(self, thread):
         if thread.is_alive():
@@ -1209,8 +1064,8 @@ class MainApp:
     def classification_finished(self, aborted):
         self.is_running = False
         self.stop_requested.clear()
-        self.start_button.config(state="normal")
-        self.stop_button.config(text="Stop", state="disabled")
+        self.start_button.configure(state="normal")
+        self.stop_button.configure(text="Stop", state="disabled")
 
         if aborted:
             logger.info("Classification workflow stopped by user")
@@ -1497,19 +1352,19 @@ class MainApp:
             return
 
         # Create progress window
-        progress_window = tk.Toplevel(self.master)
-        enable_tkinter_autoscaling(progress_window)
+        progress_window = ctk.CTkToplevel(self.master)
         progress_window.title("Converting to NIfTI...")
-        progress_window.geometry(scale_geometry("500x150"))
+        progress_window.geometry("500x150")
+        cascade(progress_window, self.master)
         progress_window.protocol("WM_DELETE_WINDOW", lambda: None)  # Disable close
 
-        status_label = tk.Label(progress_window, text=f"Converting {len(study_folders)} studies...")
+        status_label = ctk.CTkLabel(progress_window, text=f"Converting {len(study_folders)} studies...")
         status_label.pack(pady=scale_value(10))
 
-        progress_bar = ttk.Progressbar(progress_window, orient="horizontal", length=scale_value(400), mode="determinate", maximum=len(study_folders))
+        progress_bar = ThemedProgressBar(progress_window, length=400, mode="determinate", maximum=len(study_folders))
         progress_bar.pack(pady=scale_value(10))
 
-        current_label = tk.Label(progress_window, text="")
+        current_label = ctk.CTkLabel(progress_window, text="")
         current_label.pack(pady=scale_value(5))
 
         # Convert in background thread
@@ -1522,7 +1377,7 @@ class MainApp:
                 study_id = extract_study_id_from_path(study_path)
 
                 # Update UI
-                progress_window.after(0, lambda i=idx, sid=study_id: current_label.config(text=f"Processing: {sid}"))
+                progress_window.after(0, lambda i=idx, sid=study_id: current_label.configure(text=f"Processing: {sid}"))
                 progress_window.after(0, lambda i=idx: progress_bar.config(value=i))
 
                 # Read classification CSV
@@ -1568,7 +1423,7 @@ class MainApp:
 
             # Update final progress
             progress_window.after(0, lambda: progress_bar.config(value=len(study_folders)))
-            progress_window.after(0, lambda: current_label.config(text="Complete!"))
+            progress_window.after(0, lambda: current_label.configure(text="Complete!"))
 
             # Show summary
             summary = "Conversion Complete!\n\n"
@@ -1625,19 +1480,19 @@ class MainApp:
             return
 
         # Create progress window
-        progress_window = tk.Toplevel(self.master)
-        enable_tkinter_autoscaling(progress_window)
+        progress_window = ctk.CTkToplevel(self.master)
         progress_window.title("Exporting DICOMs...")
-        progress_window.geometry(scale_geometry("500x150"))
+        progress_window.geometry("500x150")
+        cascade(progress_window, self.master)
         progress_window.protocol("WM_DELETE_WINDOW", lambda: None)  # Disable close
 
-        status_label = tk.Label(progress_window, text=f"Exporting DICOMs from {len(study_folders)} studies...")
+        status_label = ctk.CTkLabel(progress_window, text=f"Exporting DICOMs from {len(study_folders)} studies...")
         status_label.pack(pady=scale_value(10))
 
-        progress_bar = ttk.Progressbar(progress_window, orient="horizontal", length=scale_value(400), mode="determinate", maximum=len(study_folders))
+        progress_bar = ThemedProgressBar(progress_window, length=400, mode="determinate", maximum=len(study_folders))
         progress_bar.pack(pady=scale_value(10))
 
-        current_label = tk.Label(progress_window, text="")
+        current_label = ctk.CTkLabel(progress_window, text="")
         current_label.pack(pady=scale_value(5))
 
         # Export in background thread
@@ -1654,7 +1509,7 @@ class MainApp:
                 study_id = extract_study_id_from_path(study_path)
 
                 # Update UI
-                progress_window.after(0, lambda i=idx, sid=study_id: current_label.config(text=f"Processing: {sid}"))
+                progress_window.after(0, lambda i=idx, sid=study_id: current_label.configure(text=f"Processing: {sid}"))
                 progress_window.after(0, lambda i=idx: progress_bar.config(value=i))
 
                 # Read classification CSV
@@ -1754,7 +1609,7 @@ class MainApp:
 
             # Update final progress
             progress_window.after(0, lambda: progress_bar.config(value=len(study_folders)))
-            progress_window.after(0, lambda: current_label.config(text="Complete!"))
+            progress_window.after(0, lambda: current_label.configure(text="Complete!"))
 
             # Show summary
             summary = "DICOM Export Complete!\n\n"
@@ -1783,14 +1638,14 @@ class MainApp:
             return
 
         # Create dialog with checkboxes
-        dialog = tk.Toplevel(self.master)
-        enable_tkinter_autoscaling(dialog)
+        dialog = ctk.CTkToplevel(self.master)
         dialog.title("Erase Data")
-        dialog.geometry(scale_geometry("550x320"))
+        dialog.geometry("550x340")
+        cascade(dialog, self.master)
         dialog.transient(self.master)
         dialog.grab_set()
 
-        tk.Label(dialog, text="Select data to erase:", font=("Arial", scale_value(12), "bold")).pack(pady=scale_value(10))
+        ctk.CTkLabel(dialog, text="Select data to erase:", font=ctk.CTkFont(size=13, weight="bold")).pack(pady=scale_value(10))
 
         # Checkboxes
         delete_classifications = tk.BooleanVar(value=False)
@@ -1798,51 +1653,39 @@ class MainApp:
         delete_hierarchy = tk.BooleanVar(value=False)
         delete_config = tk.BooleanVar(value=False)
 
-        tk.Checkbutton(
+        ctk.CTkCheckBox(
             dialog,
             text="Delete Classifications (study folders, NIfTIs, CSVs)",
             variable=delete_classifications,
-            font=("Arial", scale_value(10)),
-            wraplength=scale_value(500),
-            justify="left"
         ).pack(anchor="w", padx=scale_value(20), pady=scale_value(5))
 
-        tk.Checkbutton(
+        ctk.CTkCheckBox(
             dialog,
             text="Delete Models (trained models, encoders, results)",
             variable=delete_models,
-            font=("Arial", scale_value(10)),
-            wraplength=scale_value(500),
-            justify="left"
         ).pack(anchor="w", padx=scale_value(20), pady=scale_value(5))
 
-        tk.Checkbutton(
+        ctk.CTkCheckBox(
             dialog,
             text="Delete Hierarchy (hierarchy.yaml, dicom_symlinks)",
             variable=delete_hierarchy,
-            font=("Arial", scale_value(10)),
-            wraplength=scale_value(500),
-            justify="left"
         ).pack(anchor="w", padx=scale_value(20), pady=scale_value(5))
 
-        tk.Checkbutton(
+        ctk.CTkCheckBox(
             dialog,
             text="Delete Config (config.py saved in output directory)",
             variable=delete_config,
-            font=("Arial", scale_value(10)),
-            wraplength=scale_value(500),
-            justify="left"
         ).pack(anchor="w", padx=scale_value(20), pady=scale_value(5))
 
-        tk.Label(
+        ctk.CTkLabel(
             dialog,
             text="Warning: This action cannot be undone!",
-            fg="red",
-            font=("Arial", scale_value(10), "bold")
+            text_color="#ff6b6b",
+            font=ctk.CTkFont(size=12, weight="bold")
         ).pack(pady=scale_value(10))
 
         # Button frame
-        button_frame = tk.Frame(dialog)
+        button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
         button_frame.pack(pady=scale_value(10))
 
         def confirm_delete():
@@ -1872,8 +1715,11 @@ class MainApp:
             dialog.destroy()
             self._perform_data_deletion(delete_classifications.get(), delete_models.get(), delete_hierarchy.get(), delete_config.get())
 
-        tk.Button(button_frame, text="Delete", command=confirm_delete, bg="#ff4444", fg="white", font=("Arial", scale_value(10), "bold"), width=10).pack(side="left", padx=scale_value(5))
-        tk.Button(button_frame, text="Cancel", command=dialog.destroy, font=("Arial", scale_value(10)), width=10).pack(side="left", padx=scale_value(5))
+        ctk.CTkButton(button_frame, text="Delete", command=confirm_delete, width=100,
+                      fg_color=ui_theme.RED, hover_color=ui_theme.RED_HOVER,
+                      font=ctk.CTkFont(weight="bold")).pack(side="left", padx=scale_value(5))
+        ctk.CTkButton(button_frame, text="Cancel", command=dialog.destroy, width=100,
+                      fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER).pack(side="left", padx=scale_value(5))
 
     def _perform_data_deletion(self, delete_classifications, delete_models, delete_hierarchy, delete_config):
         """Perform the actual data deletion."""
@@ -2349,16 +2195,16 @@ class MainApp:
         # Lock UI
         self.is_running = True
         self.stop_requested.clear()
-        self.start_button.config(state="disabled")
-        self.stop_button.config(state="normal")
-        self.train_button.config(state="disabled")
+        self.start_button.configure(state="disabled")
+        self.stop_button.configure(state="normal")
+        self.train_button.configure(state="disabled")
 
-        self.progress_frame = tk.Frame(self.master)
-        self.progress_frame.pack(padx=20, pady=10, fill='x')
+        self.progress_frame = ctk.CTkFrame(self.master, fg_color="transparent")
+        self.progress_frame.pack(padx=scale_value(20), pady=scale_value(10), fill='x')
         self.progress_label = tk.StringVar(value="Starting analysis…")
-        tk.Label(self.progress_frame, textvariable=self.progress_label).pack(side="top")
-        self.progress_bar = ttk.Progressbar(self.progress_frame, orient="horizontal", mode="indeterminate")
-        self.progress_bar.pack(fill='x', pady=5)
+        ctk.CTkLabel(self.progress_frame, textvariable=self.progress_label).pack(side="top")
+        self.progress_bar = ThemedProgressBar(self.progress_frame, mode="indeterminate")
+        self.progress_bar.pack(fill='x', pady=scale_value(5))
         self.progress_bar.start(10)
 
         analysis_thread = threading.Thread(
@@ -2586,9 +2432,9 @@ class MainApp:
         best_examples = analysis_result["best_examples"]
         representative_names = analysis_result.get("representative_names", [])
 
-        win = tk.Toplevel(self.master)
+        win = ctk.CTkToplevel(self.master)
         win.title("Analyze — Name Your Series Types")
-        enable_tkinter_autoscaling(win)
+        cascade(win, self.master)
         win.grab_set()
         win.resizable(True, True)
 
@@ -2596,7 +2442,7 @@ class MainApp:
         PAD = scale_value(6)
 
         # Header label
-        tk.Label(
+        ctk.CTkLabel(
             win,
             text=(
                 f"Found {k} series type cluster(s).  "
@@ -2610,14 +2456,14 @@ class MainApp:
         ).grid(row=0, column=0, columnspan=2, padx=PAD * 2, pady=PAD * 2, sticky="w")
 
         # Scrollable canvas for clusters
-        container = tk.Frame(win)
+        container = ctk.CTkFrame(win, fg_color="transparent")
         container.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=PAD, pady=PAD)
         win.grid_rowconfigure(1, weight=1)
         win.grid_columnconfigure(0, weight=1)
 
-        canvas = tk.Canvas(container)
-        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
-        scroll_frame = tk.Frame(canvas)
+        canvas = tk.Canvas(container, highlightthickness=0, bg=ui_theme.PANEL_BG)
+        scrollbar = ctk.CTkScrollbar(container, orientation="vertical", command=canvas.yview)
+        scroll_frame = ctk.CTkFrame(canvas, fg_color="transparent")
         scroll_frame.bind(
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
@@ -2635,25 +2481,21 @@ class MainApp:
         thumb_refs = []   # keep ImageTk references alive
 
         for c in range(k):
-            row_frame = tk.LabelFrame(
-                scroll_frame,
-                text=f"Name your series",
-                padx=PAD, pady=PAD
-            )
+            row_frame = TitledFrame(scroll_frame, title="Name your series")
             row_frame.pack(fill="x", padx=PAD, pady=PAD)
             row_frames.append(row_frame)
 
             # Thumbnail grid (up to 4) — each slot is a fixed-pixel Frame so
             # sizing is always in pixels whether or not an image is loaded.
-            thumb_frame = tk.Frame(row_frame)
+            thumb_frame = ctk.CTkFrame(row_frame.content, fg_color="transparent")
             thumb_frame.pack(side="left", padx=PAD)
             example_paths = best_examples.get(c, [])
             cluster_refs = []
             for col_i, img_path in enumerate(example_paths[:4]):
-                slot = tk.Frame(thumb_frame, width=THUMB_PX, height=THUMB_PX, bg="gray")
+                slot = tk.Frame(thumb_frame, width=THUMB_PX, height=THUMB_PX, bg=ui_theme.PANEL_BG)
                 slot.grid(row=0, column=col_i, padx=2, pady=2)
                 slot.grid_propagate(False)
-                lbl = tk.Label(slot, bg="gray")
+                lbl = tk.Label(slot, bg=ui_theme.PANEL_BG)
                 lbl.place(relwidth=1, relheight=1)
                 try:
                     pil_img = Image.open(img_path).convert("RGB").resize(
@@ -2666,14 +2508,14 @@ class MainApp:
                     cluster_refs.append(None)
             # Pad remaining slots if fewer than 4
             for col_i in range(len(example_paths), 4):
-                slot = tk.Frame(thumb_frame, width=THUMB_PX, height=THUMB_PX, bg="#cccccc")
+                slot = tk.Frame(thumb_frame, width=THUMB_PX, height=THUMB_PX, bg=ui_theme.PANEL_BG)
                 slot.grid(row=0, column=col_i, padx=2, pady=2)
                 slot.grid_propagate(False)
-                tk.Label(slot, bg="#cccccc", text="N/A", anchor="center").place(relwidth=1, relheight=1)
+                tk.Label(slot, bg=ui_theme.PANEL_BG, fg="#888888", text="N/A", anchor="center").place(relwidth=1, relheight=1)
             thumb_refs.append(cluster_refs)
 
             # Controls: name entry, prefer 3D, include toggle
-            ctrl_frame = tk.Frame(row_frame)
+            ctrl_frame = ctk.CTkFrame(row_frame.content, fg_color="transparent")
             ctrl_frame.pack(side="left", padx=PAD * 2, anchor="w")
 
             default_name = (representative_names[c]
@@ -2688,45 +2530,40 @@ class MainApp:
                 def _toggle(*_):
                     included = iv.get()
                     state = "normal" if included else "disabled"
-                    fg = "black" if included else "#aaaaaa"
-                    rf.config(fg=fg)
-                    for child in rf.winfo_children():
-                        try:
-                            child.config(state=state)
-                        except Exception:
-                            pass
-                    # keep Include checkbox itself always enabled
+                    rf.set_title_color("#e0e0e0" if included else "#777777")
                     for child in ctrl_frame.winfo_children():
                         if getattr(child, '_is_include_cb', False):
-                            child.config(state="normal")
-                    # shade the name entry red when excluded, white when included
+                            continue  # keep the Include checkbox itself enabled
+                        try:
+                            child.configure(state=state)
+                        except Exception:
+                            pass
+                    # shade the name entry red when excluded
                     try:
                         if included:
-                            ne.config(state="normal", bg="white")
+                            ne.configure(state="normal", border_color="#565b5e")
                         else:
-                            ne.config(state="disabled", bg="#ffaaaa")
+                            ne.configure(state="disabled", border_color="#aa4444")
                     except Exception:
                         pass
                 return _toggle
 
-            include_cb = tk.Checkbutton(
+            include_cb = ctk.CTkCheckBox(
                 ctrl_frame,
-                font=("Arial", scale_value(8)),
                 text="Include",
                 variable=include_var,
             )
             include_cb._is_include_cb = True
             include_cb.grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
 
-            tk.Label(ctrl_frame, text="Series name:").grid(row=1, column=0, sticky="w", pady=2)
-            name_entry = tk.Entry(ctrl_frame, textvariable=name_var, width=20)
+            ctk.CTkLabel(ctrl_frame, text="Series name:").grid(row=1, column=0, sticky="w", pady=2)
+            name_entry = ctk.CTkEntry(ctrl_frame, textvariable=name_var, width=170)
             name_entry.grid(row=1, column=1, sticky="w", padx=PAD, pady=2)
 
             include_var.trace_add("write", _make_toggle(row_frame, name_var, prefer3d_var, include_var, name_entry))
 
-            prefer3d_cb = tk.Checkbutton(
+            prefer3d_cb = ctk.CTkCheckBox(
                 ctrl_frame,
-                font=("Arial", scale_value(8)),
                 text="Prefer 3D acquisition",
                 variable=prefer3d_var,
             )
@@ -2737,7 +2574,7 @@ class MainApp:
             include_vars.append(include_var)
 
         # Buttons row
-        btn_frame = tk.Frame(win)
+        btn_frame = ctk.CTkFrame(win, fg_color="transparent")
         btn_frame.grid(row=2, column=0, columnspan=2, pady=PAD * 2)
 
         def _on_apply():
@@ -2776,9 +2613,10 @@ class MainApp:
             win.destroy()
             self.classification_finished(aborted=False)
 
-        tk.Button(btn_frame, text="Apply", width=12, command=_on_apply,
-                  bg="#4fff5b").pack(side="left", padx=PAD)
-        tk.Button(btn_frame, text="Cancel", width=12, command=_on_cancel).pack(side="left", padx=PAD)
+        ctk.CTkButton(btn_frame, text="Apply", width=110, command=_on_apply,
+                      fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER).pack(side="left", padx=PAD)
+        ctk.CTkButton(btn_frame, text="Cancel", width=110, command=_on_cancel,
+                      fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER).pack(side="left", padx=PAD)
 
         # ── Size and position the window ──────────────────────────────────────
         def _fit_window():
@@ -2815,8 +2653,9 @@ class MainApp:
             x = max(0, min(x, screen_w - final_w))
             y = max(0, min(y, screen_h - final_h))
 
-            win.geometry(f"{final_w}x{final_h}+{x}+{y}")
-            win.minsize(final_w, min(final_h, scale_value(400)))
+            # wm_geometry: sizes are measured real pixels, bypass CTk scaling
+            win.wm_geometry(f"{final_w}x{final_h}+{x}+{y}")
+            win.wm_minsize(final_w, min(final_h, scale_value(400)))
 
         win.after(0, _fit_window)
         win.wait_window()
@@ -2988,7 +2827,7 @@ class MainApp:
             _done = threading.Event()
 
             # Progress window
-            prog_win = tk.Toplevel(self.master)
+            prog_win = ctk.CTkToplevel(self.master)
             prog_win.title("Retrieving DICOM data…")
             prog_win.resizable(False, False)
             prog_win.grab_set()
@@ -2997,19 +2836,15 @@ class MainApp:
             PAD = scale_value(8)
             prog_label_var = tk.StringVar(
                 value=f"Retrieving data from DICOM files (0/{total_files})")
-            tk.Label(prog_win, textvariable=prog_label_var,
-                     anchor="w").pack(padx=PAD * 2, pady=(PAD * 2, PAD), fill="x")
-            prog_bar = ttk.Progressbar(prog_win, orient="horizontal",
-                                       mode="determinate", maximum=total_files, value=0)
+            ctk.CTkLabel(prog_win, textvariable=prog_label_var,
+                         anchor="w").pack(padx=PAD * 2, pady=(PAD * 2, PAD), fill="x")
+            prog_bar = ThemedProgressBar(prog_win, mode="determinate",
+                                         maximum=total_files, value=0)
             prog_bar.pack(padx=PAD * 2, pady=(0, PAD * 2), fill="x")
             prog_win.update_idletasks()
 
-            # Centre the progress window over the main window
-            prog_win.geometry(
-                f"{scale_value(420)}x{scale_value(80)}"
-                f"+{self.master.winfo_rootx() + scale_value(60)}"
-                f"+{self.master.winfo_rooty() + scale_value(60)}"
-            )
+            prog_win.geometry("420x90")
+            cascade(prog_win, self.master, step=60)
 
             # Shared counter updated by background thread, read by poll callback
             _completed = [0]
@@ -3140,18 +2975,18 @@ class MainApp:
 
         self.is_running = True
         self.stop_requested.clear()
-        self.start_button.config(state="disabled")
-        self.stop_button.config(state="normal")
-        self.train_button.config(state="disabled")
+        self.start_button.configure(state="disabled")
+        self.stop_button.configure(state="normal")
+        self.train_button.configure(state="disabled")
 
-        self.progress_frame = tk.Frame(self.master)
-        self.progress_frame.pack(padx=20, pady=10, fill='x')
+        self.progress_frame = ctk.CTkFrame(self.master, fg_color="transparent")
+        self.progress_frame.pack(padx=scale_value(20), pady=scale_value(10), fill='x')
 
         self.progress_label = tk.StringVar(value="Starting verification...")
-        tk.Label(self.progress_frame, textvariable=self.progress_label).pack(side="top")
+        ctk.CTkLabel(self.progress_frame, textvariable=self.progress_label).pack(side="top")
 
-        self.progress_bar = ttk.Progressbar(self.progress_frame, orient="horizontal", mode="determinate")
-        self.progress_bar.pack(fill='x', pady=5)
+        self.progress_bar = ThemedProgressBar(self.progress_frame, mode="determinate")
+        self.progress_bar.pack(fill='x', pady=scale_value(5))
 
         verification_thread = threading.Thread(
             target=self.run_verification_main,
@@ -3578,7 +3413,7 @@ def _fit_window_to_screen(root, content_frame, button_frame, pad_x=0, pad_y=0):
             # The scrollbar is the second child of the outer frame (canvas sibling)
             outer = content_frame.master.master  # content_frame → canvas → outer
             for child in outer.winfo_children():
-                if isinstance(child, ttk.Scrollbar):
+                if isinstance(child, ctk.CTkScrollbar):
                     child.update_idletasks()
                     scrollbar_w = child.winfo_reqwidth()
                     break
@@ -3604,7 +3439,8 @@ def _fit_window_to_screen(root, content_frame, button_frame, pad_x=0, pad_y=0):
         x = max(0, min(cur_x, screen_w - win_w))
         y = max(0, min(cur_y, screen_h - win_h))
 
-        root.geometry(f"{win_w}x{win_h}+{x}+{y}")
+        # wm_geometry: sizes are measured real pixels, bypass CTk scaling
+        root.wm_geometry(f"{win_w}x{win_h}+{x}+{y}")
         root.update_idletasks()
     except Exception:
         pass
@@ -3622,21 +3458,21 @@ def _make_scrollable_frame(root, pad_x=0, pad_y=0):
     (<Button-4> / <Button-5>), and macOS (<MouseWheel> with delta/120).
     """
     # Outer frame holds canvas + scrollbar side-by-side
-    outer = tk.Frame(root)
+    outer = ctk.CTkFrame(root, fg_color="transparent")
     outer.grid(row=0, column=0, padx=pad_x, pady=pad_y, sticky="nsew")
     root.grid_rowconfigure(0, weight=1)
     root.grid_columnconfigure(0, weight=1)
     outer.grid_rowconfigure(0, weight=1)
     outer.grid_columnconfigure(0, weight=1)
 
-    canvas = tk.Canvas(outer, highlightthickness=0)
+    canvas = tk.Canvas(outer, highlightthickness=0, bg=ui_theme.PANEL_BG)
     canvas.grid(row=0, column=0, sticky="nsew")
 
-    scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+    scrollbar = ctk.CTkScrollbar(outer, orientation="vertical", command=canvas.yview)
     scrollbar.grid(row=0, column=1, sticky="ns")
     canvas.configure(yscrollcommand=scrollbar.set)
 
-    content_frame = tk.Frame(canvas)
+    content_frame = tk.Frame(canvas, bg=ui_theme.PANEL_BG)
     canvas_window = canvas.create_window((0, 0), window=content_frame, anchor="nw")
 
     def _on_frame_configure(event):
@@ -3691,8 +3527,8 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         stop_all: List with single boolean element to signal Stop All
         output_dir: Output directory containing series_thumbnails folder
     """
-    root = tk.Toplevel()
-    enable_tkinter_autoscaling(root)
+    root = ctk.CTkToplevel()
+    cascade(root, tk._default_root)
 
     batch_end = batch_start + len(batch_df)
     root.title(f"Verify {target_series} - Showing {batch_start+1}-{batch_end} of {total_series}")
@@ -3714,7 +3550,7 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
     thumb_px = scale_thumbnail(256)
 
     # Create loading indicator image
-    loading_img = Image.new("RGB", (thumb_px, thumb_px), (220, 220, 220))
+    loading_img = Image.new("RGB", (thumb_px, thumb_px), (45, 45, 45))
     tk_loading = ImageTk.PhotoImage(loading_img)
 
     # Store toggle states and widgets
@@ -3732,7 +3568,8 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         study_folder = row_data['study_folder']
 
         # Create frame for this series
-        series_frame = tk.Frame(content_frame, padx=scale_value(5), pady=scale_value(5))
+        series_frame = tk.Frame(content_frame, bg=ui_theme.PANEL_BG,
+                                padx=scale_value(5), pady=scale_value(5))
         series_frame.grid(row=row_num, column=col_num, sticky="nsew")
         series_frame.grid_columnconfigure(0, weight=1)
 
@@ -3742,13 +3579,15 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
             row_num += 1
 
         # Image panel with loading indicator
-        panel = tk.Label(series_frame, image=tk_loading, width=thumb_px, height=thumb_px)
+        panel = tk.Label(series_frame, image=tk_loading, width=thumb_px, height=thumb_px,
+                         bg=ui_theme.PANEL_BG)
         panel.image = tk_loading
         panel.grid(row=0, column=0, pady=(0, scale_value(5)))
         panel_widgets[series_path] = panel
 
         # Series description label
-        tk.Label(series_frame, text=series_desc, wraplength=scale_thumbnail(250), justify="center").grid(
+        tk.Label(series_frame, text=series_desc, wraplength=scale_thumbnail(250), justify="center",
+                 bg=ui_theme.PANEL_BG, fg="#e0e0e0").grid(
             row=1, column=0, pady=scale_value(5))
 
         # Toggle button for Correct/Incorrect
@@ -3760,20 +3599,20 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
                 new_state = not var.get()
                 var.set(new_state)
                 if new_state:  # Incorrect
-                    btn.config(text="Incorrect", bg="#ff4f4f", activebackground="#ff4f4f")
+                    btn.configure(text="Incorrect", fg_color=ui_theme.RED, hover_color=ui_theme.RED_HOVER)
                 else:  # Correct
-                    btn.config(text="Correct", bg="#f0f0f0", activebackground="#f0f0f0")
+                    btn.configure(text="Correct", fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER)
             return toggle
 
-        toggle_btn = tk.Button(
+        toggle_btn = ctk.CTkButton(
             series_frame,
             text="Correct",
-            width=scale_value(15),
-            bg="#f0f0f0",
-            activebackground="#f0f0f0",
+            width=130,
+            fg_color=ui_theme.NEUTRAL,
+            hover_color=ui_theme.NEUTRAL_HOVER,
             command=None  # Will set below
         )
-        toggle_btn.config(command=make_toggle_callback(toggle_var, toggle_btn, series_path, study_folder))
+        toggle_btn.configure(command=make_toggle_callback(toggle_var, toggle_btn, series_path, study_folder))
         toggle_btn.grid(row=2, column=0, pady=(0, scale_value(5)))
         toggle_buttons[series_path] = toggle_btn
 
@@ -3851,8 +3690,8 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
     threading.Thread(target=load_all_thumbnails, daemon=True).start()
 
     # Button frame at bottom
-    button_frame = tk.Frame(root, pady=scale_value(10))
-    button_frame.grid(row=1, column=0, sticky="ew")
+    button_frame = ctk.CTkFrame(root, fg_color="transparent")
+    button_frame.grid(row=1, column=0, sticky="ew", pady=scale_value(10))
     button_frame.grid_columnconfigure(0, weight=1)
     button_frame.grid_columnconfigure(1, weight=0)
     button_frame.grid_columnconfigure(2, weight=0)
@@ -3897,28 +3736,29 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         done_event.set()
 
     # Create buttons
-    btn_stop = tk.Button(
+    action_font = ctk.CTkFont(size=15, weight="bold")
+    btn_stop = ctk.CTkButton(
         button_frame,
-        bg="#e0a2a2",
-        activebackground="#e0a2a2",
+        fg_color=ui_theme.RED,
+        hover_color=ui_theme.RED_HOVER,
         text="Stop All (a)",
-        font=("Arial", scale_value(14)),
+        font=action_font,
         command=on_stop_all
     )
-    btn_skip = tk.Button(
+    btn_skip = ctk.CTkButton(
         button_frame,
-        bg="#fff7a8",
-        activebackground="#fff7a8",
+        fg_color=ui_theme.YELLOW,
+        hover_color=ui_theme.YELLOW_HOVER,
         text="Skip (s)",
-        font=("Arial", scale_value(14)),
+        font=action_font,
         command=on_skip
     )
-    btn_approve = tk.Button(
+    btn_approve = ctk.CTkButton(
         button_frame,
-        bg="#a2e0b2",
-        activebackground="#a2e0b2",
+        fg_color=ui_theme.GREEN,
+        hover_color=ui_theme.GREEN_HOVER,
         text="Approve (d)",
-        font=("Arial", scale_value(14)),
+        font=action_font,
         command=on_approve
     )
 
@@ -3928,9 +3768,9 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
     btn_approve.grid(row=0, column=3, padx=scale_value(10))
 
     # add hotkeys
-    root.bind("<a>", lambda event: btn_stop.invoke())
-    root.bind("<s>", lambda event: btn_skip.invoke())
-    root.bind("<d>", lambda event: btn_approve.invoke())
+    root.bind("<a>", lambda event: on_stop_all())
+    root.bind("<s>", lambda event: on_skip())
+    root.bind("<d>", lambda event: on_approve())
 
     _fit_window_to_screen(root, content_frame, button_frame,
                           pad_x=scale_value(20), pad_y=scale_value(20))
@@ -3990,32 +3830,11 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     if stop_event.is_set():
         return
 
-    root = tk.Toplevel()
-    enable_tkinter_autoscaling(root)
+    root = ctk.CTkToplevel()
     root.title(f"Classify Study ({mode}): MRN {mrn} | Accn {accn}")
 
-    # Classification window appears fixed offset from main window
-    root.update_idletasks()
-
-    try:
-        # Get main window position
-        main_x = root.master.winfo_x()
-        main_y = root.master.winfo_y()
-
-        # Offset from main window
-        x = main_x + scale_value(50)
-        y = main_y + scale_value(50)
-
-        root.geometry(f"+{x}+{y}")
-    except Exception:
-        # Fallback to screen center
-        screen_width = root.winfo_screenwidth()
-        screen_height = root.winfo_screenheight()
-        window_width = root.winfo_reqwidth()
-        window_height = root.winfo_reqheight()
-        x = (screen_width - window_width) // 2
-        y = (screen_height - window_height) // 2
-        root.geometry(f"+{x}+{y}")
+    # Classification window appears at a fixed cascade offset from the main window
+    cascade(root, root.master)
 
     root.protocol("WM_DELETE_WINDOW", lambda: None)
     root.grab_set()
@@ -4043,7 +3862,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     # Thumbnail pixel size (DPI-scaled + user scale factor)
     thumb_px = scale_thumbnail(256)
 
-    placeholder_img = Image.new("RGB", (thumb_px, thumb_px), (200, 200, 200))
+    placeholder_img = Image.new("RGB", (thumb_px, thumb_px), (45, 45, 45))
     tk_placeholder = ImageTk.PhotoImage(placeholder_img)
 
     optimized_assignments = {}
@@ -4073,7 +3892,8 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         logger.info(f"Semi-auto classifying exam {study_uid}...")
 
     for series_desc, dicom_paths in study_dict.items():
-        series_frame = tk.Frame(content_frame, padx=scale_value(5), pady=scale_value(5))
+        series_frame = tk.Frame(content_frame, bg=ui_theme.PANEL_BG,
+                                padx=scale_value(5), pady=scale_value(5))
         series_frame.grid(row=row_num, column=col_num, sticky="nsew")
         series_frame.grid_columnconfigure(0, weight=1)
 
@@ -4082,10 +3902,12 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
             col_num = 0
             row_num += 1
 
-        panel = tk.Label(series_frame, image=tk_placeholder, width=thumb_px, height=thumb_px)
+        panel = tk.Label(series_frame, image=tk_placeholder, width=thumb_px, height=thumb_px,
+                         bg=ui_theme.PANEL_BG)
         panel.image = tk_placeholder
         panel.grid(row=0, column=0, pady=(0, scale_value(5)))
-        tk.Label(series_frame, text=series_desc, wraplength=scale_thumbnail(250), justify="center").grid(row=1, column=0, pady=scale_value(5))
+        tk.Label(series_frame, text=series_desc, wraplength=scale_thumbnail(250), justify="center",
+                 bg=ui_theme.PANEL_BG, fg="#e0e0e0").grid(row=1, column=0, pady=scale_value(5))
 
         # Extract DICOM and thumbnail paths from hierarchy entry
         first_entry = dicom_paths[0]
@@ -4154,12 +3976,9 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
 
         variable = tk.StringVar(value=initial_value)
 
-        # determine sensible defaults
-        try:
-            default_bg = series_frame.cget('bg') or '#f0f0f0'
-        except Exception:
-            default_bg = '#f0f0f0'
-        default_fg = '#000000'
+        # neutral colors for the un-assigned ("Other") state
+        default_bg = ui_theme.NEUTRAL
+        default_fg = '#e0e0e0'
 
         # per-series colored dropdown implementation
         class ColoredDropdown:
@@ -4171,7 +3990,9 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 self.key = key
                 self.all_vars = all_vars
                 self.mode = mode
-                self.btn = tk.Button(parent, text=self.var.get(), width=scale_value(20), relief='raised')
+                self.btn = ctk.CTkButton(parent, text=self.var.get(), width=170,
+                                         fg_color=default_bg, hover_color=ui_theme.NEUTRAL_HOVER,
+                                         text_color=default_fg)
                 self.menu = tk.Menu(parent, tearoff=0)
 
                 for opt in self.options:
@@ -4251,10 +4072,11 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 val = self.var.get() if v is None else v
                 if val == 'Other':
                     try:
-                        self.btn.config(bg=default_bg, fg=default_fg, activebackground=default_bg, activeforeground=default_fg, text=val)
+                        self.btn.configure(fg_color=default_bg, text_color=default_fg,
+                                           hover_color=ui_theme.NEUTRAL_HOVER, text=val)
                     except Exception:
                         try:
-                            self.btn.config(text=val)
+                            self.btn.configure(text=val)
                         except Exception:
                             pass
                     try:
@@ -4266,9 +4088,9 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 bg, fg = self.cmap.get(val, (None, None))
                 try:
                     if bg is not None:
-                        self.btn.config(bg=bg, fg=fg, activebackground=bg, activeforeground=fg, text=val)
+                        self.btn.configure(fg_color=bg, text_color=fg, hover_color=bg, text=val)
                     else:
-                        self.btn.config(bg=default_bg, fg=default_fg, text=val)
+                        self.btn.configure(fg_color=default_bg, text_color=default_fg, text=val)
                     try:
                         self.btn.update_idletasks()
                     except Exception:
@@ -4277,7 +4099,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                     pass
 
         # create control row and widget
-        control_row = tk.Frame(series_frame)
+        control_row = tk.Frame(series_frame, bg=ui_theme.PANEL_BG)
         cd = ColoredDropdown(control_row, variable, dropdown_values, color_map, key=first_path, all_vars=dropdown_vars, mode=mode)
         try:
             cd.btn.pack(side='left')
@@ -4408,8 +4230,8 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     # Start loading thread
     threading.Thread(target=load_all_thumbnails, daemon=True).start()
 
-    button_frame = tk.Frame(root, pady=scale_value(10))
-    button_frame.grid(row=1, column=0, sticky="ew")
+    button_frame = ctk.CTkFrame(root, fg_color="transparent")
+    button_frame.grid(row=1, column=0, sticky="ew", pady=scale_value(10))
     button_frame.grid_columnconfigure(0, weight=1)
     button_frame.grid_columnconfigure(1, weight=0)
     button_frame.grid_columnconfigure(2, weight=0)
@@ -4452,9 +4274,13 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
             pass
 
     # make buttons
-    btn_stop = tk.Button(button_frame, bg="#e0a2a2", activebackground="#e0a2a2", text="Stop All (a)", font=("Arial", scale_value(14)), command=on_stop)
-    btn_skip = tk.Button(button_frame, bg="#fff7a8", activebackground="#fff7a8", text="Skip (s)", font=("Arial", scale_value(14)), command=on_skip)
-    btn_done = tk.Button(button_frame, bg="#a2e0b2", activebackground="#a2e0b2", text="Approve (d)", font=("Arial", scale_value(14)), command=on_done)
+    action_font = ctk.CTkFont(size=15, weight="bold")
+    btn_stop = ctk.CTkButton(button_frame, fg_color=ui_theme.RED, hover_color=ui_theme.RED_HOVER,
+                             text="Stop All (a)", font=action_font, command=on_stop)
+    btn_skip = ctk.CTkButton(button_frame, fg_color=ui_theme.YELLOW, hover_color=ui_theme.YELLOW_HOVER,
+                             text="Skip (s)", font=action_font, command=on_skip)
+    btn_done = ctk.CTkButton(button_frame, fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER,
+                             text="Approve (d)", font=action_font, command=on_done)
 
     # grid buttons
     btn_stop.grid(row=0, column=1, padx=scale_value(10))
@@ -4462,9 +4288,9 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     btn_done.grid(row=0, column=3, padx=scale_value(10))
 
     # add hotkeys
-    root.bind("<a>", lambda event: btn_stop.invoke())
-    root.bind("<s>", lambda event: btn_skip.invoke())
-    root.bind("<d>", lambda event: btn_done.invoke())
+    root.bind("<a>", lambda event: on_stop())
+    root.bind("<s>", lambda event: on_skip())
+    root.bind("<d>", lambda event: on_done())
 
     _fit_window_to_screen(root, content_frame, button_frame,
                           pad_x=scale_value(20), pad_y=scale_value(20))

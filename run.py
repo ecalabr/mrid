@@ -1,10 +1,13 @@
 """Entry point to launch the MRID GUI application."""
-import tkinter as tk
+import customtkinter as ctk
+from mrid_app import ui_theme
 from mrid_app.gui import MainApp
 
 
 def main():
-    root = tk.Tk()
+    ui_theme.init_appearance()
+    root = ctk.CTk()
+    ui_theme.init_scaling(root)
     app = MainApp(root)
     root.mainloop()
 

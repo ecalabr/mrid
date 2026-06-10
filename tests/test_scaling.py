@@ -1,90 +1,69 @@
-"""Unit tests for DPI-aware autoscaling functionality."""
-import tkinter as tk
-
-
-def test_calculate_scale_factor_exists():
-    """Test that _calculate_scale_factor function exists."""
-    from mrid_app.gui import _calculate_scale_factor
-    assert callable(_calculate_scale_factor)
-
-
-def test_enable_tkinter_autoscaling_exists():
-    """Test that enable_tkinter_autoscaling function exists."""
-    from mrid_app.gui import enable_tkinter_autoscaling
-    assert callable(enable_tkinter_autoscaling)
+"""Unit tests for screen-proportional UI scaling (ui_theme module)."""
 
 
 def test_scale_value_exists():
-    """Test that scale_value function exists."""
-    from mrid_app.gui import scale_value
+    from mrid_app.ui_theme import scale_value
     assert callable(scale_value)
 
 
-def test_scale_geometry_exists():
-    """Test that scale_geometry function exists."""
-    from mrid_app.gui import scale_geometry
-    assert callable(scale_geometry)
+def test_scale_thumbnail_exists():
+    from mrid_app.ui_theme import scale_thumbnail
+    assert callable(scale_thumbnail)
+
+
+def test_cascade_exists():
+    from mrid_app.ui_theme import cascade
+    assert callable(cascade)
 
 
 def test_scale_value_returns_int():
-    """Test that scale_value returns an integer."""
-    from mrid_app.gui import scale_value
-    result = scale_value(10)
-    assert isinstance(result, int)
+    from mrid_app.ui_theme import scale_value
+    assert isinstance(scale_value(10), int)
 
 
 def test_scale_value_positive():
-    """Test that scale_value with positive input returns positive output."""
-    from mrid_app.gui import scale_value
-    result = scale_value(100)
-    assert result > 0
+    from mrid_app.ui_theme import scale_value
+    assert scale_value(100) > 0
 
 
-def test_scale_geometry_format():
-    """Test that scale_geometry returns properly formatted string."""
-    from mrid_app.gui import scale_geometry
-    result = scale_geometry("800x600")
-    assert isinstance(result, str)
-    assert 'x' in result
-    # Should be in format "NNNxMMM" or "NNNxMMM+X+Y"
-    parts = result.split('+')[0]  # Get geometry part before any +X+Y offset
-    assert len(parts.split('x')) == 2
+def test_scale_thumbnail_applies_config_factor():
+    """scale_thumbnail must reflect THUMBNAIL_SCALE_FACTOR from config."""
+    from mrid_app import config, ui_theme
 
-
-def test_calculate_scale_factor_reasonable_bounds():
-    """Test that _calculate_scale_factor returns reasonable values."""
+    original = config.THUMBNAIL_SCALE_FACTOR
     try:
-        # Create a temporary hidden window for testing
-        root = tk.Tk()
-        root.withdraw()  # Hide the window
+        config.THUMBNAIL_SCALE_FACTOR = 1.0
+        base = ui_theme.scale_thumbnail(100)
+        config.THUMBNAIL_SCALE_FACTOR = 2.0
+        doubled = ui_theme.scale_thumbnail(100)
+        assert doubled == 2 * base
+    finally:
+        config.THUMBNAIL_SCALE_FACTOR = original
 
-        from mrid_app.gui import _calculate_scale_factor
-        scale_factor = _calculate_scale_factor(root)
 
-        # Scale factor should be between 0.75 and 3.0 as per the code
-        assert 0.75 <= scale_factor <= 3.0
-        assert isinstance(scale_factor, float)
+def test_default_scale_factor_is_one_without_init():
+    """Before init_scaling runs, helpers must behave as scale 1.0 fallback."""
+    from mrid_app import ui_theme
 
+    if ui_theme._SCALE_FACTOR is None:
+        assert ui_theme.get_scale_factor() == 1.0
+        assert ui_theme.scale_value(42) == 42
+    else:
+        # init_scaling already ran in this process; just check consistency
+        assert ui_theme.scale_value(100) == int(round(100 * ui_theme.get_scale_factor()))
+
+
+def test_init_scaling_bounds():
+    """init_scaling clamps the factor to a sane range when a display exists."""
+    import customtkinter as ctk
+    from mrid_app import ui_theme
+
+    try:
+        root = ctk.CTk()
+        root.withdraw()
+        scale = ui_theme.init_scaling(root)
+        assert 0.6 <= scale <= 3.0
         root.destroy()
     except Exception:
-        # If we can't create a window (e.g., no display), skip the assertion
-        # but the test should still pass
+        # No display available (e.g. headless CI) — nothing to verify
         pass
-
-
-def test_enable_dpi_awareness_exists():
-    """Test that _enable_dpi_awareness function exists."""
-    from mrid_app.gui import _enable_dpi_awareness
-    assert callable(_enable_dpi_awareness)
-
-
-def test_enable_dpi_awareness_no_error():
-    """Test that _enable_dpi_awareness doesn't raise errors."""
-    from mrid_app.gui import _enable_dpi_awareness
-    try:
-        # Should not raise an error even if DPI awareness isn't available
-        _enable_dpi_awareness()
-    except Exception as e:
-        raise AssertionError(f"_enable_dpi_awareness raised an error: {e}")
-
-
