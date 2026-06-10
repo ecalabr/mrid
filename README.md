@@ -651,9 +651,26 @@ IMAGE_SIZE = 128      # Input image size (128×128)
 NUM_EPOCHS = 100      # Training epochs
 BATCH_SIZE = 8        # Batch size for training
 LR = 0.001            # Learning rate
+CNN_NUM_SLICES = 1    # Slices fed to the CNN: 1 = 2D (center slice), >1 = 2.5D
 ```
 
 Adjust based on your data and computational resources.
+
+#### 2D vs. 2.5D Mode (`CNN_NUM_SLICES`)
+
+By default (`CNN_NUM_SLICES = 1`) the CNN classifies each series from its center
+slice only. Setting a higher value enables **2.5D mode**: that many evenly
+spaced slices are loaded from the series and fed to the CNN as input channels.
+For example, with `CNN_NUM_SLICES = 3` on a 100-slice series, slices 25, 50,
+and 75 are used. This gives the model more anatomical context at a modest
+training/inference cost.
+
+Notes:
+- A model must be used with the same `CNN_NUM_SLICES` it was trained with.
+  When loading a saved model, MRID detects its slice count automatically and
+  warns if it differs from the current config; retrain to change the value.
+- Preprocessed training data is cached separately per slice count, so caches
+  built in 2D mode remain valid.
 
 ### Random Forest Hyperparameters
 

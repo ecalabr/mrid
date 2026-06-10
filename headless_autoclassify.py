@@ -349,7 +349,7 @@ def load_models(output_dir, model_type):
 
         try:
             import torch
-            from mrid_app.cnn import SimpleCNN
+            from mrid_app.cnn import load_cnn_model
 
             logger.info("Loading Image-Based Model (CNN)...")
 
@@ -368,12 +368,7 @@ def load_models(output_dir, model_type):
 
             cnn_target_encoder = joblib.load(cnn_target_encoder_path)
             num_classes = len(cnn_target_encoder.classes_)
-            cnn_model = SimpleCNN(num_classes=num_classes)
-
-            state_dict = torch.load(cnn_model_path, map_location=map_loc)
-            cnn_model.load_state_dict(state_dict)
-            cnn_model.to(map_loc)
-            cnn_model.eval()
+            cnn_model = load_cnn_model(cnn_model_path, num_classes, map_location=map_loc)
 
         except ImportError:
             logger.error("PyTorch is not installed. Cannot use CNN model.")

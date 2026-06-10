@@ -32,6 +32,18 @@ except Exception:
     NUM_PARALLEL_WORKERS = 8
 
 
+def get_configured_num_slices():
+    """
+    Read CNN_NUM_SLICES from the config module at call time so runtime config
+    reloads are respected. 1 = 2D (center slice), >1 = 2.5D multi-channel.
+    """
+    try:
+        from . import config as _config
+        return max(1, int(getattr(_config, 'CNN_NUM_SLICES', 1)))
+    except Exception:
+        return 1
+
+
 def _get_transforms():
     global _CNN_TRANSFORMS
     if _CNN_TRANSFORMS is None:
@@ -65,9 +77,11 @@ def _get_augmentation_transforms():
 # Define SimpleCNN only if torch is available
 if torch is not None:
     class SimpleCNN(nn.Module):
-        def __init__(self, num_classes):
+        def __init__(self, num_classes, num_slices=None):
             super(SimpleCNN, self).__init__()
-            self.conv1 = nn.Conv2d(1, 32, 3, padding=1)
+            # Input channels = number of slices (1 = 2D, >1 = 2.5D)
+            self.num_slices = num_slices if num_slices is not None else get_configured_num_slices()
+            self.conv1 = nn.Conv2d(self.num_slices, 32, 3, padding=1)
             self.pool1 = nn.MaxPool2d(2, 2)
             self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
             self.pool2 = nn.MaxPool2d(2, 2)
@@ -90,21 +104,69 @@ if torch is not None:
             return x
 
 
-def prepare_cnn_input_data(filepaths, load_center_slice_func):
+def load_cnn_model(model_path, num_classes, map_location=None):
+    """
+    Load a saved SimpleCNN checkpoint. The number of input slices is inferred
+    from the checkpoint's first convolution so a model trained in 2.5D mode
+    loads correctly regardless of the current CNN_NUM_SLICES setting.
+
+    Returns the model in eval mode, or raises on failure.
+    """
+    if torch is None:
+        raise RuntimeError("PyTorch is not available")
+    state_dict = torch.load(model_path, map_location=map_location)
+    try:
+        ckpt_slices = int(state_dict['conv1.weight'].shape[1])
+    except Exception:
+        ckpt_slices = 1
+    configured = get_configured_num_slices()
+    if ckpt_slices != configured:
+        logger.warning(
+            f"Saved CNN model was trained with CNN_NUM_SLICES={ckpt_slices} but the "
+            f"config specifies {configured}. Using {ckpt_slices} for inference; "
+            f"retrain the model to change the slice count."
+        )
+    model = SimpleCNN(num_classes=num_classes, num_slices=ckpt_slices)
+    model.load_state_dict(state_dict)
+    if map_location is not None:
+        model.to(map_location)
+    model.eval()
+    return model
+
+
+def _slices_to_array(slice_imgs, image_size):
+    """
+    Convert a list of PIL slice images to a (num_slices, H, W) float32 array
+    normalized to [-1, 1] (matching ToTensor + Normalize(0.5, 0.5)).
+    """
+    from PIL import Image as PILImage
+    channels = []
+    for slice_img in slice_imgs:
+        img = slice_img.convert('L').resize((image_size, image_size), PILImage.BILINEAR)
+        arr = np.array(img, dtype=np.float32) / 255.0
+        arr = (arr - 0.5) / 0.5
+        channels.append(arr)
+    return np.stack(channels, axis=0)
+
+
+def prepare_cnn_input_data(filepaths, load_slices_func, num_slices=None):
     transforms = _get_transforms()
     if transforms is None:
-        print("PyTorch torchvision.transforms unavailable")
+        logger.warning("PyTorch torchvision.transforms unavailable")
         return None
+    if num_slices is None:
+        num_slices = get_configured_num_slices()
     processed_images = []
     if hasattr(filepaths, 'tolist'):
         filepaths = filepaths.tolist()
     for path in filepaths:
-        slice_img = load_center_slice_func([path])
-        if slice_img is None:
+        slice_imgs = load_slices_func([path], num_slices)
+        if not slice_imgs:
             continue
         try:
-            img = slice_img.convert('L')
-            tensor = transforms(img)
+            # Transform each slice separately, then stack as channels
+            channels = [transforms(img.convert('L')) for img in slice_imgs]
+            tensor = torch.cat(channels, dim=0)
             processed_images.append(tensor)
         except Exception as e:
             logger.debug(f"Error processing {path}: {e}")
@@ -119,7 +181,7 @@ def _process_single_image(args):
     Worker function for parallel image preprocessing.
 
     Args:
-        args: Tuple of (idx, path, label, image_size)
+        args: Tuple of (idx, path, label, image_size, num_slices)
 
     Returns:
         Tuple of (idx, numpy_array, label) or (idx, None, None) if failed.
@@ -127,31 +189,24 @@ def _process_single_image(args):
         file descriptors through the multiprocessing pipe, which causes
         "received 0 items of ancdata" errors on Linux.
     """
-    idx, path, label, image_size = args
+    idx, path, label, image_size, num_slices = args
 
     try:
         # Import here to avoid pickling issues
         from . import processing as processing_module
-        from PIL import Image as PILImage
-        import numpy as np
 
-        # Load and process image
-        slice_img = processing_module.load_center_slice([path])
-        if slice_img is None:
+        slice_imgs = processing_module.load_series_slices([path], num_slices)
+        if not slice_imgs:
             return (idx, None, None)
 
-        img = slice_img.convert('L').resize((image_size, image_size), PILImage.BILINEAR)
-        arr = np.array(img, dtype=np.float32) / 255.0  # [0, 1]
-        arr = (arr - 0.5) / 0.5  # normalize to [-1, 1], matching ToTensor + Normalize(0.5, 0.5)
-        arr = arr[np.newaxis, :, :]  # add channel dim -> (1, H, W)
-
+        arr = _slices_to_array(slice_imgs, image_size)
         return (idx, arr, label)
     except Exception as e:
         logger.debug(f"Error processing {path}: {e}")
         return (idx, None, None)
 
 
-def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output_dir, progress_callback=None, num_workers=None):
+def prepare_and_cache_cnn_data(filepaths, labels, load_slices_func, output_dir, progress_callback=None, num_workers=None, num_slices=None):
     """
     Preprocess training data by applying standard transforms and save to cache for fast I/O.
     Uses parallel processing for faster preprocessing.
@@ -160,22 +215,28 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output
     Args:
         filepaths: List of file paths to process
         labels: List of labels corresponding to filepaths
-        load_center_slice_func: Function to load center slice from DICOM
+        load_slices_func: Function(paths, num_slices) loading slices from a DICOM series
         output_dir: Directory to save cache file
         progress_callback: Optional callback function(current, total, message) for progress updates
         num_workers: Number of parallel workers (default: cpu_count - 1)
+        num_slices: Slices per series fed as CNN channels (default: CNN_NUM_SLICES)
     """
     transforms = _get_transforms()
     if transforms is None:
         logger.warning("PyTorch torchvision.transforms unavailable")
         return None
 
+    if num_slices is None:
+        num_slices = get_configured_num_slices()
+
     # Generate cache filename based on data hash and save to model_files subdirectory
     model_files_dir = os.path.join(output_dir, "model_files")
     os.makedirs(model_files_dir, exist_ok=True)
 
     data_hash = hashlib.md5(str(sorted(filepaths)).encode()).hexdigest()[:16]
-    cache_path = os.path.join(model_files_dir, f"cnn_preprocessed_data_{data_hash}.pkl")
+    # Keep the legacy cache filename for 2D mode so existing caches remain valid
+    slice_suffix = "" if num_slices == 1 else f"_{num_slices}slice"
+    cache_path = os.path.join(model_files_dir, f"cnn_preprocessed_data_{data_hash}{slice_suffix}.pkl")
 
     # Check if cache exists
     if os.path.exists(cache_path):
@@ -218,7 +279,7 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output
 
     # Prepare arguments for parallel processing — include IMAGE_SIZE so the
     # worker never needs to import torchvision transforms (avoids pickling issues).
-    args_list = [(idx, path, label, IMAGE_SIZE) for idx, (path, label) in enumerate(zip(filepaths, labels))]
+    args_list = [(idx, path, label, IMAGE_SIZE, num_slices) for idx, (path, label) in enumerate(zip(filepaths, labels))]
 
     # Process images in parallel with progress tracking.
     # Workers return plain numpy arrays (no PyTorch tensors / shared-memory fds),
@@ -245,15 +306,11 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_center_slice_func, output
         logger.info("Falling back to sequential processing...")
         processed_results = []
         for idx, path in enumerate(filepaths):
-            slice_img = load_center_slice_func([path])
-            if slice_img is None:
+            slice_imgs = load_slices_func([path], num_slices)
+            if not slice_imgs:
                 continue
             try:
-                from PIL import Image as _PILImage
-                img = slice_img.convert('L').resize((IMAGE_SIZE, IMAGE_SIZE), _PILImage.BILINEAR)
-                arr = np.array(img, dtype=np.float32) / 255.0
-                arr = (arr - 0.5) / 0.5
-                arr = arr[np.newaxis, :, :]
+                arr = _slices_to_array(slice_imgs, IMAGE_SIZE)
                 processed_results.append((idx, arr, labels[idx]))
             except Exception as ex:
                 logger.debug(f"Error processing {path}: {ex}")
@@ -382,15 +439,27 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
+    # Channel count comes from the training data itself: (B, num_slices, H, W)
+    num_slices = int(X_data.shape[1]) if hasattr(X_data, 'shape') and len(X_data.shape) == 4 else 1
     model_cls = SimpleCNNClass or SimpleCNN
-    model = model_cls(num_classes=num_classes).to(device)
+    try:
+        model = model_cls(num_classes=num_classes, num_slices=num_slices).to(device)
+    except TypeError:
+        # Custom CNN classes may not accept num_slices
+        model = model_cls(num_classes=num_classes).to(device)
 
     model_files_dir = os.path.join(output_dir, "model_files")
     os.makedirs(model_files_dir, exist_ok=True)
     model_path = os.path.join(model_files_dir, "cnn_classifier_model.pth")
 
     if os.path.isfile(model_path):
-        model.load_state_dict(torch.load(model_path))
+        # Resume from an existing checkpoint only if it is shape-compatible
+        # (e.g. it was trained with the same CNN_NUM_SLICES and classes)
+        try:
+            model.load_state_dict(torch.load(model_path, map_location=device))
+            logger.info("Resuming training from existing model checkpoint")
+        except Exception as e:
+            logger.warning(f"Existing checkpoint is incompatible (training from scratch): {e}")
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     best_accuracy = 0.0
@@ -550,7 +619,7 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
         cache_path = prepare_and_cache_cnn_data(
             dicom_paths.tolist(),
             master_df['Classification'].tolist(),
-            load_center_slice_func=processing_module.load_center_slice,
+            load_slices_func=processing_module.load_series_slices,
             output_dir=output_dir,
             progress_callback=preprocessing_progress,
             num_workers=_npw,

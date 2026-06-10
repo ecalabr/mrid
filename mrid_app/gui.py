@@ -8,7 +8,7 @@ from tkinter import ttk, filedialog, messagebox
 from . import config
 from .config import NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LABELS, NUM_PARALLEL_WORKERS, THUMBNAIL_SCALE_FACTOR
 from .header import TrainHeaderClassifierLogic
-from .cnn import SimpleCNN
+from .cnn import load_cnn_model
 from .utils import (extract_study_id_from_path, get_study_csv_name, get_study_dir_name,
                      get_nifti_name, get_nifti_prefix, sanitize_target_series,
                      get_classified_outputs_dir)
@@ -746,9 +746,8 @@ class MainApp:
 
             self.cnn_target_encoder = joblib.load(target_encoder_path)
             num_classes = len(self.cnn_target_encoder.classes_)
-            self.cnn_model = SimpleCNN(num_classes=num_classes)
 
-            # Load saved state dict with map_location to handle CPU-only environments
+            # Load with map_location to handle CPU-only environments
             try:
                 cuda_avail = torch.cuda.is_available()
             except Exception:
@@ -756,14 +755,7 @@ class MainApp:
 
             map_loc = torch.device('cuda') if cuda_avail else torch.device('cpu')
             logger.info(f"Loading CNN model on device: {map_loc}")
-            state_dict = torch.load(model_path, map_location=map_loc)
-            self.cnn_model.load_state_dict(state_dict)
-            # Move model to the appropriate device
-            try:
-                self.cnn_model.to(map_loc)
-            except Exception:
-                pass
-            self.cnn_model.eval()
+            self.cnn_model = load_cnn_model(model_path, num_classes, map_location=map_loc)
             logger.info("Image-Based Model (CNN) loaded successfully")
         except Exception as e:
             logger.error(f"Failed to load CNN model: {e}")

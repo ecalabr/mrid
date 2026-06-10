@@ -42,6 +42,12 @@ IMAGE_SIZE = 128
 NUM_EPOCHS = 100
 BATCH_SIZE = 8
 LR = 0.001
+# Number of evenly spaced slices fed to the CNN as input channels.
+# 1 = classic 2D mode (center slice only). N > 1 = 2.5D mode: for a series of
+# length L, slices at indices L*1//(N+1), L*2//(N+1), ..., L*N//(N+1) are used
+# (e.g. N=3 on a 100-slice series -> slices 25, 50, 75).
+# NOTE: a model must be used with the same CNN_NUM_SLICES it was trained with.
+CNN_NUM_SLICES = 1
 
 # Random Forest hyperparameters
 N_ESTIMATORS = 400
