@@ -10,6 +10,7 @@ from . import config
 from . import ui_theme
 from .ui_theme import (scale_value, scale_thumbnail, cascade, place_main_window,
                        ThemedProgressBar, TitledFrame)
+from .series_scroller import attach_series_scrolling
 from .config import NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LABELS, NUM_PARALLEL_WORKERS, THUMBNAIL_SCALE_FACTOR
 from .header import TrainHeaderClassifierLogic
 from .cnn import load_cnn_model
@@ -2480,6 +2481,17 @@ class MainApp:
         row_frames = []
         thumb_refs = []   # keep ImageTk references alive
 
+        # Thumbnail filename -> DICOM path map so example thumbnails support
+        # mouse-wheel series scrolling
+        thumb_to_dicom = {}
+        try:
+            from .analyze import _build_thumbnail_to_dicom_map
+            hierarchy = getattr(self, '_last_hierarchy', None)
+            if hierarchy:
+                thumb_to_dicom = _build_thumbnail_to_dicom_map(hierarchy)
+        except Exception:
+            pass
+
         for c in range(k):
             row_frame = TitledFrame(scroll_frame, title="Name your series")
             row_frame.pack(fill="x", padx=PAD, pady=PAD)
@@ -2504,6 +2516,10 @@ class MainApp:
                     tk_img = ImageTk.PhotoImage(pil_img, master=lbl)
                     lbl.config(image=tk_img)
                     cluster_refs.append(tk_img)
+                    # Mouse-wheel over the example scrolls through its series
+                    dicom_path = thumb_to_dicom.get(os.path.basename(img_path))
+                    if dicom_path and os.path.exists(dicom_path):
+                        attach_series_scrolling(lbl, dicom_path, THUMB_PX)
                 except Exception:
                     cluster_refs.append(None)
             # Pad remaining slots if fewer than 4
@@ -3584,6 +3600,8 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         panel.image = tk_loading
         panel.grid(row=0, column=0, pady=(0, scale_value(5)))
         panel_widgets[series_path] = panel
+        # Mouse-wheel over the thumbnail scrolls through the full series
+        attach_series_scrolling(panel, series_path, thumb_px)
 
         # Series description label
         tk.Label(series_frame, text=series_desc, wraplength=scale_thumbnail(250), justify="center",
@@ -4124,6 +4142,8 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
 
         dropdown_vars[first_path] = variable
         panel_widgets[first_path] = (panel, dicom_paths, thumbnail_path)  # Store for parallel loading
+        # Mouse-wheel over the thumbnail scrolls through the full series
+        attach_series_scrolling(panel, first_path, thumb_px)
 
         # Enforce uniqueness for initial assignments based on ALLOW_DUPLICATE_LABELS config
         # If enabled and this dropdown's initial value duplicates an existing assignment, reset it to 'Other'
