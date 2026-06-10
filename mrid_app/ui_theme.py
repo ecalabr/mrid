@@ -123,8 +123,14 @@ def cascade(window, parent=None, step=CASCADE_STEP):
 
 
 def place_main_window(window):
-    """Deterministic position for the main application window."""
+    """Size the main window to its content and place it deterministically.
+
+    Call after the window's widgets have been built: CTk applies a fixed
+    600x500 default geometry at creation, which would otherwise clip wide
+    content and leave empty space below short content."""
     try:
+        window.update_idletasks()
+        window.wm_geometry("")  # drop the fixed default size; fit to content
         window.update_idletasks()
         x = int(window.winfo_screenwidth() * 0.05)
         y = int(window.winfo_screenheight() * 0.07)

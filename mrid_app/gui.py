@@ -318,7 +318,6 @@ class MainApp:
     def __init__(self, master):
         self.master = master
         master.title("MRID — DICOM Classification Tool")
-        place_main_window(master)
         _default_input, _default_output = _load_last_dirs()
         self.input_dir = tk.StringVar(value=_default_input)
         self.output_dir = tk.StringVar(value=_default_output)
@@ -429,6 +428,9 @@ class MainApp:
         self.load_button.pack(side="right", padx=scale_value(5))
         self._load_button_tooltip = _ToolTip(self.load_button, "")
         self._check_model_status()
+        # Size the window to fit the UI and place it (CTk's fixed default
+        # geometry would otherwise clip the control row)
+        place_main_window(master)
 
     def browse_dir(self, var, title):
         directory = filedialog.askdirectory(title=title, initialdir=var.get())
