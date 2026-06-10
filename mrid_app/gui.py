@@ -140,7 +140,6 @@ class TrainClassifierGUI:
         self._cancelled = False
         self.root = ctk.CTkToplevel(master)
         self.root.title("Model Training In Progress...")
-        self.root.geometry("460x170")
         cascade(self.root, master)
         self.root.protocol("WM_DELETE_WINDOW", self.do_nothing)
         self.root.grab_set()
@@ -158,6 +157,11 @@ class TrainClassifierGUI:
             width=100,
         )
         self.cancel_button.pack(pady=scale_value(8))
+        # Pin the size to the built content so status-text updates don't
+        # resize the window (real pixels, so bypass CTk geometry scaling)
+        self.root.update_idletasks()
+        width = max(self.root.winfo_reqwidth(), scale_value(460))
+        self.root.wm_geometry(f"{width}x{self.root.winfo_reqheight()}")
         self.root.update()
 
     def _on_cancel(self):
@@ -240,7 +244,7 @@ class ProgressGUI:
             self.root.title(title)
         except Exception:
             pass
-        self.root.geometry("500x320")
+        # No fixed size: the window grows as the organize/thumbnail bars appear
         cascade(self.root, tk._default_root)
         self.root.protocol("WM_DELETE_WINDOW", self.do_nothing)
 
@@ -249,7 +253,7 @@ class ProgressGUI:
         self.label.pack(pady=scale_value(5))
         self.progress = ThemedProgressBar(self.root, length=400, mode="determinate",
                                           maximum=total_files)
-        self.progress.pack(pady=scale_value(3))
+        self.progress.pack(pady=scale_value(3), padx=scale_value(30))
         self.count_label = ctk.CTkLabel(self.root, text="0 / 0")
         self.count_label.pack(pady=scale_value(3))
 
@@ -280,7 +284,7 @@ class ProgressGUI:
         self.organize_label.configure(text=label_text)
         self.organize_label.pack(pady=scale_value(5))
         self.organize_progress["maximum"] = total
-        self.organize_progress.pack(pady=scale_value(3))
+        self.organize_progress.pack(pady=scale_value(3), padx=scale_value(30))
         self.organize_count_label.pack(pady=scale_value(3))
         self.root.update_idletasks()
 
@@ -296,7 +300,7 @@ class ProgressGUI:
         self.thumbnail_label.configure(text=label_text)
         self.thumbnail_label.pack(pady=scale_value(5))
         self.thumbnail_progress["maximum"] = total
-        self.thumbnail_progress.pack(pady=scale_value(3))
+        self.thumbnail_progress.pack(pady=scale_value(3), padx=scale_value(30))
         self.thumbnail_count_label.pack(pady=scale_value(3))
         self.root.update_idletasks()
 
