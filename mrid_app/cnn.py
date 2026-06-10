@@ -238,7 +238,6 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_slices_func, output_dir, 
     slice_suffix = "" if num_slices == 1 else f"_{num_slices}slice"
     cache_path = os.path.join(model_files_dir, f"cnn_preprocessed_data_{data_hash}{slice_suffix}.pkl")
 
-    # Check if cache exists
     if os.path.exists(cache_path):
         logger.info(f"Loading preprocessed data from cache: {cache_path}")
         if progress_callback:
@@ -292,7 +291,6 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_slices_func, output_dir, 
             for result in pool.imap_unordered(_process_single_image, args_list, chunksize=chunksize):
                 completed += 1
 
-                # Only keep successful results
                 if result[1] is not None:
                     processed_results.append(result)
 
@@ -495,7 +493,6 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
         epoch_accuracy = 100 * correct / total if total > 0 else 0
         avg_loss = running_loss / max(len(train_loader), 1)
 
-        # Progress callback
         if progress_callback:
             message = f"Epoch {epoch + 1}/{NUM_EPOCHS} - Loss: {avg_loss:.4f}, Val Acc: {epoch_accuracy:.2f}%"
             progress_callback(epoch + 1, NUM_EPOCHS, avg_loss, epoch_accuracy, message)
@@ -577,7 +574,6 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
 
             master_df = pd.concat(all_data, ignore_index=True)
 
-            # Create model_files directory
             model_files_dir = os.path.join(output_dir, "model_files")
             os.makedirs(model_files_dir, exist_ok=True)
 
@@ -625,7 +621,6 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
             num_workers=_npw,
         )
 
-        # Switch back to indeterminate mode
         gui.set_indeterminate_mode()
 
         if gui.is_cancelled():
@@ -711,7 +706,6 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
             gui.close()
             return
 
-        # Switch back to indeterminate mode
         gui.set_indeterminate_mode()
 
         # If cancelled, close immediately without saving summary

@@ -36,7 +36,8 @@ import yaml
 
 import joblib
 
-# Import and setup logging before other mrid_app imports
+# Import logging utilities before other mrid_app modules so logging is
+# available to everything imported later.
 from mrid_app.logging_config import setup_logging, get_logger
 
 
@@ -191,7 +192,7 @@ def scan_dicom_directory(input_dir, output_dir, num_workers=None):
 
     logger = get_logger()
 
-    # Collect all candidate files
+    # Collect candidate files by extension; validity is checked afterwards
     logger.info(f"Scanning directory: {input_dir}")
     all_files = []
     for dcm_root, _, files in os.walk(input_dir):
@@ -241,7 +242,6 @@ def scan_dicom_directory(input_dir, output_dir, num_workers=None):
 
     print()  # Newline after progress
 
-    # Filter valid records
     dicom_records = [r for r in results if r is not None]
     logger.info(f"Identified {len(dicom_records)} valid DICOM files.")
 
@@ -249,12 +249,10 @@ def scan_dicom_directory(input_dir, output_dir, num_workers=None):
         logger.warning("No valid DICOM files found!")
         return {}
 
-    # Count unique groups
     groups = set((r['patient'], r['study_uid'], r['series_uid']) for r in dicom_records)
     total_groups = len(groups)
     logger.info(f"Found {total_groups} unique series across all studies.")
 
-    # Build hierarchy
     logger.info("Building hierarchy and generating thumbnails...")
     processed_groups = [0]
 
@@ -280,7 +278,6 @@ def scan_dicom_directory(input_dir, output_dir, num_workers=None):
 
     print()  # Newline after progress
 
-    # Save hierarchy to YAML
     try:
         write_yaml_hierarchy(hierarchy, output_dir)
     except Exception as e:
@@ -353,7 +350,6 @@ def load_models(output_dir, model_type):
 
             logger.info("Loading Image-Based Model (CNN)...")
 
-            # Check for GPU
             try:
                 cuda_avail = torch.cuda.is_available()
             except Exception:
@@ -391,7 +387,6 @@ def classify_all_studies(hierarchy, output_dir, model_type,
 
     logger = get_logger()
 
-    # Collect all studies
     all_studies = []
     for mrn, studies in hierarchy.items():
         for study_uid, study_data in studies.items():
@@ -422,7 +417,6 @@ def classify_all_studies(hierarchy, output_dir, model_type,
 
         logger.info(f"  [{i + 1}/{total_studies}] Classifying: {study_dir_name}")
 
-        # Run full-auto classification
         processing.full_auto_classify_study(
             series_dict, mrn, study_uid, output_dir,
             model_type, rf_model, rf_target_encoder, rf_feature_encoder,
@@ -443,29 +437,25 @@ def main():
     """Main entry point for headless classification."""
     args = parse_args()
 
-    # Validate input directory
     if not os.path.isdir(args.input):
         print(f"Error: Input directory does not exist: {args.input}")
         sys.exit(1)
 
-    # Create output directory if needed
     os.makedirs(args.output, exist_ok=True)
 
-    # Load custom config if provided (before logging setup so config values are available)
+    # Set up logging (file handler in output directory), then load the custom
+    # config if one was provided so config-loading messages are logged.
     if args.config:
-        # Do a preliminary setup of logging for config loading messages
         setup_logging(args.output)
         logger = get_logger()
-        
+
         if not load_custom_config(args.config):
             logger.error("Failed to load custom config. Exiting.")
             sys.exit(1)
     else:
-        # Setup logging with file handler in output directory
         setup_logging(args.output)
         logger = get_logger()
 
-    # Convert model type argument
     model_type = model_type_str(args.model_type)
 
     logger.info("=" * 60)
@@ -477,7 +467,6 @@ def main():
     logger.info(f"Convert:    {'Yes' if not args.no_convert else 'No'}")
     logger.info("=" * 60)
 
-    # Load or build hierarchy
     if args.hierarchy and os.path.exists(args.hierarchy):
         hierarchy = load_hierarchy_from_yaml(args.hierarchy)
     else:
@@ -487,17 +476,14 @@ def main():
         logger.warning("No studies found to classify.")
         sys.exit(0)
 
-    # Count studies
     study_count = sum(len(studies) for studies in hierarchy.values())
     patient_count = len(hierarchy)
     logger.info(f"Found {study_count} studies from {patient_count} patients.")
 
-    # Load models
     rf_model, rf_target_encoder, rf_feature_encoder, rf_field_types, cnn_model, cnn_target_encoder = load_models(
         args.output, model_type
     )
 
-    # Classify all studies
     classify_all_studies(
         hierarchy, args.output, model_type,
         rf_model, rf_target_encoder, rf_feature_encoder, rf_field_types,

@@ -62,11 +62,12 @@ def check_dicom_batch(filepaths, include_types=None, exclude_types=None):
 
         for fp in filepaths:
             try:
-                # cheap preamble check
+                # Touch the 4 bytes after the 128-byte preamble (where the
+                # DICM marker lives); the value is not checked and any read
+                # error is ignored.
                 try:
                     with open(fp, 'rb') as fh:
                         fh.seek(128)
-                        # Check for DICM preamble (validation only)
                         fh.read(4)
                 except Exception:
                     pass
@@ -159,8 +160,7 @@ def is_folder_organized(dicom_records):
             dir_path = os.path.dirname(file_path)
             series_dirs[series_uid].add(dir_path)
 
-    # If any series has files in multiple directories, folder is organized
-    # If multiple series share the same directory, folder is unorganized
+    # Invert the mapping: directory -> set of series whose files live in it
     dir_to_series = defaultdict(set)
     for series_uid, dirs in series_dirs.items():
         for d in dirs:
@@ -296,13 +296,10 @@ def extract_and_save_center_slice(file_records, thumbnail_dir, mrn, study_uid, s
         arr /= max(arr.max(), 1e-6)
         arr = (arr * 255).astype(np.uint8)
 
-        # Convert to PIL Image
         pil_img = Image.fromarray(arr)
 
-        # Resize to standard thumbnail size (256x256)
         pil_img = pil_img.resize((256, 256))
 
-        # Determine file extension based on format
         file_extension = '.jpg' if THUMBNAIL_FORMAT.upper() == 'JPEG' else '.png'
 
         # Create thumbnail filename
@@ -313,7 +310,6 @@ def extract_and_save_center_slice(file_records, thumbnail_dir, mrn, study_uid, s
 
         thumbnail_path = os.path.join(thumbnail_dir, thumbnail_filename)
 
-        # Save with appropriate format and quality
         if THUMBNAIL_FORMAT.upper() == 'JPEG':
             pil_img.save(thumbnail_path, 'JPEG', quality=THUMBNAIL_QUALITY)
         else:
@@ -349,7 +345,6 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
             shutil.rmtree(thumbnail_base)
         os.makedirs(thumbnail_base, exist_ok=True)
 
-    # Check if folder is organized
     folder_organized = is_folder_organized(dicom_records)
     if not folder_organized and temp_base:
         logger.info("Detected unorganized DICOM folder. Organizing files with symlinks in dicom_symlinks directory...")
@@ -406,8 +401,9 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
         unique_positions_set = {tuple(f['image_position']) for f in files if f['image_position']}
 
         if SEPARATE_STACKED_SERIES and len(unique_positions_set) != len(files):
-            # FAST SPLITTING: Use a occurrence counter to assign bucket IDs
-            # This handles multi-echo/dynamic data in O(N)
+            # Split by duplicate spatial position: an occurrence counter assigns
+            # each repeat of a position to the next volume bucket, handling
+            # multi-echo/dynamic data in O(N)
             pos_counts = {}
             subseries_buckets = []  # List of lists
 
@@ -582,16 +578,13 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
             except Exception as e:
                 return (task['entry_dict'], None)
 
-        # Generate thumbnails in parallel
         completed_thumbnails = 0
         with ThreadPoolExecutor(max_workers=NUM_PARALLEL_WORKERS) as executor:
-            # Submit all tasks
             future_to_task = {
                 executor.submit(generate_thumbnail_task, task): task
                 for task in thumbnail_tasks
             }
 
-            # Process results as they complete
             for future in as_completed(future_to_task):
                 try:
                     entry_dict, thumbnail_path = future.result()

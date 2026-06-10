@@ -86,9 +86,12 @@ def convert_series_to_nifti(series_dir, output_path, label):
 
 
 def background_conversion_worker(*args, convert=True, **kwargs):
-    """Backward-compatible wrapper. Supports both old signature
-    background_conversion_worker(mrn, study_uid, output_root, dropdown_vars, series_dict)
-    and new signature with accn parameter.
+    """Write the classification CSV for a study and, when convert is True,
+    convert each labeled (non-'Other') series to NIfTI.
+
+    Accepts positional args (mrn, study_uid, output_root, dropdown_vars,
+    series_dict[, accn][, convert]); the sixth positional may be either the
+    accn string or the convert bool, and the seventh (if present) is convert.
     """
     # Unpack positional args
     mrn = None
@@ -286,8 +289,12 @@ def load_center_slice(dicom_paths):
 
 def load_center_slice_fast(dicom_path):
     """
-    Fast version of load_center_slice that uses cached series information.
-    This version reads only the necessary files for better performance.
+    Load the center slice of the series containing dicom_path as a PIL Image.
+
+    Scans the file's directory reading headers only, collects files sharing
+    the same SeriesInstanceUID, sorts them by InstanceNumber (no spatial
+    sort), and decodes pixel data only for the center slice. Falls back to
+    loading dicom_path itself if the series cannot be determined.
 
     Args:
         dicom_path: Path to a DICOM file from the series

@@ -1,6 +1,6 @@
-# MRID - Medical Imaging DICOM Classification Tool
+# MRID — Medical Imaging DICOM Classification Tool
 
-A comprehensive GUI application for automated classification and organization of MRI DICOM series using machine learning models.
+A GUI application for automated classification and organization of MRI DICOM series using machine learning models.
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -10,24 +10,27 @@ A comprehensive GUI application for automated classification and organization of
 - [Overview](#overview)
 - [Features](#features)
 - [Installation](#installation)
-  - [Prerequisites](#prerequisites)
-  - [Conda Environment Setup](#conda-environment-setup)
-  - [External Dependencies](#external-dependencies)
+  - [Linux](#linux)
+  - [macOS](#macos)
+  - [Windows](#windows)
+  - [PyTorch GPU Setup](#pytorch-gpu-setup)
+  - [dcm2niix](#dcm2niix)
+  - [Verify Installation](#verify-installation)
 - [Quick Start](#quick-start)
 - [Usage](#usage)
   - [Classification Modes](#classification-modes)
-    - [Analyze Mode](#analyze-mode)
-    - [Manual Mode](#manual-mode)
-    - [Semi-Auto Mode](#semi-auto-mode)
-    - [Full-Auto Mode](#full-auto-mode)
-    - [Verify Mode](#verify-mode)
   - [Model Types](#model-types)
   - [Training Models](#training-models)
-- [Basic Configuration](#basic-configuration)
-- [Detailed Configuration Options](#detailed-configuration-options)
+  - [Series Thumbnail Scrolling](#series-thumbnail-scrolling)
+  - [Headless Batch Classification](#headless-batch-classification)
+- [Configuration](#configuration)
+  - [Config Wizard](#config-wizard)
+  - [Configuration Menu](#configuration-menu)
+  - [Configuration Reference](#configuration-reference)
 - [Project Structure](#project-structure)
 - [Advanced Features](#advanced-features)
 - [Troubleshooting](#troubleshooting)
+- [Testing](#testing)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -35,186 +38,177 @@ A comprehensive GUI application for automated classification and organization of
 
 ## Overview
 
-MRID is a powerful tool designed to automate the classification and organization of brain MRI DICOM series. It uses machine learning models (Random Forest for DICOM headers and CNN for image data) to identify and label common MRI sequences such as T1, T2, FLAIR, and T1 post-contrast.
+MRID automates the classification and organization of brain MRI DICOM series. It uses machine learning models (a Random Forest on DICOM headers and a CNN on image data) to identify and label common MRI sequences such as T1, T2, FLAIR, and T1 post-contrast.
 
-**Key Capabilities:**
-- Automated DICOM series classification
-- Intelligent 3D acquisition preference
-- DICOM header and image-based classification models
-- Interactive GUI for manual and semi-automated classification
-- Automatic NIfTI conversion
-- Configurable target series and preferences
+**Key capabilities:**
+- Automated DICOM series classification with five workflow modes
+- Zero-label model bootstrapping via unsupervised series discovery (Analyze mode)
+- DICOM header and image-based classification models, individually or combined
+- Interactive dark-mode GUI for manual and semi-automated classification
+- Automatic NIfTI conversion via dcm2niix
+- Per-project configuration with a guided setup wizard
 
 ---
 
 ## Features
 
 ### Core Functionality
-- ✅ **Multi-Modal Classification**: DICOM header model, image-based CNN, or combined
-- ✅ **Five Classification Modes**: Analyze, Manual, Semi-Auto, Full-Auto, Verify
-- ✅ **Analyze Mode**: Fully automated series discovery using deep learning — no pre-defined labels required; can also pre-train DICOM header and CNN models from the discovered clusters with **zero manual labeling**
-- ✅ **Smart Series Selection**: Automatic selection with configurable confidence thresholds
-- ✅ **3D Preference**: Prioritize 3D acquisitions over 2D when configured
-- ✅ **NIfTI Conversion**: Integrated dcm2niix conversion with automatic organization
-- ✅ **Hierarchical Organization**: Study/Series hierarchy with metadata extraction
-- ✅ **Compressed DICOM Support**: Handles JPEG, JPEG2000, RLE compressed files via python-gdcm
-- ✅ **Automatic Folder Organization**: Detects and organizes unstructured DICOM folders using symlinks
-- ✅ **Organized Output Structure**: Classified series outputs (study folders, CSVs, NIfTIs) are stored in a dedicated `classified_outputs/` subfolder inside the output directory, keeping scan metadata files separate
+- **Multi-modal classification**: DICOM header model, image-based CNN, or combined
+- **Five classification modes**: Analyze, Manual, Semi-Auto, Full-Auto, Verify
+- **Analyze mode**: Fully automated series discovery — can pre-train both models from discovered clusters with zero manual labeling
+- **Smart series selection**: Automatic selection with configurable confidence thresholds and optional 3D-acquisition preference
+- **NIfTI conversion**: Integrated dcm2niix conversion with automatic file organization
+- **Compressed DICOM support**: JPEG, JPEG2000, JPEG-LS, and RLE transfer syntaxes via python-gdcm
+- **Automatic folder organization**: Unstructured DICOM folders are organized with symlinks (no file duplication)
 
 ### Machine Learning
-- ✅ **Random Forest Header Model**: configurable classifier using DICOM metadata
-  - ✅ **Automatic DICOM Tag Encoding**: Intelligent DICOM header tag encoding for optimal classification
-  - ✅ **Semantic Text Encoding**: Sentence transformers for series descriptions
-- ✅ **CNN Image Model**: Custom architecture for center slice-based classification
-  - ✅ **Data Augmentation**: On-the-fly augmentation during CNN training
-  - ✅ **Parallel Processing**: Multi-core preprocessing for faster training
+- **Random Forest header model** with automatic DICOM field type detection and semantic text encoding (sentence transformers) for series descriptions
+- **CNN image model** with on-the-fly augmentation, parallel preprocessing, and preprocessing cache
+- **2D or 2.5D CNN input**: classify from the center slice alone or from several evenly spaced slices (`CNN_NUM_SLICES`)
 
 ### User Interface
-- ✅ **Modern GUI**: Tkinter-based with progress tracking
-- ✅ **Series Visualization**: Thumbnail previews of center slices
-- ✅ **Color-Coded Menus**: Visual differentiation of series types
-- ✅ **Batch Operations**: Process multiple studies efficiently
-- ✅ **Utility Menu**: NIfTI conversion and data management tools
+- **Modern dark-mode GUI** (CustomTkinter) with a uniform appearance on Windows, macOS, and Linux
+- **Screen-proportional scaling**: the UI occupies the same fraction of the screen on any monitor size or resolution
+- **Consistent window placement**: child windows open in the same cascaded layout every time
+- **Scrollable series thumbnails**: mouse-wheel over any thumbnail to page through the full image series
+- **Config wizard**: guided, multi-page setup of project configuration files
 
 ---
 
 ## Installation
 
-### Prerequisites
+MRID runs on Linux, macOS, and Windows. All platforms follow the same outline:
 
-**System Requirements:**
-- Linux (tested on Ubuntu 20.04+)
-- Python 3.8 or higher
-- 8GB+ RAM (16GB+ recommended for CNN training)
-- CUDA-capable GPU (optional, for faster CNN training)
+1. Install [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or [Anaconda](https://www.anaconda.com/products/distribution)
+2. Create the environment and install PyTorch (see [PyTorch GPU Setup](#pytorch-gpu-setup))
+3. Install the remaining dependencies with pip
+4. Install [dcm2niix](#dcm2niix) (optional — only needed for NIfTI conversion)
 
-**Required Software:**
-- [Anaconda](https://www.anaconda.com/products/distribution) or [Miniconda](https://docs.conda.io/en/latest/miniconda.html)
-- [dcm2niix](https://github.com/rordenlab/dcm2niix) (for NIfTI conversion)
+**System requirements:** Python 3.8+, 8 GB+ RAM (16 GB+ recommended for CNN training). A GPU is optional but speeds up CNN training and Analyze mode considerably.
 
-### Conda Environment Setup
-
-#### 1. Create Conda Environment
+### Linux
 
 ```bash
-# Clone the repository
 git clone https://github.com/ecalabr/mrid.git
 cd mrid
 
-# Create conda environment from requirements
 conda create -n mrid python=3.12 -y
 conda activate mrid
-```
-#### 2. Install pytorch (GPU version recommended)
-https://pytorch.org/get-started/locally/
 
-#### 3. Install other dependencies
-```bash
+# Install PyTorch first — pick the right command for your GPU
+# (see "PyTorch GPU Setup" below). CPU-only example:
+pip install torch torchvision
+
 pip install -r requirements.txt
 ```
 
-#### 2. Requirements File
+### macOS
 
-The `requirements.txt` includes:
-```
-pandas>=1.3.0
-numpy>=1.21.0
-scikit-learn>=1.0.0
-pydicom>=2.3.0
-python-gdcm  # For compressed DICOM support
-Pillow>=9.0.0
-pyyaml>=6.0
-joblib>=1.1.0
-sentence-transformers>=2.2.0
-umap-learn   # For Analyze mode dimensionality reduction
-hdbscan      # For Analyze mode clustering
-```
-
-**Note on Compressed DICOMs:** The application uses `python-gdcm` to handle compressed DICOM files (JPEG, JPEG2000, RLE, etc.). This library provides native support for reading compressed transfer syntaxes that pydicom alone cannot handle.
-
-**Note on Analyze Mode:** `umap-learn` and `hdbscan` are required for Analyze mode. They are not needed for Manual, Semi-Auto, Full-Auto, or Verify modes.
-
-### External Dependencies
-
-#### dcm2niix Installation
-
-**Ubuntu/Debian:**
 ```bash
-sudo apt-get update
-sudo apt-get install dcm2niix
+git clone https://github.com/ecalabr/mrid.git
+cd mrid
+
+conda create -n mrid python=3.12 -y
+conda activate mrid
+
+# The default PyTorch build includes Apple Silicon (MPS) GPU support
+pip install torch torchvision
+
+pip install -r requirements.txt
 ```
 
-**macOS (Homebrew):**
-```bash
-brew install dcm2niix
+### Windows
+
+Install [Git for Windows](https://git-scm.com/download/win) (or download the repository as a ZIP), then in an **Anaconda Prompt**:
+
+```bat
+git clone https://github.com/ecalabr/mrid.git
+cd mrid
+
+conda create -n mrid python=3.12 -y
+conda activate mrid
+
+REM Install PyTorch first — pick the right command for your GPU
+REM (see "PyTorch GPU Setup" below). CPU-only example:
+pip install torch torchvision
+
+pip install -r requirements.txt
 ```
 
-**From Source:**
+Notes for Windows:
+- If `python-gdcm` fails to build from pip, install it from conda-forge instead: `conda install -c conda-forge gdcm`
+- Automatic folder organization uses symlinks, which on Windows require either Developer Mode (Settings → Privacy & security → For developers) or running as administrator
+
+### PyTorch GPU Setup
+
+PyTorch is required for the CNN image model and Analyze mode. Install it **before** `pip install -r requirements.txt`, choosing the build that matches your GPU. The commands below are current as of this writing — always check the [official PyTorch install selector](https://pytorch.org/get-started/locally/) for the latest versions.
+
+| Hardware | Platforms | Install command |
+|----------|-----------|-----------------|
+| NVIDIA GPU (CUDA) | Linux, Windows | `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126` |
+| AMD GPU (ROCm) | Linux only | `pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2` |
+| Apple Silicon (MPS) | macOS | `pip install torch torchvision` (MPS support is built into the default build) |
+| CPU only | All | `pip install torch torchvision` |
+
+**Verify GPU support:**
 ```bash
-git clone https://github.com/rordenlab/dcm2niix.git
-cd dcm2niix
-mkdir build && cd build
-cmake ..
-make
-sudo make install
+# NVIDIA / AMD (both report through the CUDA API)
+python -c "import torch; print(torch.cuda.is_available())"
+
+# Apple Silicon
+python -c "import torch; print(torch.backends.mps.is_available())"
 ```
 
-**Verify Installation:**
-```bash
-dcm2niix -version
-```
+Notes:
+- NVIDIA: install a recent NVIDIA driver first; the pip wheels bundle the CUDA runtime, so a separate CUDA Toolkit install is not required.
+- AMD: ROCm wheels are Linux-only and report availability through `torch.cuda.is_available()`. Check the [ROCm compatibility list](https://rocm.docs.amd.com/) for supported GPUs.
+- Apple Silicon: MRID's CNN training currently selects CUDA or CPU; MPS acceleration is used by PyTorch where applicable, but training on Apple Silicon may run on CPU.
+
+### dcm2niix
+
+Required only for NIfTI conversion; classification works without it.
+
+**Ubuntu/Debian:** `sudo apt-get install dcm2niix`
+**macOS (Homebrew):** `brew install dcm2niix`
+**Windows / any platform (conda):** `conda install -c conda-forge dcm2niix`
+**Windows (manual):** download a [release](https://github.com/rordenlab/dcm2niix/releases) and add the folder containing `dcm2niix.exe` to your `PATH`
+
+Verify with `dcm2niix -version`.
 
 ### Verify Installation
 
 ```bash
-# Activate environment
 conda activate mrid
-
-# Run tests
 python tests.py
-
-# Expected output:
-# ✓ All tests passed!
-# Passed: 48, Failed: 0, Errors: 0
+# Expected: "✓ All tests passed!"
 ```
 
 ---
 
 ## Quick Start
 
-### 1. Launch the Application
+1. **Launch the application**
+   ```bash
+   conda activate mrid
+   python run.py
+   ```
 
-```bash
-conda activate mrid
-python run.py
-```
+2. **Select directories**
+   - **Input DIR**: directory containing the DICOM files to classify
+   - **Output DIR**: directory where results are saved (empty for a new project)
 
-### 2. Select Directories
+3. **Set up the project config** — when you start a workflow against an output directory with no `config.py`, MRID offers to run the [Config Wizard](#config-wizard), copy the default config, or continue with built-in defaults.
 
-- **Input DIR**: Directory containing DICOM files to classify
-- **Output DIR**: Directory where results will be saved (should be empty initially)
+4. **Choose a mode**
+   - **Analyze**: discover series types automatically (recommended for new datasets)
+   - **Manual**: review and classify each series yourself
+   - **Semi-Auto**: model pre-selects, you review (requires trained models)
+   - **Full-Auto**: model classifies and saves without review (requires trained models)
+   - **Verify**: review already-classified studies
 
-### 3. Choose Classification Mode
+5. **Start** — click **▶ Start Classification**, review (unless Full-Auto), and click **Approve (d)** to save each study.
 
-- **Analyze**: Automatically discover series types from your dataset
-  - This mode is optional. You can skip it if you already know your `TARGET_SERIES` and have them configured in `config.py`
-  - Use this mode at the very beginning if you need help determining your `TARGET_SERIES` list in `config.py`
-  - Optionally, use **"Train Model(s)"** after analysis to pre-train DICOM header and CNN models from the discovered clusters — no manual labeling required
-- **Manual**: Review and classify each series manually
-- **Semi-Auto**: Pre-select best series matches based on model predictions, review before saving (requires trained models)
-- **Full-Auto**: Automatically classify and save without review (requires trained models)
-- **Verify**: Review and validate already-classified studies, mark incorrect classifications for deletion
-
-### 4. Start Classification
-
-1. Click **"▶ Start Classification"**
-2. Review classifications and make necessary changes (if not Full-Auto)
-3. Click **"Approve"** to save results
-
-### 5. Optional: Convert to NIfTI
-
-- Enable **"Convert to NIfTI: Yes"** before starting
-- Or use **"Other Options → Convert NIfTIs"** after classification
+6. **Optional NIfTI conversion** — set **Convert to NIfTI: Yes** before starting, or run **File Options → Convert NIfTIs** afterwards.
 
 ---
 
@@ -223,497 +217,205 @@ python run.py
 ### Classification Modes
 
 #### Analyze Mode
-- **Use Case**: First-time dataset exploration, automatic `TARGET_SERIES` configuration, and — uniquely — **pre-training DICOM header and CNN models from scratch with zero manual labeling**. Use this mode when you have a new dataset and want to go from raw DICOMs to working classification models without labeling a single study by hand.
-- **Workflow**:
-  1. Select Input and Output directories and set Mode to **Analyze**
-  2. Click **"▶ Start Analysis"**
-  3. System scans DICOM files and generates series thumbnails (skipped if already done)
-  4. Image series are automatically clustered into similar groups. Use the `ANALYZE_COVERAGE_THRESHOLD` parameter in `config.py` to define the minimum fraction of exams that must contain an example for a given cluster to be considered valid
-  5. A results window opens showing the 4 most-representative thumbnails per cluster, with a suggested name pre-populated from the series descriptions of high-confidence cluster members
-  6. For each cluster, review or edit the series name and optionally tick **"Prefer 3D"** if you want the system to automatically prefer 3D volumetric images for this series type
-  7. Uncheck **"Include"** for any series cluster you do not want to include in your workflow
-  8. Click **"Apply"** — `TARGET_SERIES` and `PREFER_3D` are written to `config.py` in the output directory, and a `selfsupervised_classification_data.csv` file is written to `{output_dir}/model_files/` containing high-confidence cluster members for all approved clusters
-  9. **(Optional) Train models without any manual labeling**: Once analysis is complete, the **"Train Model(s)"** button becomes active. Click it, select the desired model type (Header / Image / Both), and training will proceed automatically using only the high-confidence series from `selfsupervised_classification_data.csv`. No additional labeled data is needed.
-  10. After training, switch to **Semi-Auto** or **Full-Auto** mode, load the newly trained models, and begin classifying your dataset
-- **Zero-Label Training Pipeline** (the full end-to-end flow):
-  ```
-  Analyze mode → cluster discovery → name clusters → Apply
-       ↓
-  selfsupervised_classification_data.csv written automatically
-       ↓
-  Train Model(s) (Header / CNN / Both) — uses CSV above, no manual labels
-       ↓
-  Load Model(s) → switch to Semi-Auto or Full-Auto → classify dataset
-  ```
-- **Technical Pipeline**:
-  - **Feature extraction**: Frozen ResNet50 (ImageNet weights, already cached), 2048-D global average-pool output, batched GPU inference (~2 ms/image on modern hardware)
-  - **L2 normalization**: Makes cosine distance equivalent to Euclidean distance on the unit hypersphere
-  - **PCA**: Reduces 2048-D features to the minimum number of components that retain ≥ 90 % of variance (typically 3–15 for MRI datasets), capped at 150
-  - **UMAP**: Non-linear manifold embedding preserving global topology (`n_neighbors=30`, `min_dist=0.1`, cosine metric); output dimension = min(PCA dims, 15)
-  - **HDBSCAN**: Density-based clustering with `min_cluster_size = ceil(ANALYZE_COVERAGE_THRESHOLD × n_exams)`; noise points are reassigned to the nearest cluster centroid
-  - **Cluster naming**: High-confidence members (HDBSCAN soft probability > 0.8) are identified; `SeriesDescription` is extracted from the corresponding DICOM files; a medoid using pairwise Levenshtein distance selects the most representative description as the suggested name
-  - **Best examples**: The 4 thumbnails per cluster closest to the centroid in PCA space are shown in the results window
-  - **Training data collection**: After the user approves clusters, high-confidence members from approved clusters are collected into `selfsupervised_classification_data.csv` (same format as standard `classification_data.csv`)
-- **Output**:
-  - `TARGET_SERIES` and `PREFER_3D` updated in `{output_dir}/config.py`
-  - `"Other"` is always appended as the final catch-all entry regardless of user selections
-  - `{output_dir}/model_files/selfsupervised_classification_data.csv` — high-confidence labeled training data, ready for immediate model training
-- **Notes**:
-  - Requires `torch`, `torchvision`, `umap-learn`, and `hdbscan` packages
-  - ResNet50 weights are loaded from the local PyTorch cache — no internet access required after first run
-  - Scanning and thumbnail generation are skipped automatically if already completed
-  - If no `config.py` is found in the output directory, you will be prompted to copy the default
-  - The **"Train Model(s)"** button is grayed out (with a tooltip *"Analyze first"*) until `selfsupervised_classification_data.csv` has been written; it activates automatically once analysis is complete
+
+**Use case:** first-time dataset exploration, automatic `TARGET_SERIES` configuration, and pre-training both models with **zero manual labeling**.
+
+**Workflow:**
+1. Select directories, set Mode to **Analyze**, click **▶ Start Analysis**
+2. MRID scans the DICOMs and generates series thumbnails (skipped if already done)
+3. Series are clustered into visually similar groups; `ANALYZE_COVERAGE_THRESHOLD` controls how common a series type must be to form a cluster
+4. A naming window shows the 4 most representative thumbnails per cluster with a suggested name. For each cluster: edit the name, optionally tick **Prefer 3D**, or untick **Include** to drop it
+5. Click **Apply** — `TARGET_SERIES`/`PREFER_3D` are written to the project `config.py`, and high-confidence cluster members are written to `model_files/selfsupervised_classification_data.csv`
+6. *(Optional)* Click **Train Model(s)** (it activates after analysis) to train the header and/or image model from that CSV — no manual labels needed
+7. Switch to **Semi-Auto** or **Full-Auto**, load the models, and classify the dataset
+
+**Technical pipeline:** frozen ResNet50 features (2048-D) → L2 normalization → PCA (≥90% variance, capped at 150 dims) → UMAP → HDBSCAN with `min_cluster_size = ceil(ANALYZE_COVERAGE_THRESHOLD × n_exams)`. Suggested names are the medoid `SeriesDescription` (Levenshtein distance) among high-confidence members.
+
+**Notes:**
+- Requires `torch`, `torchvision`, `umap-learn`, and `hdbscan`
+- "Other" is always appended to `TARGET_SERIES` as the catch-all label
 
 #### Manual Mode
-- **Use Case**: Maximum control, review every series
-- **Workflow**:
-  1. System scans DICOM hierarchy
-  2. Displays all series with thumbnails
-  3. User selects classification from dropdown for each
-  4. Click "Approve" to save
+Review every series. Each study opens in a window of thumbnails with a label dropdown per series; click **Approve (d)** to save.
 
 #### Semi-Auto Mode
-- **Use Case**: Efficient classification with human oversight
-- **Workflow**:
-  1. System predicts classifications using models
-  2. Pre-selects best match per target series
-  3. User reviews and adjusts selections
-  4. Click "Approve" to save
-- **Features**:
-  - Automatic duplicate detection
-  - Probability display
-  - Color-coded selections
-  - Override threshold filtering
+Models pre-select the best series per target label (respecting `OVERRIDE_THRESHOLD` and `PREFER_3D`); you review and adjust before saving. Predicted probabilities are logged, and selections are color-coded.
 
 #### Full-Auto Mode
-- **Use Case**: Batch processing, high-volume workflows
-- **Workflow**:
-  1. System predicts and selects automatically
-  2. Saves results without user review
-  3. Processes all studies in queue
-- **Best For**: Large datasets, consistent imaging protocols
+Classifies and saves every study without review. Best for large datasets with consistent protocols and well-validated models.
 
 #### Verify Mode
-- **Use Case**: Quality control and validation of classified studies
-- **Workflow**:
-  1. System scans output directory for all classified studies
-  2. Aggregates classifications by target series
-  3. Displays batches of thumbnails grouped by target series classification
-  4. User reviews and marks incorrect classifications
-  5. Option to delete entire output folders for incorrect classifications
-  6. Allows subsequent re-classification of incorrect studies
-- **Features**:
-  - Batch display (configurable grid size)
-  - Toggle buttons: "Correct" (default) → "Incorrect" (red)
-  - Confirmation before deletion
-- **Best For**: Post-processing validation, training data cleanup, quality assurance
-- **Note**: Does not require models - works with any classified data
+Quality control for already-classified studies. Thumbnails are shown in batches grouped by label; toggle any wrong ones to **Incorrect** and approve. At the end you can delete the output folders of incorrect studies for re-classification. Works without models.
+
+**Keyboard shortcuts** (classification and verification windows): `a` = Stop All, `s` = Skip, `d` = Approve.
 
 ### Model Types
 
-#### DICOM Header Model
-- **Description**: Random Forest classifier using DICOM metadata
-- **Features Used**:
-  - Series descriptions
-  - Timing parameters (TR, TE, TI)
-  - Sequence information
-  - Acquisition properties
-  - Spatial information
-- **Advantages**:
-  - Fast prediction
-  - Interpretable features
-  - No image loading required
-- **Training Time**: <1 minutes for 1000 series
-
-#### Image-Based Model
-- **Description**: Convolutional Neural Network using center slices
-- **Architecture**: multi-layer CNN with dropout
-- **Input**: user tunable resolution grayscale center slice
-- **Advantages**:
-  - Visual feature learning
-  - Robust to metadata inconsistencies
-- **Training Time**: ~5-10 minutes for 1000 series (GPU)
-
-#### Header + Image Model
-- **Description**: Ensemble combining both models
-- **Method**: Average of RF and CNN probabilities
-- **Advantages**:
-  - Best accuracy
-  - Robust to various data quality issues
-- **Recommended**: For best performance
+| Model | Method | Strengths |
+|-------|--------|-----------|
+| **DICOM Header Model** | Random Forest on configurable header fields (timing, sequence, geometry, descriptions) | Fast, interpretable, no pixel data needed |
+| **Image-Based Model** | CNN on grayscale slice images (2D center slice, or 2.5D with `CNN_NUM_SLICES > 1`) | Learns visual features, robust to metadata inconsistencies |
+| **Header + Image Model** | Average of both models' probabilities | Best accuracy (recommended) |
 
 ### Training Models
 
-#### Prerequisites
-- You need labeled training data to train models. There are **two ways** to obtain this:
-  1. **Manual labeling** (traditional): Classify studies using Manual or Semi-Auto mode first
-  2. **Zero-label (Analyze mode)**: Run Analyze mode — the app automatically collects high-confidence cluster members as training data with no manual labeling required
-- Minimum ~50 examples per target class recommended
-- More data = better performance
+You need labeled data, obtained either way:
+- **Zero-label**: run [Analyze mode](#analyze-mode) — training data is collected automatically
+- **Manual labeling**: classify studies with Manual or Semi-Auto mode (~50 examples per class minimum recommended; the Train/Load buttons enable once at least 10 studies are classified)
 
-#### Zero-Label Training Workflow (Analyze Mode — no manual labeling required)
+Then:
+1. Click **Train Model(s)** and pick the model type (Header / Image / Both); progress is shown in a popup with a Cancel button
+2. Click **Load Model(s)** in Semi-Auto or Full-Auto mode (offered automatically after training)
+3. Check `model_files/rf_model_training_summary.txt` and `cnn_model_training_summary.txt` for results
 
-This is the recommended starting point for new datasets where no labeled data exists:
+**Training tips:** balance classes, include diverse scanners/protocols, retrain as verified labels accumulate, and consider adding DICOM fields in the config to strengthen the header model.
 
-1. **Run Analyze Mode**
-   ```
-   - Set mode to Analyze, click "▶ Start Analysis"
-   - Name the discovered clusters in the results window
-   - Click "Apply" to write config.py and collect training data
-   - selfsupervised_classification_data.csv is written automatically to
-     {output_dir}/model_files/
-   ```
+### Series Thumbnail Scrolling
 
-2. **Train Models Directly from Analyze Results**
-   ```
-   - The "Train Model(s)" button activates once analysis is complete
-   - Click "Train Model(s)", select model type (Header / Image / Both)
-   - Training uses selfsupervised_classification_data.csv (high-confidence
-     cluster members only) — no manual labels required
-   - Progress is shown in a popup window
-   ```
+Everywhere a center-slice thumbnail is shown (classification, verification, and Analyze naming windows), you can **scroll the mouse wheel over the image to page through the entire series**. Slices are loaded from the DICOM source on demand in a background thread, so thumbnail caching and window load times are unaffected. A slice counter (e.g. `12/48`) appears on the image once you start scrolling.
 
-3. **Load Models and Classify**
-   ```
-   - Switch to Semi-Auto or Full-Auto mode
-   - Click "Load Model(s)" to load the newly trained models
-   - Begin classifying your full dataset
-   ```
+### Headless Batch Classification
 
-4. **Iterate and Improve** *(optional)*
-   ```
-   - Use Semi-Auto mode to annotate data with model assistance
-   - Re-train models with the growing body of verified labels
-   - Performance improves with each iteration
-   ```
+`headless_autoclassify.py` runs Full-Auto classification from the command line (no GUI), using models trained in the app:
 
-#### Standard Training Workflow (Manual Labeling)
-
-#### Prerequisites (Standard)
-- First you need to prepare some training data (using Manual mode at first, +/- Semi-Auto mode)
-- Minimum ~50 examples per target class recommended
-- More data = better performance
-
-
-1. **Classify Training Data**
-   ```
-   - Use Manual or Semi-Auto mode
-   - Classify multiple studies
-   - Ensure diverse examples per class
-   ```
-
-2. **Train Models**
-   ```
-   - Click "Train Model(s)" button
-   - Select model type (Header/Image/Both)
-   - Training starts automatically
-   - Progress shown in popup window
-   ```
-
-3. **Load Models**
-   ```
-   - Ensure that either Semi-Auto or Full-Auto mode is selected
-   - Click "Load Model(s)" button
-   - Models loaded for Semi-Auto/Full-Auto use
-   ```
-
-4. **Evaluate Performance**
-   ```
-   - Check training summary files:
-     - rf_model_training_summary.txt
-     - cnn_model_training_summary.txt
-   - Test on validation studies
-   ```
-
-#### Training Tips
-
-- **Data Quality**: Accurate labels crucial for good performance
-- **Class Balance**: Similar number of examples per class
-- **Data Diversity**: Include various scanners, protocols
-- **Iterative Improvement**: Retrain with corrected classifications
-- **DICOM Tag Additions**: Add new DICOM fields in config.py to improve RF model
+```bash
+python headless_autoclassify.py -i /data/dicoms -o /data/output
+python headless_autoclassify.py --help   # all options, including --config
+```
 
 ---
 
-## Basic Configuration
+## Configuration
 
-Configuration is managed in `mrid_app/config.py`.
+Each project keeps its own `config.py` in the output directory. The repository default ([mrid_app/config.py](mrid_app/config.py)) is the template. At minimum, review:
 
-### Configuration Recommendations
-You should adjust the following settings for each project:
-- TARGET_SERIES: Define series types relevant to your workflow
-- PREFER_3D: Set preferences for 3D acquisitions
-- STUDY_NAME_TEMPLATE: Customize output naming convention
+- `TARGET_SERIES` — the labels you classify into
+- `PREFER_3D` — which labels should prefer 3D acquisitions
+- `STUDY_NAME_TEMPLATE` — output folder naming
 
-Everything else can be left at default values unless you have specific needs.
+### Config Wizard
 
-## Detailed Configuration Options
+The wizard walks you through generating or editing a project config without touching Python code:
 
-### Default Directories
-The app automatically remembers the last-used input and output directories between sessions (stored in `.mrid_prefs.json` in the project root directory, alongside `run.py`). On first run it defaults to the current user's home directory.
+- **New projects**: when the output directory has no `config.py`, starting a workflow offers **Run Config Wizard / Copy Default Config / Keep Defaults**
+- **Existing projects**: **Configuration → Run Config Wizard** re-runs the wizard pre-filled with the active config's values
 
-### Output Naming Convention
-Outputs are named using the following template:
+Pages: **1. Output naming** (study name template, thumbnail format/quality) → **2. Classification & DICOM filtering** (target series with per-series 3D preference, ImageType include/exclude filters, stacked-series handling) → **3. Classification UI** (grid size, thresholds, ordering). An **Advanced Settings** page covers model hyperparameters, the DICOM header field list, the Analyze coverage threshold, and the log level. Saving rewrites the config file while preserving its comments.
+
+### Configuration Menu
+
+| Menu item | Action |
+|-----------|--------|
+| **Run Config Wizard** | Guided editing of the active config (see above) |
+| **Save Config File** | Copy the active config to `{output_dir}/config.py` and make it active |
+| **Load Config File** | Load a config from anywhere via a file browser |
+| **Edit Config File** | Open the active config in your system text editor |
+| **Reload Config File** | Re-read the active config after manual edits |
+
+When a workflow starts, a `config.py` already in the output directory is loaded automatically. Configs from older MRID versions that lack newer settings load with a warning; missing settings use defaults.
+
+### Configuration Reference
+
+#### Output naming
+
 ```python
-STUDY_NAME_TEMPLATE = "{mrn}-{study_uid}"
+STUDY_NAME_TEMPLATE = "{mrn}-{accn}"
 ```
-Customize the output naming convention using any combination of MRN, Accession Number, and Study Instance UID as follows:
-- {mrn} = Medical Record Number
-- {study_uid} = Study Instance UID
-- {accn} = Accession Number
+Placeholders: `{mrn}` (Medical Record Number), `{accn}` (Accession Number), `{study_uid}` (Study Instance UID). The template must produce a unique name per study; invalid filename characters are replaced with hyphens.
 
-Examples:
 ```python
-STUDY_NAME_TEMPLATE = "MyProject-{mrn}-{study_uid}-{accn}"
-STUDY_NAME_TEMPLATE = "{mrn}_{accn}"
-STUDY_NAME_TEMPLATE = "{study_uid}"
+THUMBNAIL_FORMAT = 'JPEG'   # 'JPEG' or 'PNG'
+THUMBNAIL_QUALITY = 75      # JPEG compression quality, 1-100
 ```
-Notes:
-- Ensure the template results in unique names for each study to avoid overwriting.
-- Use of MRN as the only identifier may lead to conflicts if multiple studies exist for the same patient.
-- Invalid characters will be replaced with hyphens.
+Affects GUI thumbnails only (the CNN preprocesses images separately).
 
-### Thumbnail options
+#### Classification
+
 ```python
-THUMBNAIL_FORMAT = 'JPEG'  # Format for generated thumbnails: 'JPEG' or 'PNG'
-THUMBNAIL_QUALITY = 75  # JPEG quality (1-100, only used if THUMBNAIL_FORMAT='JPEG')
+TARGET_SERIES = ["T1", "T2", "FLAIR", "T1c", "Other"]  # always include "Other"
 ```
-- Controls thumbnail format for GUI display only (CNN model uses separate preprocessing).
-- Thumbnail format can be either 'JPEG' or 'PNG'.
-- Thumbnail quality applies only to JPEG format, ranges from 1-100, and controls compression level (higher = better quality, larger file size).
-- Recommended settings are JPEG format with quality of 75 for a good balance between quality and file size.
-
-### Target Series
-
-Define which series types to classify:
+Labels are arbitrary names (no special characters) — they do not need to match series descriptions. Analyze mode populates this automatically.
 
 ```python
-TARGET_SERIES = ["T1", "T2", "FLAIR", "T1c", "Other"] # always include "Other"
+PREFER_3D = {"T1": True, "T2": False, "FLAIR": True, "T1c": True, "Other": False}
+# or a single bool applied to every non-Other label:
+PREFER_3D = True
 ```
-
-- You can use whatever series names you want as long as there are no special characters.
-- These are just labels and don't need to match the series description.
-- Add or remove series as needed.
-- "Other" should always be included (it's the default for unclassified series).
-- In **Analyze mode**, this list is populated automatically and written to `config.py` — you do not need to set it manually.
-
-### Analyze Mode Coverage Threshold
-
-Controls how inclusive or exclusive the automatic series-type discovery in Analyze mode is:
+When a label prefers 3D and several series exceed `OVERRIDE_THRESHOLD` for it, a 3D acquisition (`MRAcquisitionType == '3D'`) is selected even if a 2D candidate has slightly higher probability. Labels missing from the dict default to `False`.
 
 ```python
-ANALYZE_COVERAGE_THRESHOLD = 0.1  # default: 10% of exams must contain a series type
-```
-
-- **Meaning**: A series type is only recognised as a valid cluster if it appears in at least this fraction of exams in the dataset.
-- **How it works**: The value is passed directly to HDBSCAN as `min_cluster_size = ceil(ANALYZE_COVERAGE_THRESHOLD × n_unique_exams)`. Any group of thumbnails smaller than this threshold is treated as noise and merged into the nearest valid cluster.
-- **Effect of increasing the value** (e.g. `0.5`): Only series types present in ≥ 50 % of exams are reported — rare or incidental sequences are suppressed. Use when your protocol is highly consistent and you only want the core series types.
-- **Effect of decreasing the value** (e.g. `0.05`): Series types present in as few as 5 % of exams are reported — more clusters, including rare or optional sequences. Use when your dataset contains heterogeneous protocols or you want to capture all series types.
-- **Range**: 0.0–1.0 (values below ~0.05 may produce many small clusters; values above ~0.5 may merge similar types)
-- **Recommended starting point**: `0.1` (10 %) for most datasets, higher if you are getting too many series options in analyze mode, lower if you want more options
-
-### 3D Preference
-
-Prefer 3D acquisitions when multiple series exceed the classification threshold.
-
-`PREFER_3D` can be set in two ways:
-
-**Per-series dict** (recommended) — explicit `True`/`False` for each series you care about:
-```python
-PREFER_3D = {
-    "T1": True,      # Prefer 3D T1
-    "T2": False,     # Don't prefer 3D for T2
-    "FLAIR": True,   # Prefer 3D FLAIR
-    "T1c": True,     # Prefer 3D post-contrast
-    "Other": False   # N/A (always ignored for Other)
-}
-```
-- Any series **missing** from the dict defaults to `False` (no 3D preference).
-- Any **extra** keys in the dict (series not in `TARGET_SERIES`) are silently ignored.
-
-**Global bool** — applies the same preference to every series except `Other`:
-```python
-PREFER_3D = True   # Prefer 3D for all non-Other series
-# or
-PREFER_3D = False  # Never prefer 3D (default behaviour)
-```
-
-When the preference for a label is `True`: if multiple series exceed `OVERRIDE_THRESHOLD` for that label, the 3D acquisition is selected even if it has a slightly lower probability than a 2D candidate.
-
-### Classification Thresholds
-
-```python
-OVERRIDE_THRESHOLD = 0.5  # Minimum probability for auto-selection
-```
-
-- Higher values: More conservative, fewer auto-selections
-- Lower values: More aggressive, may include uncertain matches
-- Range: 0.0 to 1.0
-- Recommended: 0.4 to 0.6
-
-### Label Uniqueness
-
-```python
-ALLOW_DUPLICATE_LABELS = True
-```
-
-Controls whether manually selecting a classification label for one series automatically clears that label from other series in the same study:
-
-- **`False` (Default)**: Enforces one series per label per study
-  - When you select a label (e.g., "T1") for a series, any other series with that label is automatically reset to "Other"
-  - Useful for standard classification workflows where each study should have only one series per type
-  - Applies to both Manual and Semi-Auto modes
-
-- **`True`**: Allows multiple series per label
-  - You can manually assign the same label to multiple series in a study
-  - Note that auto-selection in Semi-Auto mode will still only select one best match per label based on model probabilities
-  - Useful for creating training data with multiple examples per label from the same study
-  - Both Header and Image models support training on data with duplicate labels
-
-### UI Grid Layout
-
-```python
-NUM_COLUMNS = 6          # Number of columns in classification/verification grid
-NUM_ROWS = 4             # Max number of rows in verification mode grid
-THUMBNAIL_SCALE_FACTOR = 1.0  # Additional static scale multiplier for thumbnail size only
-```
-
-Controls the grid layout for classification and verification interfaces:
-
-- **NUM_COLUMNS**: Maximum number of series displayed horizontally (applies to all modes)
-- **NUM_ROWS**: Maximum number of series displayed vertically in Verify mode
-- **Grid Size**: In Verify mode, up to `NUM_COLUMNS × NUM_ROWS` images displayed per batch
-- **THUMBNAIL_SCALE_FACTOR**: Multiplies only the thumbnail (image panel) pixel size on top of the automatic DPI scaling. Does not affect fonts, buttons, or other non-thumbnail elements.
-  - `1.0` (default) — no additional scaling
-  - `0.75` — 25 % smaller thumbnails, more thumbnails visible without scrolling
-  - `1.5` — 50 % larger thumbnails for high-resolution monitors
-- **Vertical scrollbar**: Both the classification (Manual/Semi-Auto) and Verify windows always include a vertical scrollbar so any content that extends beyond the screen height remains accessible. The windows are also capped to the screen height to ensure the bottom button row is never hidden off-screen.
-- **Recommendations**:
-  - Standard monitors: 6 columns × 3-4 rows (18-24 images)
-  - Large monitors: 8 columns × 5-6 rows (40-48 images)
-  - Adjust based on screen resolution and preference
-
-### Parallel Image Loading
-
-```python
-NUM_PARALLEL_WORKERS = 8  # Number of parallel threads for loading thumbnails
-```
-
-Controls the number of concurrent worker threads used to load image thumbnails in Semi-Auto and Verify modes:
-
-- **Purpose**: Optimizes thumbnail loading performance through parallel processing
-- **Default**: 8 workers (suitable for most modern systems, adjust as needed based on your system capabilities)
-
-### Study Order Randomization
-
-```python
-RANDOMIZE_STUDY_ORDER = True  # Randomize the order of studies during manual/semi-auto classification
-STUDY_ORDER_SEED = 42         # Seed for pseudo-random study ordering (ensures reproducibility)
-```
-
-Controls whether studies are presented in a randomized order during Manual and Semi-Auto classification:
-
-- **Purpose**: Reduces bias in manual classification by randomizing the order studies are presented
-- **`RANDOMIZE_STUDY_ORDER`**: Enable/disable randomization
-  - `True` (Default): Studies are shuffled in pseudo-random order
-  - `False`: Studies are presented in the order found (patient ID, then study UID)
-- **`STUDY_ORDER_SEED`**: Integer seed for random number generator
-  - Default: 42
-  - Using the same seed ensures reproducible ordering across runs
-  - Change the seed to get a different random order
-  - Only used when `RANDOMIZE_STUDY_ORDER = True`
-- **Note**: Only applies to Manual and Semi-Auto modes; Full-Auto mode processes studies in original order for consistency
-
-### DICOM ImageType Filtering
-
-```python
-INCLUDE_TYPES = ["ORIGINAL", "PRIMARY"]
+INCLUDE_TYPES = ["ORIGINAL", "PRIMARY"]   # ImageType must contain one of these
 EXCLUDE_TYPES = ["DERIVED", "SECONDARY", "ADC", "DIFFUSION", "LOCALIZER", "MIP", "MPR"]
+IGNORE_MULTIPLE_ORIENTATIONS = True       # skip series mixing orientations
+SEPARATE_STACKED_SERIES = True            # split multi-volume series
+MAX_SPLIT = 5                             # max splits per stacked series
 ```
-
-Control which ImageTypes are included in classification:
-- **INCLUDE_TYPES**: Must have at least one of these
-- **EXCLUDE_TYPES**: Excluded if has any of these
-
-### Series Separation
 
 ```python
-IGNORE_MULTIPLE_ORIENTATIONS = True  # Skip series with multiple orientations
-SEPARATE_STACKED_SERIES = True       # Split stacked series
-MAX_SPLIT = 5                        # Max splits per stacked series
+ANALYZE_COVERAGE_THRESHOLD = 0.1
 ```
+A cluster is valid in Analyze mode only if it covers at least this fraction of exams. Raise it (e.g. `0.5`) to keep only core series types; lower it (e.g. `0.05`) to surface rare sequences.
 
-### CNN Hyperparameters
+#### Classification UI
 
 ```python
-IMAGE_SIZE = 128      # Input image size (128×128)
-NUM_EPOCHS = 100      # Training epochs
-BATCH_SIZE = 8        # Batch size for training
-LR = 0.001            # Learning rate
-CNN_NUM_SLICES = 1    # Slices fed to the CNN: 1 = 2D (center slice), >1 = 2.5D
+NUM_COLUMNS = 6               # grid columns (classification & verify)
+NUM_ROWS = 4                  # grid rows (verify mode batches)
+THUMBNAIL_SCALE_FACTOR = 1.0  # extra multiplier for thumbnail size only
+OVERRIDE_THRESHOLD = 0.5      # min probability for auto-selection (0-1)
+ALLOW_DUPLICATE_LABELS = False
+NUM_PARALLEL_WORKERS = 8      # threads/processes for image loading
+RANDOMIZE_STUDY_ORDER = True  # shuffle study order (Manual/Semi-Auto)
+STUDY_ORDER_SEED = 42         # seed for reproducible shuffling
 ```
 
-Adjust based on your data and computational resources.
+- The whole UI scales automatically with screen size; `THUMBNAIL_SCALE_FACTOR` adjusts thumbnails only (e.g. `0.75` smaller, `1.5` larger).
+- With `ALLOW_DUPLICATE_LABELS = False` (default), assigning a label to one series clears it from any other series in the study; set `True` to allow several series per label (useful for building training data).
+- Randomized study order reduces labeling bias; Full-Auto always processes in original order.
 
-#### 2D vs. 2.5D Mode (`CNN_NUM_SLICES`)
-
-By default (`CNN_NUM_SLICES = 1`) the CNN classifies each series from its center
-slice only. Setting a higher value enables **2.5D mode**: that many evenly
-spaced slices are loaded from the series and fed to the CNN as input channels.
-For example, with `CNN_NUM_SLICES = 3` on a 100-slice series, slices 25, 50,
-and 75 are used. This gives the model more anatomical context at a modest
-training/inference cost.
-
-Notes:
-- A model must be used with the same `CNN_NUM_SLICES` it was trained with.
-  When loading a saved model, MRID detects its slice count automatically and
-  warns if it differs from the current config; retrain to change the value.
-- Preprocessed training data is cached separately per slice count, so caches
-  built in 2D mode remain valid.
-
-### Random Forest Hyperparameters
+#### CNN hyperparameters
 
 ```python
-N_ESTIMATORS = 400    # Number of trees in forest
+IMAGE_SIZE = 128      # input resolution (square)
+NUM_EPOCHS = 100
+BATCH_SIZE = 8
+LR = 0.001
+CNN_NUM_SLICES = 1    # 1 = 2D (center slice), >1 = 2.5D
 ```
 
-More trees may yeild better performance but slower training.
+**2D vs. 2.5D (`CNN_NUM_SLICES`):** by default the CNN sees only the center slice. With `CNN_NUM_SLICES = N > 1`, N evenly spaced slices are fed to the CNN as input channels — e.g. `N = 3` on a 100-slice series uses slices 25, 50, and 75 — giving the model more anatomical context at a modest cost.
+- A model must be used with the same slice count it was trained with. MRID reads the slice count from saved models automatically and warns if it differs from the config; retrain to change it.
+- Preprocessed training data is cached per slice count, so existing 2D caches stay valid.
 
-### DICOM Header Fields
+#### Random Forest hyperparameters
 
-Specify which DICOM fields to use for header model:
+```python
+N_ESTIMATORS = 400    # number of trees
+```
+
+#### DICOM header fields
 
 ```python
 DICOM_HEADER_FIELDS = [
     ("SeriesDescription", "SeriesDescription"),
     ("TR (Repetition Time)", "RepetitionTime"),
     ("TE (Echo Time)", "EchoTime"),
-    # ... add more fields
+    # ... (display_name, pydicom_attribute_name)
 ]
 ```
-
-**Format**: `(display_name, DICOM_attribute_name)` using pydicom attribute names.
-
-**Adding New Fields**:
-1. Add to `DICOM_HEADER_FIELDS`
-2. Train model → System prompts to update existing CSVs
-3. Confirm to extract field from previous studies
-
-**Automatic Type Detection**:
-- System infers field type (numerical, array, categorical, text)
-- Applies appropriate encoding automatically
-- See `field_detection.py` for logic
-
-### Field Detection Thresholds
+The header model's input features. Field types (numerical / array / categorical / free text) are detected automatically and encoded appropriately; free-text fields use semantic sentence embeddings. When you add fields, the next training run offers to back-fill them into existing classification CSVs from the original DICOMs.
 
 ```python
-CATEGORICAL_UNIQUE_THRESHOLD = 50  # ≤50 unique values = categorical
-TEXT_MIN_WORDS = 2                  # ≥2 avg words = text
-ARRAY_SIZE_THRESHOLD = 1            # >1 number = array
+CATEGORICAL_UNIQUE_THRESHOLD = 50  # <= this many unique values -> categorical
+TEXT_MIN_WORDS = 2                 # >= this avg word count -> text
+ARRAY_SIZE_THRESHOLD = 1           # > this many numbers per value -> array
 ```
 
-Fine-tune automatic field type detection.
+#### Logging
+
+```python
+LOG_LEVEL = "INFO"  # DEBUG, INFO, WARNING, ERROR, or CRITICAL
+```
 
 ---
 
@@ -721,49 +423,49 @@ Fine-tune automatic field type detection.
 
 ```
 mrid/
-├── mrid_app/               # Main application package
-│   ├── __init__.py
-│   ├── config.py           # Configuration settings
-│   ├── gui.py              # Tkinter GUI and main logic
-│   ├── analyze.py          # Analyze mode: ResNet50 → PCA → UMAP → HDBSCAN pipeline
-│   ├── processing.py       # DICOM processing and classification
-│   ├── scanner.py          # DICOM hierarchy scanning
-│   ├── header.py           # Random Forest header model
-│   ├── cnn.py              # CNN image model
-│   ├── prep.py             # Data preprocessing
-│   ├── field_detection.py  # Automatic field type detection
-│   ├── csv_field_updater.py# CSV field management
-│   └── utils.py            # Utility functions
-├── tests/                  # Unit tests
-│   ├── test_config.py
-│   ├── test_field_detection.py
-│   ├── test_processing.py
-│   ├── test_csv_field_updater.py
-│   └── test_prep.py
-├── run.py                  # Application entry point
-├── run_tests.py            # Test runner
-├── requirements.txt        # Python dependencies
-└── README.md               # This file
+├── mrid_app/                  # Application package
+│   ├── config.py              # Default configuration (template for projects)
+│   ├── gui.py                 # Main GUI and workflows
+│   ├── ui_theme.py            # Dark theme, scaling, window placement
+│   ├── config_wizard.py       # Guided config setup
+│   ├── config_io.py           # Comment-preserving config rewriting
+│   ├── series_scroller.py     # Mouse-wheel series scrolling on thumbnails
+│   ├── analyze.py             # Analyze mode: ResNet50 → PCA → UMAP → HDBSCAN
+│   ├── scanner.py             # DICOM scanning and hierarchy building
+│   ├── processing.py          # Classification, slice loading, NIfTI conversion
+│   ├── header.py              # Random Forest header model
+│   ├── cnn.py                 # CNN image model (2D / 2.5D)
+│   ├── prep.py                # Header preprocessing and encoding
+│   ├── field_detection.py     # Automatic field type detection
+│   ├── csv_field_updater.py   # Back-fill new fields into existing CSVs
+│   ├── utils.py               # Naming templates and path utilities
+│   └── logging_config.py      # Logging setup
+├── tests/                     # Unit tests
+├── tests.py                   # Test runner (python tests.py)
+├── run.py                     # GUI entry point
+├── headless_autoclassify.py   # Command-line Full-Auto classification
+└── requirements.txt
 ```
 
 **Output directory layout** (created at runtime inside your chosen Output DIR):
 ```
 {output_dir}/
-├── config.py                        # Project-specific config (copied from repo on first run)
+├── config.py                        # Project config
 ├── hierarchy.yaml                   # DICOM hierarchy index
-├── series_thumbnails/               # Center-slice thumbnails used by the GUI and Analyze mode
-├── dicom_symlinks/                  # Symlinks for unorganized DICOM folders (if needed)
-├── model_files/                     # Trained models and Analyze mode training data
+├── series_thumbnails/               # Center-slice thumbnails (GUI + Analyze)
+├── dicom_symlinks/                  # Symlinks for unorganized input folders (if needed)
+├── model_files/                     # Models, encoders, caches, training data
 │   ├── rf_classifier_model.joblib
 │   ├── cnn_classifier_model.pth
 │   ├── label_encoder.joblib
 │   ├── feature_encoder.joblib
-│   ├── classification_data.csv      # Aggregated classification results for model training
-│   └── selfsupervised_classification_data.csv      # Written by Analyze mode
-└── classified_outputs/              # All classification results live here
-    └── {study_id}/                  # One folder per classified study
-        ├── {study_id}_classification-results.csv   # Classification results for this study
-        └── {study_id}_{series_name}.nii.gz         # NIfTI file (if conversion enabled)
+│   ├── cnn_preprocessed_data_*.pkl  # CNN preprocessing cache
+│   ├── classification_data.csv
+│   └── selfsupervised_classification_data.csv   # Written by Analyze mode
+└── classified_outputs/
+    └── {study_id}/
+        ├── {study_id}_classification-results.csv
+        └── {study_id}_{series_name}.nii.gz       # If conversion enabled
 ```
 
 ---
@@ -772,262 +474,84 @@ mrid/
 
 ### File Options Menu
 
-Access via menu bar: **"File Options"**
-
-#### Convert NIfTIs
-- **Purpose**: Batch convert all classified series to NIfTI format
-- **Usage**: Select menu item → Confirm → Wait for completion
-- **Features**:
-  - Skips already converted series
-  - Shows progress bar
-  - Reports success/skip/error counts
-- **Output**: NIfTI files saved in study directories with naming `{study_id}_{label}.nii.gz`
-
-#### Erase Data
-- **Purpose**: Clean up output directory
-- **Options**:
-  - ☐ Delete Classifications (study folders, NIfTIs, CSVs)
-  - ☐ Delete Models (trained models, encoders, cache)
-  - ☐ Delete Hierarchy (hierarchy.yaml, temporary files)
-- **Safety**: Multiple confirmation dialogs
-- **Use Cases**: Fresh start, disk space management, retraining
-
-### Configuration Menu
-
-Access via menu bar: **"Configuration"**
-
-#### Save Config File
-- **Purpose**: Save current configuration to output directory
-- **Usage**: Select menu item → Config saved to `{output_dir}/config.py`
-- **Use Cases**:
-  - Preserve project-specific settings
-  - Share configurations across datasets
-  - Document configuration used for specific analyses
-- **Validation**: Checks that output directory exists before saving
-
-#### Load Config File
-- **Purpose**: Load a previously saved configuration file
-- **Usage**: Select menu item → Choose config.py file → Config loaded
-- **Features**:
-  - File browser for config selection
-  - Automatic validation of all required settings
-  - Warning if invalid (continues with original config)
-  - Updates all configuration globals dynamically
-- **Validation**: Ensures loaded config contains all required variables from repository config
-- **Automatic Loading**: When starting classification, system checks output directory for saved config.py:
-  - If found alongside hierarchy.yaml: Prompts to load both
-  - If config invalid: Shows warning, uses original config
-  - Seamless integration with existing hierarchy workflow
-- **Note**: Some settings may require application restart to fully take effect
-
-#### Edit Config File
-- **Purpose**: Open the currently active config.py file in your system's default text editor
-- **Features**:
-  - Opens repository config.py or custom loaded config
-  - Uses system default text editor (Notepad, TextEdit, gedit, etc.)
-  - Shows which config is active (repository vs. custom)
-- **Usage**: Select menu item → Config file opens in editor → Make changes → Save file → Use "Reload Config"
-- **Note**: After editing, use "Configuration > Reload Config" to apply changes
-
-#### Reload Config File
-- **Purpose**: Reload configuration from the currently active config file
-- **Features**:
-  - Reloads either repository config or custom loaded config
-  - Updates all configuration variables in memory
-  - Validates config before applying
-- **Usage**: After editing config.py, select menu item to apply changes
-- **Note**: Some settings (loaded models, running processes, certain UI elements) may require application restart to fully take effect
-
-
-### CSV Field Management
-
-When adding new DICOM header fields:
-
-1. **Detection**: System scans existing CSVs for missing fields
-2. **Prompt**: Dialog asks to update CSVs with new fields
-3. **Extraction**: Reads original DICOM files to get values
-4. **Update**: Updates all classification CSVs
-5. **Training**: Proceeds with complete dataset
-
-This ensures models always use all configured fields.
-
-### Parallel Processing
-
-CNN preprocessing uses multiprocessing for speed:
-- **Workers**: CPU count - 1 (configurable)
-- **Speedup**: ~10-30x depending on system
-- **Progress**: Real-time updates during processing
-
-### Compressed DICOM Support
-
-The application automatically handles compressed DICOM files using **python-gdcm**:
-- **Supported Formats**: JPEG, JPEG2000, JPEG-LS, RLE, and other compressed transfer syntaxes
-- **Fallback Mechanism**: If pydicom cannot read a file, gdcm is automatically attempted
-- **Transparent Operation**: No user intervention needed - compressed files are processed seamlessly
-- **Performance**: Efficient decompression without creating temporary uncompressed files
-
-**Note**: python-gdcm is automatically installed with the application dependencies.
+- **Convert NIfTIs** — batch-convert all classified series (skips ones already converted; shows progress and a summary)
+- **Export DICOMS** — copy classified series to a chosen folder organized as `{mrn}/{study_uid}/{label}/{instance_uid}.dcm`
+- **Erase Data** — selectively delete classifications, models, hierarchy/thumbnails, and/or the project config, with confirmation
 
 ### Automatic Folder Organization
 
-The application can automatically detect and organize unstructured DICOM folders:
+Input folders that mix several series in one directory are detected automatically and reorganized into per-series folders using **symlinks** under `{output_dir}/dicom_symlinks/` — original files are untouched and no disk space is duplicated. This makes PACS exports and other unstructured datasets work with dcm2niix and the rest of the pipeline.
 
-**Organized Folders** (no action needed):
-```
-input/
-  ├── Patient1/
-  │   ├── Study1/
-  │   │   ├── Series1/  # Each series in separate folder
-  │   │   │   ├── image1.dcm
-  │   │   │   └── image2.dcm
-  │   │   └── Series2/
-  │   │       ├── image1.dcm
-  │   │       └── image2.dcm
-```
+### Compressed DICOM Support
 
-**Unorganized Folders** (automatically organized):
-```
-input/
-  ├── all_files_mixed/  # Multiple series in same folder
-  │   ├── series1_image1.dcm
-  │   ├── series1_image2.dcm
-  │   ├── series2_image1.dcm
-  │   └── series2_image2.dcm
-```
+If pydicom cannot decode a file's pixel data, python-gdcm is used automatically. JPEG, JPEG2000, JPEG-LS, RLE, and other common compressed transfer syntaxes are supported transparently.
 
-When unorganized folders are detected:
-1. System creates `dicom_symlinks/` directory in output folder
-2. Files are organized into series-specific subdirectories using **symlinks**
-3. Symlinks point to original files (no duplication)
-4. Processing continues with organized structure
-5. Message displayed: `"Detected unorganized DICOM folder. Organizing files with symlinks..."`
+### CNN Preprocessing Cache
 
-**Benefits**:
-- Works with any folder structure (PACS exports, research datasets, etc.)
-- No disk space overhead (symlinks only)
-- Original files remain untouched
-- dcm2niix and other tools work properly with organized structure
+Training images are preprocessed in parallel (`NUM_PARALLEL_WORKERS`) and cached in `model_files/cnn_preprocessed_data_{hash}.pkl`. The cache key covers the training file list and the slice count, so retraining on unchanged data skips preprocessing entirely.
 
-### Model Caching
+### Persistent Directories
 
-Preprocessed training data cached for fast retraining:
-- **Location**: `{output_dir}/cnn_preprocessed_data_{hash}.pkl`
-- **Content**: Preprocessed tensors ready for training
-- **Benefits**: Skip preprocessing on subsequent training runs
-- **Invalidation**: Automatic if source data changes
+The last-used input/output directories are remembered between sessions in `.mrid_prefs.json` next to `run.py`.
 
 ---
 
 ## Troubleshooting
 
-### Common Issues
-
-#### "Missing required dependencies"
-**Solution**: Ensure all packages installed:
-```bash
-pip install -r requirements.txt
-```
-
 #### "dcm2niix not found"
-**Solution**: Install dcm2niix and add to PATH:
-```bash
-sudo apt-get install dcm2niix
-# or
-brew install dcm2niix
-```
+Install dcm2niix and ensure it is in your `PATH` (see [dcm2niix](#dcm2niix)). The convert toggle checks for it when enabled.
 
 #### "CUDA out of memory" during CNN training
-**Solution**: Reduce batch size in config:
-```python
-BATCH_SIZE = 4  # or 2
-```
+Reduce `BATCH_SIZE` (e.g. 4 or 2) or `IMAGE_SIZE` in the config.
 
 #### "No classification CSV files found"
-**Solution**: Classify some studies first using Manual or Semi-Auto mode before training.
+Train requires labeled data: classify at least 10 studies with Manual/Semi-Auto mode, or run Analyze mode first.
 
 #### Models not loading
-**Solution**: Check files exist in output directory:
-- `rf_classifier_model.joblib`
-- `label_encoder.joblib`
-- `feature_encoder.joblib`
-- `cnn_classifier_model.pth` (for CNN)
+Check that `{output_dir}/model_files/` contains `rf_classifier_model.joblib`, `label_encoder.joblib`, `feature_encoder.joblib` (header model) and/or `cnn_classifier_model.pth` (image model).
+
+#### CNN slice-count warning when loading a model
+The saved model was trained with a different `CNN_NUM_SLICES` than the current config. The model still loads and runs with its own slice count; retrain if you want the new setting.
 
 #### Compressed DICOMs not reading
-**Problem**: Files skipped or "Invalid DICOM" errors
-**Solution**: 
-1. Ensure python-gdcm is installed:
-   ```bash
-   pip install python-gdcm
-   ```
-2. Verify file is actually DICOM (check for DICM preamble)
-3. Check console for specific error messages
-4. Try opening file with pydicom directly to diagnose:
-   ```python
-   import pydicom
-   ds = pydicom.dcmread('path/to/file.dcm', force=True)
-   ```
+Ensure `python-gdcm` is installed (`pip install python-gdcm`, or `conda install -c conda-forge gdcm` on Windows). To diagnose a specific file:
+```python
+import pydicom
+ds = pydicom.dcmread('path/to/file.dcm', force=True)
+```
 
-#### "Multiple series in same folder" warning
-**Not an Error**: This is informational - the application is organizing your files
-- System automatically creates symlinks in `dicom_symlinks/`
-- Original files are not modified
-- Processing continues normally
-- To avoid this, organize DICOMs with one series per folder before input
+#### "Detected unorganized DICOM folder" message
+Informational, not an error — files are being organized with symlinks (see [Automatic Folder Organization](#automatic-folder-organization)). On Windows, symlink creation requires Developer Mode or administrator rights.
 
 #### Slow CNN training
-**Solutions**:
-- Install PyTorch with CUDA support
-- Reduce `IMAGE_SIZE` (e.g., 64 instead of 128)
-- Reduce `NUM_EPOCHS`
-- Use fewer training examples initially
+Install a GPU-enabled PyTorch build (see [PyTorch GPU Setup](#pytorch-gpu-setup)), or reduce `IMAGE_SIZE` / `NUM_EPOCHS`.
 
-#### GUI freezes
-**Solution**: Processing happens in background threads, but very large studies may cause brief freezes. Be patient or process in smaller batches.
-
-### Getting Help
-
-1. **Check TESTING.md**: For development and testing guidance
-2. **Run Tests**: `python run_tests.py` to verify installation
-3. **Check Logs**: Terminal output provides detailed error messages
-4. **Open Issue**: Report bugs on GitHub with:
-   - System info (OS, Python version)
-   - Error messages
-   - Steps to reproduce
+#### Getting help
+- Run `python tests.py` to verify the installation
+- Check the terminal and the log file in the output directory for detailed errors (set `LOG_LEVEL = "DEBUG"` for more)
+- Open a GitHub issue with your OS, Python version, error messages, and steps to reproduce
 
 ---
 
 ## Testing
 
-Run the test suite:
-
 ```bash
 python tests.py
 ```
+All tests should pass. The suite covers configuration, DICOM scanning and processing, slice selection (2D/2.5D), field detection, config rewriting, and UI scaling.
 
-Expected output:
-```
-✓ All tests passed!
-Passed: 48, Failed: 0, Errors: 0
-Time: ~2.2s
-```
 ---
 
 ## Contributing
 
-Contributions welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes
-4. Add tests for new functionality
-5. Run test suite (`python run_tests.py`)
-6. Commit your changes (`git commit -m 'Add amazing feature'`)
-7. Push to branch (`git push origin feature/amazing-feature`)
-8. Open a Pull Request
+1. Fork the repository and create a feature branch
+2. Make your changes and add tests for new functionality
+3. Run the test suite (`python tests.py`)
+4. Open a Pull Request
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
 
 ---
 
@@ -1043,20 +567,12 @@ If you use this tool in your research, please cite:
   url={https://github.com/ecalabr/mrid}
 }
 ```
-Please check back for updates to citation information.
-
----
 
 ## Acknowledgments
 
-- **pydicom**: DICOM file handling
-- **dcm2niix**: NIfTI conversion
-- **sentence-transformers**: Semantic text encoding
-- **PyTorch**: Deep learning framework
-- **scikit-learn**: Machine learning utilities
-
-
----
-
-**Last Updated**: February 2026  
-**Version**: 1.1.0
+- **pydicom** — DICOM file handling
+- **dcm2niix** — NIfTI conversion
+- **PyTorch** — deep learning framework
+- **scikit-learn** — machine learning utilities
+- **sentence-transformers** — semantic text encoding
+- **CustomTkinter** — modern themed UI

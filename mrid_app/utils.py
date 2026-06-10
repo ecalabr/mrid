@@ -8,7 +8,6 @@ import re
 import logging
 import hashlib
 
-# Import naming template from config
 try:
     from .config import STUDY_NAME_TEMPLATE
 except ImportError:
@@ -23,7 +22,6 @@ logger = logging.getLogger('mrid')
 # Output Naming Functions
 # ============================================================================
 
-# function to sanitize the STUDY_NAME_TEMPLATE
 def sanitize_template(template, replacement='-'):
     # First, protect valid fields by temporarily replacing them
     protected = template

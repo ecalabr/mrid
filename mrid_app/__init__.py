@@ -3,11 +3,8 @@
 This package contains the MRID (MRI DICOM) classification application modules:
 config, cnn, header model, preprocessing, GUI, and utilities.
 
-Import the application entrypoint with:
-
-    from mrid_app.run import main
-
-or run `python run.py` from the project root.
+Launch the application with `python run.py` from the project root
+(run.py lives at the project root, not inside this package).
 """
 
 # Ensure the HuggingFace tokenizers parallelism env var is set before any

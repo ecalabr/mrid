@@ -199,7 +199,6 @@ class TrainClassifierGUI:
 
     def close(self):
         def _safe_close():
-            # stop progressbar if it exists
             try:
                 if hasattr(self, 'progress') and self.progress.winfo_exists():
                     try:
@@ -208,7 +207,6 @@ class TrainClassifierGUI:
                         pass
             except Exception:
                 pass
-            # release grab and destroy root if still present
             try:
                 if hasattr(self, 'root') and self.root.winfo_exists():
                     try:
@@ -334,7 +332,6 @@ class MainApp:
         self.cnn_target_encoder = None
         self.stop_requested = threading.Event()
         self.is_running = False
-        # New flag for nifti conversion
         self.convert_to_nifti = tk.BooleanVar(value=False)
         # Flag to indicate models should be loaded after training completes
         self._auto_load_after_training = False
@@ -344,18 +341,15 @@ class MainApp:
         self._analyze_csv_ready = False       # True once selfsupervised CSV is written
         self._selfsupervised_csv_path = None  # Path to the written CSV
 
-        # Create menu bar
         menubar = tk.Menu(master)
         master.config(menu=menubar)
 
-        # Other Options menu
         other_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="File Options", menu=other_menu)
         other_menu.add_command(label="Convert NIfTIs", command=self._convert_niftis_utility)
         other_menu.add_command(label="Export DICOMS", command=self._export_dicoms_utility)
         other_menu.add_command(label="Erase Data", command=self._erase_data_utility)
 
-        # Configuration menu
         config_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Configuration", menu=config_menu)
         config_menu.add_command(label="Run Config Wizard", command=self._run_config_wizard)
@@ -460,16 +454,13 @@ class MainApp:
         """Handler for the convert-to-nifti toggle. If enabling, check for dcm2niix in PATH.
         If not found, revert toggle and show an error dialog."""
         enabled = bool(self.convert_to_nifti.get())
-        # update the button text to show current state
         try:
-            # update the main toggle button to reflect the state
             if hasattr(self, '_convert_button'):
                 self._convert_button.configure(text=("Yes" if enabled else "No"))
         except Exception:
             pass
 
         if enabled:
-            # Check for dcm2niix availability
             dcm2niix_path = shutil.which("dcm2niix")
             if not dcm2niix_path:
                 try:
@@ -496,11 +487,9 @@ class MainApp:
         rf_model_path = os.path.join(model_files_dir, "rf_classifier_model.joblib")
         cnn_model_path = os.path.join(model_files_dir, "cnn_classifier_model.pth")
 
-        # Check which models exist and which are missing
         rf_exists = os.path.exists(rf_model_path) if rf_needed else True
         cnn_exists = os.path.exists(cnn_model_path) if cnn_needed else True
 
-        # If all needed models exist, load them
         if rf_exists and cnn_exists:
             if rf_needed:
                 self._load_classifier_and_encoder()
@@ -509,7 +498,6 @@ class MainApp:
             self._check_model_status()
             return
 
-        # Models are missing - ask user if they want to train
         missing_models = []
         if rf_needed and not rf_exists:
             missing_models.append("DICOM Header Model")
@@ -528,10 +516,8 @@ class MainApp:
         if not response:
             return
 
-        # User wants to train - set flag to load models after training
         self._auto_load_after_training = True
 
-        # Start training for missing models
         if rf_needed and not rf_exists:
             self.train_classifier_rf()
         if cnn_needed and not cnn_exists:
@@ -809,7 +795,6 @@ class MainApp:
             except Exception as e:
                 messagebox.showerror("Error", f"Could not load self-supervised CSV:\n{e}", parent=self.master)
                 return
-        # Create callback for missing fields prompt
         def prompt_update_missing_fields(num_csvs, missing_fields):
             """Prompt user about updating CSVs with missing fields."""
             fields_str = "\n  - ".join(missing_fields)
@@ -900,11 +885,9 @@ class MainApp:
                 self._check_model_status()
                 return
 
-            # If auto-load flag is set, load the models
             if self._auto_load_after_training:
-                self._auto_load_after_training = False  # Reset flag
+                self._auto_load_after_training = False
 
-                # Load the models based on model type
                 model_type = self.model_type.get()
                 rf_needed = model_type in ["DICOM Header Model", "Header + Image Model"]
                 cnn_needed = model_type in ["Image-Based Model", "Header + Image Model"]
@@ -914,11 +897,9 @@ class MainApp:
                 rf_model_path = os.path.join(model_files_dir, "rf_classifier_model.joblib")
                 cnn_model_path = os.path.join(model_files_dir, "cnn_classifier_model.pth")
 
-                # Load RF model if needed and exists
                 if rf_needed and os.path.exists(rf_model_path):
                     self._load_classifier_and_encoder()
 
-                # Load CNN model if needed and exists
                 if cnn_needed and os.path.exists(cnn_model_path):
                     self._load_image_classifier()
 
@@ -928,12 +909,10 @@ class MainApp:
         if self.is_running: return
         current_mode = self.classification_mode.get()
 
-        # Handle Analyze mode separately
         if current_mode == "Analyze":
             self.start_analysis()
             return
 
-        # Handle Verify mode separately
         if current_mode == "Verify":
             self.start_verification()
             return
@@ -959,9 +938,7 @@ class MainApp:
         logger.info(f"Input directory: {input_dir}")
         logger.info(f"Output directory: {output_dir}")
 
-        # New: if hierarchy.yaml exists in output_dir, ask user whether to load it or rescan
-        # Also check for config.py and offer to load it
-        # Automatically load existing hierarchy and config files if they exist
+        # Automatically load hierarchy.yaml and config.py from the output directory if present
         existing_hierarchy = None
         try:
             hierarchy_path = os.path.join(output_dir, "hierarchy.yaml")
@@ -1095,7 +1072,6 @@ class MainApp:
                     batch_size = 64
                     chunks = [all_files[i:i+batch_size] for i in range(0, len(all_files), batch_size)]
 
-                    # Use the batched scanner; import the batch function
                     from .scanner import check_dicom_batch
 
                     processed = 0
@@ -1107,7 +1083,6 @@ class MainApp:
                         else:
                             # if a worker returned None or failed, assume the corresponding chunk files yielded None
                             processed += batch_size
-                        # clamp processed to total files
                         if processed > total_files:
                             processed = total_files
                         gui.update(processed, total_files)
@@ -1133,11 +1108,10 @@ class MainApp:
                 except Exception:
                     total_groups = max(1, len(dicom_records))
 
-                # Reuse the same GUI window for hierarchy building and thumbnail generation
+                # Hierarchy building and thumbnail generation report progress in the same ProgressGUI window
                 organize_started = False
                 thumbnail_started = False
                 try:
-                    # Callback for hierarchy building progress
                     def _build_progress_cb(n):
                         nonlocal organize_started
                         try:
@@ -1149,7 +1123,6 @@ class MainApp:
                         except Exception:
                             pass
 
-                    # Callback for thumbnail generation progress
                     def _thumbnail_progress_cb(current, total):
                         nonlocal thumbnail_started
                         try:
@@ -1167,7 +1140,6 @@ class MainApp:
                         progress_callback=_build_progress_cb,
                         thumbnail_progress_callback=_thumbnail_progress_cb
                     )
-                    # save hierarchy to YAML
                     try:
                         write_yaml_hierarchy(hierarchy, output_dir)
                     except Exception as e:
@@ -1184,7 +1156,6 @@ class MainApp:
             all_studies = []
             for mrn, studies in hierarchy.items():
                 for study_uid, study_data in studies.items():
-                    # Extract accession number and series from the hierarchy structure
                     accn = study_data.get("accn", "")
                     series_dict = study_data.get("series", {})
                     all_studies.append((mrn, study_uid, accn, series_dict))
@@ -1281,7 +1252,6 @@ class MainApp:
             messagebox.showerror("Error", "Please specify a valid output directory.", parent=self.master)
             return
 
-        # Ask user for confirmation
         response = messagebox.askyesno(
             "Convert NIfTIs",
             "This will convert all classified studies to NIfTI format (if not already converted).\n\n"
@@ -1296,7 +1266,6 @@ class MainApp:
 
         logger.info("Starting NIfTI conversion utility")
 
-        # Check for dcm2niix
         dcm2niix_path = shutil.which("dcm2niix")
         if not dcm2niix_path:
             logger.error("dcm2niix not found in PATH")
@@ -1307,7 +1276,6 @@ class MainApp:
             )
             return
 
-        # Count studies to process
         study_folders = []
         classified_dir = get_classified_outputs_dir(output_dir)
         if os.path.isdir(classified_dir):
@@ -1323,7 +1291,6 @@ class MainApp:
             messagebox.showinfo("No Studies", "No classified studies found in output directory.", parent=self.master)
             return
 
-        # Create progress window
         progress_window = ctk.CTkToplevel(self.master)
         progress_window.title("Converting to NIfTI...")
         progress_window.geometry("500x150")
@@ -1348,11 +1315,9 @@ class MainApp:
             for idx, study_path in enumerate(study_folders):
                 study_id = extract_study_id_from_path(study_path)
 
-                # Update UI
                 progress_window.after(0, lambda i=idx, sid=study_id: current_label.configure(text=f"Processing: {sid}"))
                 progress_window.after(0, lambda i=idx: progress_bar.config(value=i))
 
-                # Read classification CSV
                 csv_path = os.path.join(study_path, get_study_csv_name(study_id))
                 try:
                     import pandas as pd
@@ -1367,17 +1332,15 @@ class MainApp:
                         if not path or not os.path.exists(path):
                             continue
 
-                        # Check if NIfTI already exists
                         series_dir = os.path.dirname(path)
                         expected_nifti_name = get_nifti_name(study_id, classification)
                         expected_nifti_path = os.path.join(study_path, expected_nifti_name)
 
-                        # Check if NIfTI file exists
+                        # Skip if the NIfTI already exists
                         if os.path.exists(expected_nifti_path):
                             skipped_count += 1
                             continue
 
-                        # Convert to NIfTI using existing function
                         try:
                             processing.convert_series_to_nifti(
                                 series_dir=series_dir,
@@ -1393,11 +1356,9 @@ class MainApp:
                     logger.error(f"Error processing {csv_path}: {e}")
                     error_count += 1
 
-            # Update final progress
             progress_window.after(0, lambda: progress_bar.config(value=len(study_folders)))
             progress_window.after(0, lambda: current_label.configure(text="Complete!"))
 
-            # Show summary
             summary = "Conversion Complete!\n\n"
             summary += f"Converted: {converted_count}\n"
             summary += f"Skipped (already exist): {skipped_count}\n"
@@ -1423,7 +1384,6 @@ class MainApp:
             messagebox.showerror("Error", "Please specify a valid output directory.", parent=self.master)
             return
 
-        # Prompt user for export location
         export_dir = filedialog.askdirectory(
             title="Select Export Directory",
             parent=self.master
@@ -1435,7 +1395,6 @@ class MainApp:
 
         logger.info(f"Starting DICOM export to: {export_dir}")
 
-        # Count studies to process
         study_folders = []
         classified_dir = get_classified_outputs_dir(output_dir)
         if os.path.isdir(classified_dir):
@@ -1451,7 +1410,6 @@ class MainApp:
             messagebox.showinfo("No Studies", "No classified studies found in output directory.", parent=self.master)
             return
 
-        # Create progress window
         progress_window = ctk.CTkToplevel(self.master)
         progress_window.title("Exporting DICOMs...")
         progress_window.geometry("500x150")
@@ -1480,11 +1438,9 @@ class MainApp:
             for idx, study_path in enumerate(study_folders):
                 study_id = extract_study_id_from_path(study_path)
 
-                # Update UI
                 progress_window.after(0, lambda i=idx, sid=study_id: current_label.configure(text=f"Processing: {sid}"))
                 progress_window.after(0, lambda i=idx: progress_bar.config(value=i))
 
-                # Read classification CSV
                 csv_path = os.path.join(study_path, get_study_csv_name(study_id))
                 try:
                     with open(csv_path, 'r', newline='') as f:
@@ -1503,7 +1459,6 @@ class MainApp:
                                 continue
 
                             try:
-                                # Read metadata from the DICOM file
                                 ds = pydicom.dcmread(path, stop_before_pixels=True)
                                 mrn = str(getattr(ds, 'PatientID', '')).strip()
                                 study_uid = str(getattr(ds, 'StudyInstanceUID', '')).strip()
@@ -1514,7 +1469,6 @@ class MainApp:
                                     error_count += 1
                                     continue
 
-                                # Check if we've already processed this series
                                 series_key = (mrn, study_uid, series_uid, classification)
                                 if series_key in processed_series:
                                     continue
@@ -1564,10 +1518,8 @@ class MainApp:
                                         f"{instance_uid}.dcm"
                                     )
 
-                                    # Create directories if needed
                                     os.makedirs(os.path.dirname(export_path), exist_ok=True)
 
-                                    # Copy the file
                                     shutil.copy2(dicom_file, export_path)
                                     total_files_copied += 1
 
@@ -1579,11 +1531,9 @@ class MainApp:
                     logger.error(f"Error processing {csv_path}: {e}")
                     error_count += 1
 
-            # Update final progress
             progress_window.after(0, lambda: progress_bar.config(value=len(study_folders)))
             progress_window.after(0, lambda: current_label.configure(text="Complete!"))
 
-            # Show summary
             summary = "DICOM Export Complete!\n\n"
             summary += f"Files copied: {total_files_copied}\n"
             summary += f"Series skipped (Other/None): {skipped_count}\n"
@@ -1609,7 +1559,6 @@ class MainApp:
             messagebox.showerror("Error", "Please specify a valid output directory.", parent=self.master)
             return
 
-        # Create dialog with checkboxes
         dialog = ctk.CTkToplevel(self.master)
         dialog.title("Erase Data")
         dialog.geometry("550x340")
@@ -1619,7 +1568,6 @@ class MainApp:
 
         ctk.CTkLabel(dialog, text="Select data to erase:", font=ctk.CTkFont(size=13, weight="bold")).pack(pady=scale_value(10))
 
-        # Checkboxes
         delete_classifications = tk.BooleanVar(value=False)
         delete_models = tk.BooleanVar(value=False)
         delete_hierarchy = tk.BooleanVar(value=False)
@@ -1656,7 +1604,6 @@ class MainApp:
             font=ctk.CTkFont(size=12, weight="bold")
         ).pack(pady=scale_value(10))
 
-        # Button frame
         button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
         button_frame.pack(pady=scale_value(10))
 
@@ -1665,7 +1612,6 @@ class MainApp:
                 messagebox.showwarning("No Selection", "Please select at least one option to delete.", parent=dialog)
                 return
 
-            # Build confirmation message
             items = []
             if delete_classifications.get():
                 items.append("- All classification study folders")
@@ -1779,7 +1725,6 @@ class MainApp:
                     except Exception as e:
                         errors.append(f"Failed to delete config.py: {e}")
 
-            # Show results
             if deleted_items or errors:
                 # Create simplified messages based on what was deleted
                 messages = []
@@ -1813,7 +1758,6 @@ class MainApp:
     def _edit_config_file(self):
         """Open the currently active config.py in the system's default text editor."""
         try:
-            # Get path to the currently active config file
             if self.active_config_path and os.path.exists(self.active_config_path):
                 # Using a custom config that was loaded
                 config_path = self.active_config_path
@@ -1840,7 +1784,6 @@ class MainApp:
             else:  # Linux and others
                 subprocess.Popen(['xdg-open', config_path])
 
-            # Show different message based on config source
             if config_source == "custom":
                 message = (
                     f"The currently active config file has been opened:\n{config_path}\n\n"
@@ -1870,7 +1813,6 @@ class MainApp:
     def _reload_config(self, parent_dialog=None):
         """Reload the currently active config to apply any changes."""
         try:
-            # Determine which config to reload
             if self.active_config_path and os.path.exists(self.active_config_path):
                 # Reload custom config file
                 config_path = self.active_config_path
@@ -1897,10 +1839,6 @@ class MainApp:
             ALLOW_DUPLICATE_LABELS = config.ALLOW_DUPLICATE_LABELS
             THUMBNAIL_SCALE_FACTOR = config.THUMBNAIL_SCALE_FACTOR
 
-            # Update the UI elements if they need to reflect updated values
-            # (input_dir and output_dir StringVars are set from these at startup)
-
-            # Show success message with warning
             config_source = "custom" if self.active_config_path else "repository"
             messagebox.showinfo(
                 "Config Reloaded",
@@ -1948,7 +1886,6 @@ class MainApp:
             # Get expected globals from the repository config
             expected_globals = self._get_config_globals()
 
-            # Load the config file and check for required globals
             import importlib.util
             spec = importlib.util.spec_from_file_location("temp_config", config_path)
             if spec is None or spec.loader is None:
@@ -1957,7 +1894,6 @@ class MainApp:
             temp_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(temp_module)
 
-            # Check which globals are missing
             missing_vars = []
             for var_name in expected_globals:
                 if not hasattr(temp_module, var_name):
@@ -1984,7 +1920,6 @@ class MainApp:
             bool: True if successful, False otherwise
         """
         try:
-            # Validate the config file first
             success, missing_vars, error_msg = self._validate_config_file(config_path)
             if not success:
                 if missing_vars:
@@ -2003,16 +1938,13 @@ class MainApp:
                     )
                     return False
 
-            # Load the config file
             import importlib.util
             spec = importlib.util.spec_from_file_location("temp_config", config_path)
             temp_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(temp_module)
 
-            # Get list of globals to update
             config_globals = self._get_config_globals()
 
-            # Update the config module with values from the loaded file
             for var_name in config_globals:
                 if hasattr(temp_module, var_name):
                     setattr(config, var_name, getattr(temp_module, var_name))
@@ -2166,7 +2098,6 @@ class MainApp:
             return
 
         try:
-            # Get the path to the currently active config (repository or custom)
             if self.active_config_path and os.path.exists(self.active_config_path):
                 # Save the currently active custom config
                 source_config_path = self.active_config_path
@@ -2176,13 +2107,10 @@ class MainApp:
                 if source_config_path.endswith('.pyc'):
                     source_config_path = source_config_path[:-1]  # Remove 'c' to get .py
 
-            # Destination path in output directory
             dest_path = os.path.join(output_dir, "config.py")
 
-            # Copy the file
             shutil.copy(source_config_path, dest_path)
 
-            # Make the saved config the active config
             self.active_config_path = dest_path
 
             messagebox.showinfo(
@@ -2203,7 +2131,6 @@ class MainApp:
 
     def _load_config(self):
         """Load a config.py file from a user-selected location."""
-        # Open file dialog to select config file
         config_path = filedialog.askopenfilename(
             title="Select Config File",
             initialdir=self.output_dir.get() if os.path.isdir(self.output_dir.get()) else None,
@@ -2213,7 +2140,6 @@ class MainApp:
         if not config_path:
             return  # User cancelled
 
-        # Load the config file
         if self._load_config_from_file(config_path):
             messagebox.showinfo(
                 "Config Loaded",
@@ -2236,7 +2162,6 @@ class MainApp:
             messagebox.showerror("Error", "Please specify a valid input directory.", parent=self.master)
             return
 
-        # Ensure output directory exists
         try:
             os.makedirs(output_dir, exist_ok=True)
         except Exception as e:
@@ -2512,7 +2437,6 @@ class MainApp:
         THUMB_PX = scale_value(192)  # display size per thumbnail
         PAD = scale_value(6)
 
-        # Header label
         ctk.CTkLabel(
             win,
             text=(
@@ -2659,7 +2583,6 @@ class MainApp:
             prefer3d_vars.append(prefer3d_var)
             include_vars.append(include_var)
 
-        # Buttons row
         btn_frame = ctk.CTkFrame(win, fg_color="transparent")
         btn_frame.grid(row=2, column=0, columnspan=2, pady=PAD * 2)
 
@@ -3121,7 +3044,6 @@ class MainApp:
                 self.classification_finished(aborted=False)
                 return
 
-            # Combine all classifications
             all_df = pd.concat(all_classifications, ignore_index=True)
 
             # 2. Group by TARGET_SERIES
@@ -3163,7 +3085,6 @@ class MainApp:
                 target_df = series_groups[target_series]
                 total_series = len(target_df)
 
-                # Check if no series for this target
                 if total_series == 0:
                     continue
 
@@ -3205,10 +3126,8 @@ class MainApp:
                         self.classification_finished(aborted=True)
                         return
 
-                    # Add incorrect studies to deletion list
                     studies_to_delete.update(incorrect_studies)
 
-                    # Update progress
                     current_window += 1
                     self.progress_bar.config(value=current_window)
                     self.master.update_idletasks()
@@ -3267,7 +3186,6 @@ from .config_io import (format_prefer3d_dict as _format_prefer3d_dict,
                         replace_single_assignment as _replace_single_assignment)
 
 
-# At end of file, add asynchronous image loader and per-study classification GUI
 from . import processing
 from .processing import load_center_slice_fast
 
@@ -3528,18 +3446,15 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
     # Scrollable content area (canvas + scrollbar in row 0)
     _canvas, content_frame = _make_scrollable_frame(root, pad_x=scale_value(20), pad_y=scale_value(20))
 
-    # Configure grid columns
     for i in range(NUM_COLUMNS):
         content_frame.grid_columnconfigure(i, weight=1)
 
     # Thumbnail pixel size (DPI-scaled + user scale factor)
     thumb_px = scale_thumbnail(256)
 
-    # Create loading indicator image
     loading_img = Image.new("RGB", (thumb_px, thumb_px), (45, 45, 45))
     tk_loading = ImageTk.PhotoImage(loading_img)
 
-    # Store toggle states and widgets
     toggle_states = {}  # path -> BooleanVar (True = Incorrect, False = Correct)
     toggle_buttons = {}  # path -> Button widget
     panel_widgets = {}  # path -> Label widget
@@ -3553,7 +3468,6 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         series_desc = row_data.get('SeriesDescription', 'Unknown')
         study_folder = row_data['study_folder']
 
-        # Create frame for this series
         series_frame = tk.Frame(content_frame, bg=ui_theme.PANEL_BG,
                                 padx=scale_value(5), pady=scale_value(5))
         series_frame.grid(row=row_num, column=col_num, sticky="nsew")
@@ -3573,7 +3487,6 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         # Mouse-wheel over the thumbnail scrolls through the full series
         attach_series_scrolling(panel, series_path, thumb_px)
 
-        # Series description label
         tk.Label(series_frame, text=series_desc, wraplength=scale_thumbnail(250), justify="center",
                  bg=ui_theme.PANEL_BG, fg="#e0e0e0").grid(
             row=1, column=0, pady=scale_value(5))
@@ -3608,7 +3521,7 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     def load_single_thumbnail(series_path, panel, output_dir):
-        """Load a single thumbnail - optimized version with pre-generated thumbnail support (JPEG/PNG)."""
+        """Load a single thumbnail, preferring a pre-generated thumbnail (JPEG/PNG)."""
         try:
             pil_img = None
 
@@ -3629,7 +3542,6 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
             if pil_img is None:
                 return None
 
-            # Resize to target size
             target_size = scale_thumbnail(256)
             pil_img = pil_img.resize((target_size, target_size))
 
@@ -3653,11 +3565,9 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         except Exception as e:
             logger.debug(f"Error updating thumbnail: {e}")
 
-    # Start parallel loading in background
     def load_all_thumbnails():
         """Load all thumbnails in parallel."""
         with ThreadPoolExecutor(max_workers=NUM_PARALLEL_WORKERS) as executor:
-            # Submit all loading tasks
             future_to_path = {
                 executor.submit(load_single_thumbnail, row_data['Path'], panel_widgets[row_data['Path']], output_dir): row_data['Path']
                 for idx, row_data in batch_df.iterrows()
@@ -3674,10 +3584,8 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
                 except Exception as e:
                     logger.debug(f"Error in parallel loading for {series_path}: {e}")
 
-    # Start loading thread
     threading.Thread(target=load_all_thumbnails, daemon=True).start()
 
-    # Button frame at bottom
     button_frame = ctk.CTkFrame(root, fg_color="transparent")
     button_frame.grid(row=1, column=0, sticky="ew", pady=scale_value(10))
     button_frame.grid_columnconfigure(0, weight=1)
@@ -3707,7 +3615,6 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
                 marked_incorrect.add(study_folder)
 
         if marked_incorrect:
-            # Confirm deletion
             response = messagebox.askyesno(
                 "Mark for Deletion",
                 f"{len(marked_incorrect)} series marked as incorrect.\n\n"
@@ -3723,7 +3630,6 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         root.destroy()
         done_event.set()
 
-    # Create buttons
     action_font = ctk.CTkFont(size=15, weight="bold")
     btn_stop = ctk.CTkButton(
         button_frame,
@@ -3750,12 +3656,10 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         command=on_approve
     )
 
-    # Grid buttons
     btn_stop.grid(row=0, column=1, padx=scale_value(10))
     btn_skip.grid(row=0, column=2, padx=scale_value(10))
     btn_approve.grid(row=0, column=3, padx=scale_value(10))
 
-    # add hotkeys
     root.bind("<a>", lambda event: on_stop_all())
     root.bind("<s>", lambda event: on_skip())
     root.bind("<d>", lambda event: on_approve())
@@ -3769,7 +3673,6 @@ def load_image_worker(dicom_paths, panel_label_ref, root):
     of the PhotoImage on the main thread. The worker only does PIL work; the
     PhotoImage is constructed on the Tk main thread to avoid invisible images.
     """
-    # Calculate target size based on scale factor + thumbnail scale factor
     target_size = scale_thumbnail(256)
 
     try:
@@ -3990,10 +3893,9 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                                 self.var.set(v)
                             except Exception:
                                 pass
-                            # update this button's display
                             self._update_display(v)
-                            # enforce uniqueness in Semi-Auto mode: if user selected a non-'Other' value,
-                            # find any other dropdowns with that same value and set them to 'Other'
+                            # enforce uniqueness when duplicates are not allowed: clear this
+                            # value from any other dropdowns that currently hold it
                             try:
                                 self._handle_duplicates(v)
                             except Exception:
@@ -4039,8 +3941,8 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                     pass
 
             def _handle_duplicates(self, val):
-                # Enforce uniqueness based on AUTO_CLEAR_DUPLICATE_LABELS config
-                # When enabled, selecting a non-'Other' label clears that label from all other dropdowns
+                # When ALLOW_DUPLICATE_LABELS is disabled, selecting a non-'Other'
+                # label clears that label from all other dropdowns
                 if ALLOW_DUPLICATE_LABELS or not self.all_vars or val == 'Other':
                     return
                 try:
@@ -4086,7 +3988,6 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 except Exception:
                     pass
 
-        # create control row and widget
         control_row = tk.Frame(series_frame, bg=ui_theme.PANEL_BG)
         cd = ColoredDropdown(control_row, variable, dropdown_values, color_map, key=first_path, all_vars=dropdown_vars, mode=mode)
         try:
@@ -4115,8 +4016,8 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         # Mouse-wheel over the thumbnail scrolls through the full series
         attach_series_scrolling(panel, first_path, thumb_px)
 
-        # Enforce uniqueness for initial assignments based on ALLOW_DUPLICATE_LABELS config
-        # If enabled and this dropdown's initial value duplicates an existing assignment, reset it to 'Other'
+        # If duplicate labels are not allowed and this dropdown's initial value
+        # duplicates an existing assignment, reset it to 'Other'
         try:
             if not ALLOW_DUPLICATE_LABELS and variable.get() != 'Other':
                 for k, ov in dropdown_vars.items():
@@ -4139,7 +4040,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     def load_single_thumbnail(first_path, panel, dicom_paths, thumbnail_path):
-        """Load a single thumbnail - optimized version with pre-generated thumbnail support (JPEG/PNG)."""
+        """Load a single thumbnail, preferring a pre-generated thumbnail (JPEG/PNG)."""
         try:
             pil_img = None
 
@@ -4162,13 +4063,12 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 pil_img = load_center_slice_fast(first_path)
 
                 if pil_img is None:
-                    # Fallback to original method
+                    # Fall back to the slower full-series loader
                     pil_img = processing.load_center_slice(dicom_path_list)
 
             if pil_img is None:
                 return None
 
-            # Resize to target size
             target_size = scale_thumbnail(256)
             pil_img = pil_img.resize((target_size, target_size))
 
@@ -4196,11 +4096,9 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         except Exception as e:
             logger.debug(f"Error updating thumbnail: {e}")
 
-    # Start parallel loading in background
     def load_all_thumbnails():
         """Load all thumbnails in parallel."""
         with ThreadPoolExecutor(max_workers=NUM_PARALLEL_WORKERS) as executor:
-            # Submit all loading tasks
             future_to_path = {
                 executor.submit(load_single_thumbnail, path, panel_data[0], panel_data[1], panel_data[2]): path
                 for path, panel_data in panel_widgets.items()
@@ -4217,7 +4115,6 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 except Exception as e:
                     logger.debug(f"Error in parallel loading for {series_path}: {e}")
 
-    # Start loading thread
     threading.Thread(target=load_all_thumbnails, daemon=True).start()
 
     button_frame = ctk.CTkFrame(root, fg_color="transparent")
@@ -4263,7 +4160,6 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         except Exception:
             pass
 
-    # make buttons
     action_font = ctk.CTkFont(size=15, weight="bold")
     btn_stop = ctk.CTkButton(button_frame, fg_color=ui_theme.RED, hover_color=ui_theme.RED_HOVER,
                              text="Stop All (a)", font=action_font, command=on_stop)
@@ -4272,12 +4168,10 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     btn_done = ctk.CTkButton(button_frame, fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER,
                              text="Approve (d)", font=action_font, command=on_done)
 
-    # grid buttons
     btn_stop.grid(row=0, column=1, padx=scale_value(10))
     btn_skip.grid(row=0, column=2, padx=scale_value(10))
     btn_done.grid(row=0, column=3, padx=scale_value(10))
 
-    # add hotkeys
     root.bind("<a>", lambda event: on_stop())
     root.bind("<s>", lambda event: on_skip())
     root.bind("<d>", lambda event: on_done())

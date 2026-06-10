@@ -46,12 +46,10 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
             # ── Analyze mode: use the pre-loaded self-supervised DataFrame ────
             gui.update_status("1/6: Using self-supervised classification data for Header Model…")
             master_df = preloaded_df.copy()
-            # Create model_files directory and save a copy of the data used
             model_files_dir = os.path.join(output_dir, "model_files")
             os.makedirs(model_files_dir, exist_ok=True)
         else:
             # ── Normal mode: check for missing fields then aggregate CSVs ─────
-            # Check for missing fields in existing CSVs
             gui.update_status("Checking for missing DICOM header fields...")
             if gui.is_cancelled():
                 logger.info("Header model training cancelled by user.")
@@ -125,7 +123,6 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
 
             master_df = pd.concat(all_data, ignore_index=True)
 
-            # Create model_files directory
             model_files_dir = os.path.join(output_dir, "model_files")
             os.makedirs(model_files_dir, exist_ok=True)
 
@@ -205,7 +202,7 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
         joblib.dump(model, model_filename)
         joblib.dump(target_encoder, target_encoder_filename)
         joblib.dump(feature_encoder, feature_encoder_filename)
-        joblib.dump(field_types, field_types_filename)  # Save detected field types
+        joblib.dump(field_types, field_types_filename)
 
         gui.update_status("6/6: Evaluating model and saving results...")
         y_pred = model.predict(X_test)
@@ -269,12 +266,10 @@ def get_series_probabilities(dicom_path, model, feature_encoder, field_types=Non
     if not all([model, feature_encoder]):
         return None
 
-    # Try to load field types if not provided
+    # Field types are not loaded from disk here; when None, the preprocessing
+    # below falls back to automatic field-type detection.
     if field_types is None:
         try:
-            # Try to find field_types file in same directory as model
-            # Assuming model was loaded from a specific path, try to find field_types there
-            # For now, we'll fall back to automatic detection if not found
             field_types = None
         except Exception:
             field_types = None
