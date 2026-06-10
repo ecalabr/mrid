@@ -13,6 +13,7 @@ TEST_MODULES = [
     'tests.test_prep',
     'tests.test_field_detection',
     'tests.test_config',
+    'tests.test_config_io',
     'tests.test_processing',
     'tests.test_cnn_slices',
     'tests.test_csv_field_updater',

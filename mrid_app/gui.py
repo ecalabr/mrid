@@ -358,6 +358,7 @@ class MainApp:
         # Configuration menu
         config_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Configuration", menu=config_menu)
+        config_menu.add_command(label="Run Config Wizard", command=self._run_config_wizard)
         config_menu.add_command(label="Save Config File", command=self._save_config)
         config_menu.add_command(label="Load Config File", command=self._load_config)
         config_menu.add_command(label="Edit Config File", command=self._edit_config_file)
@@ -978,38 +979,8 @@ class MainApp:
                 except Exception as e:
                     logger.warning(f"Failed to load config.py: {e} - using current config")
             else:
-                # No config in output dir — ask the user if they want to copy the default
-                copy_default = messagebox.askyesno(
-                    "No Config File Found",
-                    "No config.py was found in the output directory.\n\n"
-                    "Would you like to copy the default config file to the output directory "
-                    "and use it as the active configuration?\n\n"
-                    "Select 'No' to continue using the default repository config.",
-                    parent=self.master
-                )
-                if copy_default:
-                    try:
-                        # Determine the source: active custom config or the repo config
-                        if self.active_config_path and os.path.exists(self.active_config_path):
-                            source_config_path = self.active_config_path
-                        else:
-                            source_config_path = config.__file__
-                            if source_config_path.endswith('.pyc'):
-                                source_config_path = source_config_path[:-1]
-
-                        os.makedirs(output_dir, exist_ok=True)
-                        shutil.copy(source_config_path, config_path)
-                        logger.info(f"Copied default config to: {config_path}")
-
-                        if self._load_config_from_file(config_path):
-                            self.active_config_path = config_path
-                            logger.info(f"Loaded copied config from: {config_path}")
-                        else:
-                            logger.warning(f"Copied config to {config_path} but failed to load it, using current config")
-                    except Exception as e:
-                        logger.warning(f"Failed to copy default config to output directory: {e} - using current config")
-                else:
-                    logger.info("User declined to copy default config - continuing with repository config")
+                # No config in output dir — offer the wizard / copy / keep choice
+                self._handle_missing_config(output_dir, config_path)
 
             # Automatically load hierarchy if it exists
             if hierarchy_exists:
@@ -2016,13 +1987,21 @@ class MainApp:
             # Validate the config file first
             success, missing_vars, error_msg = self._validate_config_file(config_path)
             if not success:
-                messagebox.showwarning(
-                    "Invalid Config File",
-                    f"The selected config file is invalid:\n\n{error_msg}\n\n"
-                    "The original configuration will be used.",
-                    parent=self.master
-                )
-                return False
+                if missing_vars:
+                    # Config predates newer settings — load it and keep the
+                    # current defaults for whatever it lacks.
+                    logger.warning(
+                        f"Config {config_path} is missing newer settings "
+                        f"({', '.join(missing_vars)}); defaults will be used for those."
+                    )
+                else:
+                    messagebox.showwarning(
+                        "Invalid Config File",
+                        f"The selected config file is invalid:\n\n{error_msg}\n\n"
+                        "The original configuration will be used.",
+                        parent=self.master
+                    )
+                    return False
 
             # Load the config file
             import importlib.util
@@ -2061,6 +2040,118 @@ class MainApp:
             )
             logger.error(f"Failed to load config from {config_path}: {e}")
             return False
+
+    def _run_config_wizard(self):
+        """Run the config wizard on the currently active config file."""
+        if self.is_running:
+            messagebox.showwarning("Busy", "Cannot run the config wizard while a workflow is running.",
+                                   parent=self.master)
+            return
+
+        output_dir = self.output_dir.get()
+        output_config = os.path.join(output_dir, "config.py") if output_dir else None
+
+        # Choose the wizard's template (initial values) and save destination
+        if self.active_config_path and os.path.exists(self.active_config_path):
+            base_path = save_path = self.active_config_path
+        elif output_config and os.path.exists(output_config):
+            base_path = save_path = output_config
+        elif output_dir and os.path.isdir(output_dir):
+            base_path = None  # repository defaults
+            save_path = output_config
+        else:
+            messagebox.showerror("Error", "Please specify a valid output directory first.",
+                                 parent=self.master)
+            return
+
+        from .config_wizard import run_config_wizard
+        saved = run_config_wizard(self.master, base_config_path=base_path, save_path=save_path)
+        if saved and self._load_config_from_file(saved):
+            self.active_config_path = saved
+            self._check_model_status()
+            messagebox.showinfo(
+                "Config Saved",
+                f"Configuration written and loaded:\n{saved}",
+                parent=self.master
+            )
+
+    def _prompt_no_config(self):
+        """
+        Ask the user what to do when the output directory has no config.py.
+        Returns 'wizard', 'copy', or 'skip'.
+        """
+        result = {"choice": "skip"}
+
+        dlg = ctk.CTkToplevel(self.master)
+        dlg.title("No Config File Found")
+        cascade(dlg, self.master)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        ctk.CTkLabel(
+            dlg,
+            text=("No config.py was found in the output directory.\n\n"
+                  "Run the Config Wizard to set up this project, or copy the "
+                  "default config file as-is.\n"
+                  "Choose 'Keep Defaults' to continue with the repository config "
+                  "without saving anything."),
+            wraplength=scale_value(440), justify="left"
+        ).pack(padx=scale_value(20), pady=scale_value(16))
+
+        btns = ctk.CTkFrame(dlg, fg_color="transparent")
+        btns.pack(pady=(0, scale_value(16)))
+
+        def choose(choice):
+            result["choice"] = choice
+            dlg.grab_release()
+            dlg.destroy()
+
+        ctk.CTkButton(btns, text="Run Config Wizard", width=150,
+                      fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER,
+                      command=lambda: choose("wizard")).pack(side="left", padx=scale_value(6))
+        ctk.CTkButton(btns, text="Copy Default Config", width=150,
+                      command=lambda: choose("copy")).pack(side="left", padx=scale_value(6))
+        ctk.CTkButton(btns, text="Keep Defaults", width=130,
+                      fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
+                      command=lambda: choose("skip")).pack(side="left", padx=scale_value(6))
+
+        dlg.protocol("WM_DELETE_WINDOW", lambda: choose("skip"))
+        dlg.wait_window()
+        return result["choice"]
+
+    def _handle_missing_config(self, output_dir, config_path):
+        """
+        Offer the wizard / copy-default / keep-defaults choice for an output
+        directory without config.py, and apply the user's selection.
+        """
+        choice = self._prompt_no_config()
+
+        if choice == "wizard":
+            from .config_wizard import run_config_wizard
+            base = self.active_config_path if (self.active_config_path and
+                                               os.path.exists(self.active_config_path)) else None
+            os.makedirs(output_dir, exist_ok=True)
+            saved = run_config_wizard(self.master, base_config_path=base, save_path=config_path)
+            if saved and self._load_config_from_file(saved):
+                self.active_config_path = saved
+                logger.info(f"Config wizard created and loaded: {saved}")
+        elif choice == "copy":
+            try:
+                if self.active_config_path and os.path.exists(self.active_config_path):
+                    source_config_path = self.active_config_path
+                else:
+                    source_config_path = config.__file__
+                    if source_config_path.endswith('.pyc'):
+                        source_config_path = source_config_path[:-1]
+                os.makedirs(output_dir, exist_ok=True)
+                shutil.copy(source_config_path, config_path)
+                logger.info(f"Copied default config to: {config_path}")
+                if self._load_config_from_file(config_path):
+                    self.active_config_path = config_path
+            except Exception as e:
+                logger.warning(f"Failed to copy default config to output directory: {e}")
+        else:
+            logger.info("User declined config setup - continuing with current config")
 
     def _save_config(self):
         """Save the current config.py file to the output directory and make it the active config."""
@@ -2152,31 +2243,10 @@ class MainApp:
             messagebox.showerror("Error", f"Cannot create output directory:\n{e}", parent=self.master)
             return
 
-        # Config copy prompt (same logic as start_classification)
+        # Config setup prompt (same logic as start_classification)
         config_path = os.path.join(output_dir, "config.py")
         if not os.path.exists(config_path):
-            copy_default = messagebox.askyesno(
-                "No Config File Found",
-                "No config.py was found in the output directory.\n\n"
-                "Would you like to copy the default config file to the output directory "
-                "and use it as the active configuration?\n\n"
-                "Select 'No' to continue using the default repository config.",
-                parent=self.master
-            )
-            if copy_default:
-                try:
-                    if self.active_config_path and os.path.exists(self.active_config_path):
-                        source_config_path = self.active_config_path
-                    else:
-                        source_config_path = config.__file__
-                        if source_config_path.endswith('.pyc'):
-                            source_config_path = source_config_path[:-1]
-                    shutil.copy(source_config_path, config_path)
-                    if self._load_config_from_file(config_path):
-                        self.active_config_path = config_path
-                        logger.info(f"Copied and loaded config to: {config_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to copy config: {e}")
+            self._handle_missing_config(output_dir, config_path)
 
         # Check whether scanning has already been done
         hierarchy_path = os.path.join(output_dir, "hierarchy.yaml")
@@ -3190,111 +3260,11 @@ class MainApp:
 
 
 
-# ── Config rewrite helpers (used by _write_analysis_to_config) ────────────────
-
-def _format_prefer3d_dict(prefer3d_dict: dict) -> str:
-    """
-    Render a PREFER_3D dict as a nicely-indented Python literal, e.g.::
-
-        {
-            "T1": True,
-            "T2": False,
-        }
-    """
-    lines = ["{"]
-    for k, v in prefer3d_dict.items():
-        lines.append(f'    "{k}": {v},')
-    lines.append("}")
-    return "\n".join(lines)
-
-
-def _rewrite_config_assignments(source: str, replacements: dict) -> str:
-    """
-    Replace top-level simple assignment statements in *source* for each variable
-    name in *replacements*.
-
-    Strategy (robust against multi-line values and varied formatting):
-    1. Tokenise the source to find each target assignment's start line.
-    2. Use the ``ast`` module to find the byte-offset of the whole statement
-       (including its complete right-hand side, however many lines it spans).
-    3. Splice the new value string in place of the old RHS text.
-
-    Parameters
-    ----------
-    source       : str   – full content of the config file
-    replacements : dict  – {var_name: new_rhs_repr_string}
-
-    Returns
-    -------
-    str  – updated source
-    """
-    import ast
-
-    for var_name, new_rhs in replacements.items():
-        source = _replace_single_assignment(source, var_name, new_rhs)
-    return source
-
-
-def _replace_single_assignment(source: str, var_name: str, new_rhs: str) -> str:
-    """
-    Replace the RHS of a single top-level ``var_name = <expr>`` assignment.
-
-    If the variable is not found in the source it is *appended* at the end.
-    """
-    import ast
-
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        # Fall back: crude regex replacement if the file has a syntax error
-        import re
-        pattern = re.compile(
-            r'^' + re.escape(var_name) + r'\s*=\s*.+?(?=\n[A-Z_#\n]|\Z)',
-            re.MULTILINE | re.DOTALL
-        )
-        new_stmt = f"{var_name} = {new_rhs}"
-        if pattern.search(source):
-            return pattern.sub(new_stmt, source, count=1)
-        return source + f"\n{new_stmt}\n"
-
-    # Find the target Assign node at module level
-    target_node = None
-    for node in ast.iter_child_nodes(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-            if node.targets[0].id == var_name:
-                target_node = node
-                break
-
-    if target_node is None:
-        # Variable not present — append it
-        return source.rstrip() + f"\n\n{var_name} = {new_rhs}\n"
-
-    # ast gives us line numbers (1-based). Translate to character offsets.
-    lines = source.splitlines(keepends=True)
-
-    stmt_start_line = target_node.lineno - 1        # 0-based index
-    stmt_end_line = target_node.end_lineno - 1      # 0-based index (inclusive)
-
-    # Preserve any trailing comment on the last line of the assignment.
-    # We look at the last source line of the statement to detect a comment.
-    last_line = lines[stmt_end_line]
-    # Find the end column of the expression within that line
-    end_col = target_node.end_col_offset
-    trailing = last_line[end_col:].rstrip('\n')
-
-    # Build the replacement statement text
-    new_stmt = f"{var_name} = {new_rhs}"
-    # Append trailing comment if one existed
-    if trailing.lstrip().startswith('#'):
-        new_stmt += "  " + trailing.lstrip()
-    new_stmt += "\n"
-
-    # Splice: everything before the statement + new statement + everything after
-    before = "".join(lines[:stmt_start_line])
-    after = "".join(lines[stmt_end_line + 1:])
-    return before + new_stmt + after
+# Config rewrite helpers live in config_io; keep the old underscore names
+# used throughout this module as aliases.
+from .config_io import (format_prefer3d_dict as _format_prefer3d_dict,
+                        rewrite_config_assignments as _rewrite_config_assignments,
+                        replace_single_assignment as _replace_single_assignment)
 
 
 # At end of file, add asynchronous image loader and per-study classification GUI
