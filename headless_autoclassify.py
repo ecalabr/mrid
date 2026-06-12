@@ -346,21 +346,16 @@ def load_models(output_dir, model_type):
 
         try:
             import torch
-            from mrid_app.cnn import load_cnn_model
+            from mrid_app.cnn import load_cnn_model, get_torch_device
 
             logger.info("Loading Image-Based Model (CNN)...")
 
-            try:
-                cuda_avail = torch.cuda.is_available()
-            except Exception:
-                cuda_avail = False
-
-            if cuda_avail:
-                logger.info("  Using CUDA GPU")
-                map_loc = torch.device('cuda')
+            # Best available device: CUDA (NVIDIA/AMD ROCm) > Apple MPS > CPU
+            map_loc = get_torch_device()
+            if map_loc is not None and map_loc.type == 'cpu':
+                logger.warning("  No GPU acceleration detected, using CPU (may be slow)")
             else:
-                logger.warning("  No GPU detected, using CPU (may be slow)")
-                map_loc = torch.device('cpu')
+                logger.info(f"  Using device: {map_loc}")
 
             cnn_target_encoder = joblib.load(cnn_target_encoder_path)
             num_classes = len(cnn_target_encoder.classes_)

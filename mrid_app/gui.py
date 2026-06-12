@@ -336,8 +336,6 @@ class MainApp:
         self.stop_requested = threading.Event()
         self.is_running = False
         self.convert_to_nifti = tk.BooleanVar(value=False)
-        # Flag to indicate models should be loaded after training completes
-        self._auto_load_after_training = False
         # Track the currently active config file path
         self.active_config_path = None  # None means using repository config
         # Analyze-mode training state
@@ -375,8 +373,9 @@ class MainApp:
 
         control_frame = ctk.CTkFrame(master, fg_color="transparent")
         control_frame.pack(fill="x", padx=scale_value(20), pady=scale_value(10))
+        # Mode selector at the far left, before the Start button
         mode_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
-        mode_frame.pack(side="right", padx=scale_value(5))
+        mode_frame.pack(side="left", padx=scale_value(5))
         ctk.CTkLabel(mode_frame, text="Mode:").pack(side="left", padx=scale_value(5))
         mode_options = ["Analyze", "Manual", "Semi-Auto", "Full-Auto", "Verify"]
         mode_menu = ctk.CTkOptionMenu(mode_frame, variable=self.classification_mode,
@@ -416,8 +415,10 @@ class MainApp:
         self._convert_button.pack(side="left")
 
         button_font = ctk.CTkFont(size=13, weight="bold")
+        # Fixed width sized for the longest text ("▶ Start Classification") so
+        # mode changes never resize the window
         self.start_button = ctk.CTkButton(control_frame, text="▶ Start Classification", font=button_font,
-                                          command=self.start_classification, state="normal")
+                                          width=190, command=self.start_classification, state="normal")
         self.start_button.pack(side="left", padx=scale_value(5))
         self.stop_button = ctk.CTkButton(control_frame, text="Stop", width=70,
                                          fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
@@ -522,8 +523,7 @@ class MainApp:
         if not response:
             return
 
-        self._auto_load_after_training = True
-
+        # Models load automatically when training completes
         if rf_needed and not rf_exists:
             self.train_classifier_rf()
         if cnn_needed and not cnn_exists:
@@ -596,13 +596,9 @@ class MainApp:
             self.cnn_target_encoder = joblib.load(target_encoder_path)
             num_classes = len(self.cnn_target_encoder.classes_)
 
-            # Load with map_location to handle CPU-only environments
-            try:
-                cuda_avail = torch.cuda.is_available()
-            except Exception:
-                cuda_avail = False
-
-            map_loc = torch.device('cuda') if cuda_avail else torch.device('cpu')
+            # Best available device: CUDA (NVIDIA/AMD ROCm) > Apple MPS > CPU
+            from .cnn import get_torch_device
+            map_loc = get_torch_device()
             logger.info(f"Loading CNN model on device: {map_loc}")
             self.cnn_model = load_cnn_model(model_path, num_classes, map_location=map_loc)
             logger.info("Image-Based Model (CNN) loaded successfully")
@@ -887,27 +883,24 @@ class MainApp:
             # Check if training was cancelled — skip auto-load and model check
             was_cancelled = training_gui is not None and training_gui.is_cancelled()
             if was_cancelled:
-                self._auto_load_after_training = False
                 self._check_model_status()
                 return
 
-            if self._auto_load_after_training:
-                self._auto_load_after_training = False
+            # Automatically load the freshly trained model(s)
+            model_type = self.model_type.get()
+            rf_needed = model_type in ["DICOM Header Model", "Header + Image Model"]
+            cnn_needed = model_type in ["Image-Based Model", "Header + Image Model"]
 
-                model_type = self.model_type.get()
-                rf_needed = model_type in ["DICOM Header Model", "Header + Image Model"]
-                cnn_needed = model_type in ["Image-Based Model", "Header + Image Model"]
+            output_dir = self.output_dir.get()
+            model_files_dir = os.path.join(output_dir, "model_files")
+            rf_model_path = os.path.join(model_files_dir, "rf_classifier_model.joblib")
+            cnn_model_path = os.path.join(model_files_dir, "cnn_classifier_model.pth")
 
-                output_dir = self.output_dir.get()
-                model_files_dir = os.path.join(output_dir, "model_files")
-                rf_model_path = os.path.join(model_files_dir, "rf_classifier_model.joblib")
-                cnn_model_path = os.path.join(model_files_dir, "cnn_classifier_model.pth")
+            if rf_needed and os.path.exists(rf_model_path):
+                self._load_classifier_and_encoder()
 
-                if rf_needed and os.path.exists(rf_model_path):
-                    self._load_classifier_and_encoder()
-
-                if cnn_needed and os.path.exists(cnn_model_path):
-                    self._load_image_classifier()
+            if cnn_needed and os.path.exists(cnn_model_path):
+                self._load_image_classifier()
 
             self._check_model_status()
 
@@ -962,8 +955,10 @@ class MainApp:
                 except Exception as e:
                     logger.warning(f"Failed to load config.py: {e} - using current config")
             else:
-                # No config in output dir — offer the wizard / copy / keep choice
-                self._handle_missing_config(output_dir, config_path)
+                # No config in output dir — a project config is required
+                if not self._handle_missing_config(output_dir, config_path):
+                    logger.info("Classification start aborted (no project config)")
+                    return
 
             # Automatically load hierarchy if it exists
             if hierarchy_exists:
@@ -2003,7 +1998,8 @@ class MainApp:
             return
 
         from .config_wizard import run_config_wizard
-        saved = run_config_wizard(self.master, base_config_path=base_path, save_path=save_path)
+        saved = run_config_wizard(self.master, base_config_path=base_path, save_path=save_path,
+                                  analyze_mode=(self.classification_mode.get() == "Analyze"))
         if saved and self._load_config_from_file(saved):
             self.active_config_path = saved
             self._check_model_status()
@@ -2016,9 +2012,10 @@ class MainApp:
     def _prompt_no_config(self):
         """
         Ask the user what to do when the output directory has no config.py.
-        Returns 'wizard', 'copy', or 'skip'.
+        Returns 'wizard', 'copy', or 'cancel' (abort the workflow — a project
+        config is required to proceed).
         """
-        result = {"choice": "skip"}
+        result = {"choice": "cancel"}
 
         dlg = ctk.CTkToplevel(self.master)
         dlg.title("No Config File Found")
@@ -2029,10 +2026,9 @@ class MainApp:
         ctk.CTkLabel(
             dlg,
             text=("No config.py was found in the output directory.\n\n"
-                  "Run the Config Wizard to set up this project, or copy the "
-                  "default config file as-is.\n"
-                  "Choose 'Keep Defaults' to continue with the repository config "
-                  "without saving anything."),
+                  "A project config file is required: run the Config Wizard to "
+                  "set one up, or copy the default config file as-is.\n"
+                  "Cancel to abort."),
             wraplength=scale_value(440), justify="left"
         ).pack(padx=scale_value(20), pady=scale_value(16))
 
@@ -2049,47 +2045,59 @@ class MainApp:
                       command=lambda: choose("wizard")).pack(side="left", padx=scale_value(6))
         ctk.CTkButton(btns, text="Copy Default Config", width=150,
                       command=lambda: choose("copy")).pack(side="left", padx=scale_value(6))
-        ctk.CTkButton(btns, text="Keep Defaults", width=130,
+        ctk.CTkButton(btns, text="Cancel", width=100,
                       fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
-                      command=lambda: choose("skip")).pack(side="left", padx=scale_value(6))
+                      command=lambda: choose("cancel")).pack(side="left", padx=scale_value(6))
 
-        dlg.protocol("WM_DELETE_WINDOW", lambda: choose("skip"))
+        dlg.protocol("WM_DELETE_WINDOW", lambda: choose("cancel"))
         dlg.wait_window()
         return result["choice"]
 
-    def _handle_missing_config(self, output_dir, config_path):
+    def _handle_missing_config(self, output_dir, config_path, analyze_mode=False):
         """
-        Offer the wizard / copy-default / keep-defaults choice for an output
-        directory without config.py, and apply the user's selection.
+        Require a project config for an output directory that has none: offer
+        the wizard or a copy of the default config. Returns True once a config
+        exists and is loaded, False if the user cancelled (abort the workflow).
         """
-        choice = self._prompt_no_config()
+        while True:
+            choice = self._prompt_no_config()
 
-        if choice == "wizard":
-            from .config_wizard import run_config_wizard
-            base = self.active_config_path if (self.active_config_path and
-                                               os.path.exists(self.active_config_path)) else None
-            os.makedirs(output_dir, exist_ok=True)
-            saved = run_config_wizard(self.master, base_config_path=base, save_path=config_path)
-            if saved and self._load_config_from_file(saved):
-                self.active_config_path = saved
-                logger.info(f"Config wizard created and loaded: {saved}")
-        elif choice == "copy":
-            try:
-                if self.active_config_path and os.path.exists(self.active_config_path):
-                    source_config_path = self.active_config_path
-                else:
-                    source_config_path = config.__file__
-                    if source_config_path.endswith('.pyc'):
-                        source_config_path = source_config_path[:-1]
+            if choice == "wizard":
+                from .config_wizard import run_config_wizard
+                base = self.active_config_path if (self.active_config_path and
+                                                   os.path.exists(self.active_config_path)) else None
                 os.makedirs(output_dir, exist_ok=True)
-                shutil.copy(source_config_path, config_path)
-                logger.info(f"Copied default config to: {config_path}")
-                if self._load_config_from_file(config_path):
-                    self.active_config_path = config_path
-            except Exception as e:
-                logger.warning(f"Failed to copy default config to output directory: {e}")
-        else:
-            logger.info("User declined config setup - continuing with current config")
+                saved = run_config_wizard(self.master, base_config_path=base,
+                                          save_path=config_path, analyze_mode=analyze_mode)
+                if saved and self._load_config_from_file(saved):
+                    self.active_config_path = saved
+                    logger.info(f"Config wizard created and loaded: {saved}")
+                    return True
+                # Wizard cancelled — re-offer the choices
+                continue
+            elif choice == "copy":
+                try:
+                    if self.active_config_path and os.path.exists(self.active_config_path):
+                        source_config_path = self.active_config_path
+                    else:
+                        source_config_path = config.__file__
+                        if source_config_path.endswith('.pyc'):
+                            source_config_path = source_config_path[:-1]
+                    os.makedirs(output_dir, exist_ok=True)
+                    shutil.copy(source_config_path, config_path)
+                    logger.info(f"Copied default config to: {config_path}")
+                    if self._load_config_from_file(config_path):
+                        self.active_config_path = config_path
+                    return True
+                except Exception as e:
+                    logger.warning(f"Failed to copy default config to output directory: {e}")
+                    messagebox.showerror("Copy Failed",
+                                         f"Could not copy the default config:\n{e}",
+                                         parent=self.master)
+                    continue
+            else:
+                logger.info("User cancelled config setup - aborting workflow start")
+                return False
 
     def _save_config(self):
         """Save the current config.py file to the output directory and make it the active config."""
@@ -2174,10 +2182,13 @@ class MainApp:
             messagebox.showerror("Error", f"Cannot create output directory:\n{e}", parent=self.master)
             return
 
-        # Config setup prompt (same logic as start_classification)
+        # Config setup prompt (same logic as start_classification); the
+        # target-series section is locked since Analyze mode determines it
         config_path = os.path.join(output_dir, "config.py")
         if not os.path.exists(config_path):
-            self._handle_missing_config(output_dir, config_path)
+            if not self._handle_missing_config(output_dir, config_path, analyze_mode=True):
+                logger.info("Analysis start aborted (no project config)")
+                return
 
         # Check whether scanning has already been done
         hierarchy_path = os.path.join(output_dir, "hierarchy.yaml")

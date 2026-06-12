@@ -386,10 +386,11 @@ def _load_single_slice(dicom_path):
         return None
 
 
-def load_image_tensor(dicom_path, num_slices=1, load_slices_func=None):
+def load_image_tensor(dicom_path, num_slices=1, load_slices_func=None, image_size=None):
     load_slices = load_slices_func or load_series_slices
     try:
-        tensor = prepare_cnn_input_data([dicom_path], load_slices_func=load_slices, num_slices=num_slices)
+        tensor = prepare_cnn_input_data([dicom_path], load_slices_func=load_slices,
+                                        num_slices=num_slices, image_size=image_size)
         return tensor
     except Exception as e:
         logger.debug(f"Error applying image transform: {e}")
@@ -399,13 +400,14 @@ def load_image_tensor(dicom_path, num_slices=1, load_slices_func=None):
 def get_image_probabilities(dicom_path, model, target_encoder):
     if not all([model, target_encoder]):
         return None
-    # The number of input slices is dictated by the loaded model's first
-    # convolution, so inference always matches how the model was trained.
+    # Input slice count and image size are dictated by the loaded model, so
+    # inference always matches how the model was trained.
     try:
         num_slices = int(model.conv1.in_channels)
     except Exception:
         num_slices = 1
-    input_tensor = load_image_tensor(dicom_path, num_slices=num_slices)
+    image_size = getattr(model, 'image_size', None)
+    input_tensor = load_image_tensor(dicom_path, num_slices=num_slices, image_size=image_size)
     if input_tensor is None:
         return None
     try:

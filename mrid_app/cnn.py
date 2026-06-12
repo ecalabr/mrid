@@ -19,9 +19,11 @@ except Exception:
     nn = None
 
 # Defer torchvision import until transforms are required
-_CNN_TRANSFORMS = None
+_CNN_TRANSFORMS = {}  # image_size -> transform pipeline
 _AUGMENTATION_TRANSFORMS = None
 
+# Fallback defaults; live values are read from the config module at call time
+# (via _cfg) so configs loaded at runtime are respected.
 try:
     from .config import IMAGE_SIZE, NUM_EPOCHS, BATCH_SIZE, LR, NUM_PARALLEL_WORKERS
 except Exception:
@@ -32,31 +34,54 @@ except Exception:
     NUM_PARALLEL_WORKERS = 8
 
 
-def get_configured_num_slices():
-    """
-    Read CNN_NUM_SLICES from the config module at call time so runtime config
-    reloads are respected. 1 = 2D (center slice), >1 = 2.5D multi-channel.
-    """
+def _cfg(name, default):
+    """Read a config value at call time so runtime config loads/reloads apply."""
     try:
         from . import config as _config
-        return max(1, int(getattr(_config, 'CNN_NUM_SLICES', 1)))
+        return getattr(_config, name, default)
+    except Exception:
+        return default
+
+
+def get_configured_num_slices():
+    """CNN_NUM_SLICES at call time. 1 = 2D (center slice), >1 = 2.5D."""
+    try:
+        return max(1, int(_cfg('CNN_NUM_SLICES', 1)))
     except Exception:
         return 1
 
 
-def _get_transforms():
-    global _CNN_TRANSFORMS
-    if _CNN_TRANSFORMS is None:
+def get_torch_device():
+    """Best available torch device: CUDA (NVIDIA/AMD ROCm) > Apple MPS > CPU."""
+    if torch is None:
+        return None
+    try:
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+    except Exception:
+        pass
+    try:
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+    except Exception:
+        pass
+    return torch.device("cpu")
+
+
+def _get_transforms(image_size=None):
+    if image_size is None:
+        image_size = int(_cfg('IMAGE_SIZE', IMAGE_SIZE))
+    if image_size not in _CNN_TRANSFORMS:
         try:
             from torchvision import transforms
-            _CNN_TRANSFORMS = transforms.Compose([
-                transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+            _CNN_TRANSFORMS[image_size] = transforms.Compose([
+                transforms.Resize((image_size, image_size)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.5], std=[0.5])
             ])
         except Exception:
-            _CNN_TRANSFORMS = None
-    return _CNN_TRANSFORMS
+            return None
+    return _CNN_TRANSFORMS[image_size]
 
 
 def _get_augmentation_transforms():
@@ -77,17 +102,18 @@ def _get_augmentation_transforms():
 # Define SimpleCNN only if torch is available
 if torch is not None:
     class SimpleCNN(nn.Module):
-        def __init__(self, num_classes, num_slices=None):
+        def __init__(self, num_classes, num_slices=None, image_size=None):
             super(SimpleCNN, self).__init__()
             # Input channels = number of slices (1 = 2D, >1 = 2.5D)
             self.num_slices = num_slices if num_slices is not None else get_configured_num_slices()
+            self.image_size = image_size if image_size is not None else int(_cfg('IMAGE_SIZE', IMAGE_SIZE))
             self.conv1 = nn.Conv2d(self.num_slices, 32, 3, padding=1)
             self.pool1 = nn.MaxPool2d(2, 2)
             self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
             self.pool2 = nn.MaxPool2d(2, 2)
             self.conv3 = nn.Conv2d(64, 128, 3, padding=1)
             self.pool3 = nn.MaxPool2d(2, 2)
-            ds = IMAGE_SIZE // 8
+            ds = self.image_size // 8
             self.flatten_size = 128 * ds * ds
             self.fc1 = nn.Linear(self.flatten_size, 512)
             self.fc2 = nn.Linear(512, num_classes)
@@ -106,9 +132,9 @@ if torch is not None:
 
 def load_cnn_model(model_path, num_classes, map_location=None):
     """
-    Load a saved SimpleCNN checkpoint. The number of input slices is inferred
-    from the checkpoint's first convolution so a model trained in 2.5D mode
-    loads correctly regardless of the current CNN_NUM_SLICES setting.
+    Load a saved SimpleCNN checkpoint. The number of input slices and the
+    image size are inferred from the checkpoint weights so a saved model
+    loads and runs correctly regardless of the current config values.
 
     Returns the model in eval mode, or raises on failure.
     """
@@ -119,6 +145,12 @@ def load_cnn_model(model_path, num_classes, map_location=None):
         ckpt_slices = int(state_dict['conv1.weight'].shape[1])
     except Exception:
         ckpt_slices = 1
+    try:
+        # fc1 in_features = 128 * (image_size // 8)^2
+        in_features = int(state_dict['fc1.weight'].shape[1])
+        ckpt_image_size = int((in_features // 128) ** 0.5) * 8
+    except Exception:
+        ckpt_image_size = None
     configured = get_configured_num_slices()
     if ckpt_slices != configured:
         logger.warning(
@@ -126,7 +158,8 @@ def load_cnn_model(model_path, num_classes, map_location=None):
             f"config specifies {configured}. Using {ckpt_slices} for inference; "
             f"retrain the model to change the slice count."
         )
-    model = SimpleCNN(num_classes=num_classes, num_slices=ckpt_slices)
+    model = SimpleCNN(num_classes=num_classes, num_slices=ckpt_slices,
+                      image_size=ckpt_image_size)
     model.load_state_dict(state_dict)
     if map_location is not None:
         model.to(map_location)
@@ -149,8 +182,8 @@ def _slices_to_array(slice_imgs, image_size):
     return np.stack(channels, axis=0)
 
 
-def prepare_cnn_input_data(filepaths, load_slices_func, num_slices=None):
-    transforms = _get_transforms()
+def prepare_cnn_input_data(filepaths, load_slices_func, num_slices=None, image_size=None):
+    transforms = _get_transforms(image_size)
     if transforms is None:
         logger.warning("PyTorch torchvision.transforms unavailable")
         return None
@@ -276,9 +309,10 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_slices_func, output_dir, 
     # Use a chunksize proportional to the dataset size to reduce IPC overhead.
     chunksize = max(1, total_files // (num_workers * 10))
 
-    # Prepare arguments for parallel processing — include IMAGE_SIZE so the
+    # Prepare arguments for parallel processing — include the image size so the
     # worker never needs to import torchvision transforms (avoids pickling issues).
-    args_list = [(idx, path, label, IMAGE_SIZE, num_slices) for idx, (path, label) in enumerate(zip(filepaths, labels))]
+    image_size = int(_cfg('IMAGE_SIZE', IMAGE_SIZE))
+    args_list = [(idx, path, label, image_size, num_slices) for idx, (path, label) in enumerate(zip(filepaths, labels))]
 
     # Process images in parallel with progress tracking.
     # Workers return plain numpy arrays (no PyTorch tensors / shared-memory fds),
@@ -308,7 +342,7 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_slices_func, output_dir, 
             if not slice_imgs:
                 continue
             try:
-                arr = _slices_to_array(slice_imgs, IMAGE_SIZE)
+                arr = _slices_to_array(slice_imgs, image_size)
                 processed_results.append((idx, arr, labels[idx]))
             except Exception as ex:
                 logger.debug(f"Error processing {path}: {ex}")
@@ -423,7 +457,14 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
     """
     if torch is None:
         return None, None
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_torch_device()
+    logger.info(f"CNN training device: {device}")
+
+    # Hyperparameters read at call time so runtime-loaded configs apply
+    num_epochs = int(_cfg('NUM_EPOCHS', NUM_EPOCHS))
+    batch_size = int(_cfg('BATCH_SIZE', BATCH_SIZE))
+    lr = float(_cfg('LR', LR))
+
     from sklearn.model_selection import train_test_split
     X_train, X_val, y_train, y_val = train_test_split(X_data, y_labels, test_size=0.2, random_state=42, stratify=y_labels)
     y_train_tensor = torch.from_numpy(y_train).long()
@@ -434,16 +475,23 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
     train_dataset = AugmentedImageDataset(X_train, y_train_tensor, apply_augmentation=True)
     val_dataset = ImageDataset(X_val, y_val_tensor)
 
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-    # Channel count comes from the training data itself: (B, num_slices, H, W)
-    num_slices = int(X_data.shape[1]) if hasattr(X_data, 'shape') and len(X_data.shape) == 4 else 1
+    # Channel count and image size come from the training data itself:
+    # (B, num_slices, H, W)
+    if hasattr(X_data, 'shape') and len(X_data.shape) == 4:
+        num_slices = int(X_data.shape[1])
+        image_size = int(X_data.shape[2])
+    else:
+        num_slices = 1
+        image_size = None
     model_cls = SimpleCNNClass or SimpleCNN
     try:
-        model = model_cls(num_classes=num_classes, num_slices=num_slices).to(device)
+        model = model_cls(num_classes=num_classes, num_slices=num_slices,
+                          image_size=image_size).to(device)
     except TypeError:
-        # Custom CNN classes may not accept num_slices
+        # Custom CNN classes may not accept num_slices/image_size
         model = model_cls(num_classes=num_classes).to(device)
 
     model_files_dir = os.path.join(output_dir, "model_files")
@@ -459,10 +507,10 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
         except Exception as e:
             logger.warning(f"Existing checkpoint is incompatible (training from scratch): {e}")
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     best_accuracy = 0.0
 
-    for epoch in range(NUM_EPOCHS):
+    for epoch in range(num_epochs):
         # Check for cancellation at the start of each epoch
         if cancel_check is not None and cancel_check():
             logger.info("CNN training cancelled by user during epoch loop.")
@@ -494,10 +542,10 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
         avg_loss = running_loss / max(len(train_loader), 1)
 
         if progress_callback:
-            message = f"Epoch {epoch + 1}/{NUM_EPOCHS} - Loss: {avg_loss:.4f}, Val Acc: {epoch_accuracy:.2f}%"
-            progress_callback(epoch + 1, NUM_EPOCHS, avg_loss, epoch_accuracy, message)
+            message = f"Epoch {epoch + 1}/{num_epochs} - Loss: {avg_loss:.4f}, Val Acc: {epoch_accuracy:.2f}%"
+            progress_callback(epoch + 1, num_epochs, avg_loss, epoch_accuracy, message)
 
-        logger.info(f"Epoch {epoch + 1}/{NUM_EPOCHS} - Loss: {avg_loss:.4f}, Val Acc: {epoch_accuracy:.2f}%")
+        logger.info(f"Epoch {epoch + 1}/{num_epochs} - Loss: {avg_loss:.4f}, Val Acc: {epoch_accuracy:.2f}%")
 
         if epoch_accuracy > best_accuracy:
             best_accuracy = epoch_accuracy
@@ -686,7 +734,7 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
             return
 
         # Set up progress callback for training
-        gui.set_determinate_mode(NUM_EPOCHS)
+        gui.set_determinate_mode(int(_cfg('NUM_EPOCHS', NUM_EPOCHS)))
 
         def training_progress(current_epoch, total_epochs, loss, accuracy, message):
             """Callback to update GUI during training"""

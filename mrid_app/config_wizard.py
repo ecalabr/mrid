@@ -33,7 +33,8 @@ class ConfigWizard:
     """Modal config wizard. Blocks until closed; .saved_path holds the result
     (None if cancelled)."""
 
-    def __init__(self, master, base_config_path=None, save_path=None, modal=True):
+    def __init__(self, master, base_config_path=None, save_path=None, modal=True,
+                 analyze_mode=False):
         """
         Args:
             master: parent window
@@ -41,11 +42,14 @@ class ConfigWizard:
                 initial values (defaults to the repository config.py)
             save_path: where to write the generated config.py
             modal: block until the wizard is closed (False is used by tests)
+            analyze_mode: lock the target-series section (Analyze mode will
+                determine TARGET_SERIES/PREFER_3D from its clustering results)
         """
         self.master = master
         self.base_config_path = base_config_path or get_default_config_path()
         self.save_path = save_path
         self.saved_path = None
+        self.analyze_mode = bool(analyze_mode)
 
         self._initial = self._load_initial_values()
         self._build_window()
@@ -90,7 +94,6 @@ class ConfigWizard:
     def _build_window(self):
         self.win = ctk.CTkToplevel(self.master)
         self.win.title("MRID Config Wizard")
-        self.win.geometry("760x640")
         cascade(self.win, self.master)
         self.win.grab_set()
         self.win.protocol("WM_DELETE_WINDOW", self._on_cancel)
@@ -158,6 +161,13 @@ class ConfigWizard:
         self.subheader.configure(text=page["subtitle"])
         page["frame"].pack(fill="both", expand=True)
 
+        # Size the window to the current page so nothing is cut off
+        # (real measured pixels, so bypass CTk geometry scaling)
+        self.win.update_idletasks()
+        width = max(self.win.winfo_reqwidth(), scale_value(760))
+        height = self.win.winfo_reqheight()
+        self.win.wm_geometry(f"{width}x{height}")
+
     def _on_back(self):
         if self.on_advanced_page:
             self._show_page(len(self.pages) - 1)
@@ -223,9 +233,18 @@ class ConfigWizard:
     def _build_page_classification(self):
         frame = ctk.CTkFrame(self.page_container, fg_color="transparent")
 
-        ctk.CTkLabel(frame, text="Target series (the labels you will classify into; "
-                                 "\"Other\" is always added automatically):",
-                     anchor="w").pack(anchor="w", padx=scale_value(6))
+        if self.analyze_mode:
+            ctk.CTkLabel(frame, text="Target series (locked):",
+                         anchor="w").pack(anchor="w", padx=scale_value(6))
+            ctk.CTkLabel(frame,
+                         text="Target series will be determined from the results of Analyze "
+                              "mode — name the discovered clusters when the analysis completes.",
+                         text_color="#9c8a1c", wraplength=scale_value(660),
+                         justify="left", anchor="w").pack(anchor="w", padx=scale_value(6))
+        else:
+            ctk.CTkLabel(frame, text="Target series (the labels you will classify into; "
+                                     "\"Other\" is always added automatically):",
+                         anchor="w").pack(anchor="w", padx=scale_value(6))
 
         self.series_rows_frame = ctk.CTkScrollableFrame(frame, height=190)
         self.series_rows_frame.pack(fill="x", padx=scale_value(6), pady=scale_value(6))
@@ -241,10 +260,13 @@ class ConfigWizard:
                 p3d = bool(prefer3d)
             self._add_series_row(name, p3d)
 
-        ctk.CTkButton(frame, text="+ Add series", width=110,
-                      fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
-                      command=lambda: self._add_series_row("", False)).pack(
-            anchor="w", padx=scale_value(6), pady=(0, scale_value(8)))
+        add_btn = ctk.CTkButton(frame, text="+ Add series", width=110,
+                                fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
+                                command=lambda: self._add_series_row("", False))
+        add_btn.pack(anchor="w", padx=scale_value(6), pady=(0, scale_value(8)))
+
+        if self.analyze_mode:
+            add_btn.configure(state="disabled", fg_color=ui_theme.DISABLED)
 
         grid = ctk.CTkFrame(frame, fg_color="transparent")
         grid.pack(anchor="nw", pady=scale_value(4))
@@ -269,9 +291,10 @@ class ConfigWizard:
         row.pack(fill="x", pady=2)
         name_var = tk.StringVar(value=str(name))
         p3d_var = tk.BooleanVar(value=bool(prefer3d))
-        ctk.CTkEntry(row, textvariable=name_var, width=200).pack(side="left", padx=scale_value(4))
-        ctk.CTkCheckBox(row, text="Prefer 3D acquisition", variable=p3d_var).pack(
-            side="left", padx=scale_value(10))
+        name_entry = ctk.CTkEntry(row, textvariable=name_var, width=200)
+        name_entry.pack(side="left", padx=scale_value(4))
+        p3d_cb = ctk.CTkCheckBox(row, text="Prefer 3D acquisition", variable=p3d_var)
+        p3d_cb.pack(side="left", padx=scale_value(10))
         entry = (name_var, p3d_var, row)
 
         def remove():
@@ -281,8 +304,13 @@ class ConfigWizard:
                 pass
             row.destroy()
 
-        ctk.CTkButton(row, text="✕", width=30, fg_color=ui_theme.RED,
-                      hover_color=ui_theme.RED_HOVER, command=remove).pack(side="left")
+        remove_btn = ctk.CTkButton(row, text="✕", width=30, fg_color=ui_theme.RED,
+                                   hover_color=ui_theme.RED_HOVER, command=remove)
+        remove_btn.pack(side="left")
+        if self.analyze_mode:
+            name_entry.configure(state="disabled")
+            p3d_cb.configure(state="disabled")
+            remove_btn.configure(state="disabled", fg_color=ui_theme.DISABLED)
         self.series_rows.append(entry)
 
     def _build_page_ui(self):
@@ -363,21 +391,31 @@ class ConfigWizard:
         if not template:
             raise ValueError("Study name template cannot be empty")
 
-        names, prefer3d = [], {}
-        for name_var, p3d_var, _row in self.series_rows:
-            name = name_var.get().strip()
-            if not name:
-                continue
-            if name.lower() == "other":
-                continue
-            if name in names:
-                raise ValueError(f"Duplicate series name: {name}")
-            names.append(name)
-            prefer3d[name] = bool(p3d_var.get())
-        if not names:
-            raise ValueError("At least one target series is required")
-        names.append("Other")
-        prefer3d["Other"] = False
+        if self.analyze_mode:
+            # Target series are locked: Analyze mode writes them from its
+            # clustering results, so keep the base config's values
+            names = list(self._initial["TARGET_SERIES"] or ["Other"])
+            initial_p3d = self._initial["PREFER_3D"]
+            if isinstance(initial_p3d, dict):
+                prefer3d = {n: bool(initial_p3d.get(n, False)) for n in names}
+            else:
+                prefer3d = {n: (bool(initial_p3d) and n.lower() != "other") for n in names}
+        else:
+            names, prefer3d = [], {}
+            for name_var, p3d_var, _row in self.series_rows:
+                name = name_var.get().strip()
+                if not name:
+                    continue
+                if name.lower() == "other":
+                    continue
+                if name in names:
+                    raise ValueError(f"Duplicate series name: {name}")
+                names.append(name)
+                prefer3d[name] = bool(p3d_var.get())
+            if not names:
+                raise ValueError("At least one target series is required")
+            names.append("Other")
+            prefer3d["Other"] = False
 
         include = [s.strip() for s in self.v_include.get().split(",") if s.strip()]
         exclude = [s.strip() for s in self.v_exclude.get().split(",") if s.strip()]
@@ -456,7 +494,8 @@ class ConfigWizard:
         self.win.destroy()
 
 
-def run_config_wizard(master, base_config_path=None, save_path=None):
+def run_config_wizard(master, base_config_path=None, save_path=None, analyze_mode=False):
     """Run the wizard modally. Returns the saved config path, or None."""
-    wizard = ConfigWizard(master, base_config_path=base_config_path, save_path=save_path)
+    wizard = ConfigWizard(master, base_config_path=base_config_path, save_path=save_path,
+                          analyze_mode=analyze_mode)
     return wizard.saved_path

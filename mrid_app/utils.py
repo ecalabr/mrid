@@ -335,13 +335,35 @@ def warn_if_no_gpu_for_cnn(gui_parent: Optional[object] = None) -> bool:
         cuda_avail = False
 
     if not cuda_avail:
-        # Ask the user whether to proceed on CPU
+        # Report what other acceleration (AMD ROCm / Apple MPS) is available
+        try:
+            mps_avail = torch.backends.mps.is_available()
+        except Exception:
+            mps_avail = False
+        try:
+            rocm_build = bool(getattr(torch.version, 'hip', None))
+        except Exception:
+            rocm_build = False
+
+        if rocm_build:
+            amd_line = "AMD (ROCm) acceleration: ROCm build of PyTorch installed, but no compatible AMD GPU was detected."
+        else:
+            amd_line = "AMD (ROCm) acceleration: not available (requires a ROCm build of PyTorch on Linux)."
+        if mps_avail:
+            apple_line = "Apple Silicon (MPS) acceleration: AVAILABLE — it will be used."
+            fallback = "Loading or training the CNN model will use Apple Silicon (MPS) acceleration."
+        else:
+            apple_line = "Apple Silicon (MPS) acceleration: not available."
+            fallback = "Loading or training the CNN model will use the CPU and may be significantly slower."
+
         try:
             proceed = messagebox.askyesno(
-                "No GPU Detected",
-                "No CUDA-capable GPU was detected on this machine.\n\n"
-                "Loading or training the CNN model will use the CPU and may be significantly slower.\n\n"
-                "Choose 'Yes' to continue on CPU, or 'No' to cancel.",
+                "No CUDA GPU Detected",
+                "No CUDA-capable (NVIDIA) GPU was detected on this machine.\n\n"
+                f"{amd_line}\n"
+                f"{apple_line}\n\n"
+                f"{fallback}\n\n"
+                "Choose 'Yes' to continue, or 'No' to cancel.",
                 parent=gui_parent,
             )
             return bool(proceed)
