@@ -12,22 +12,52 @@ from .ui_theme import (scale_value, scale_thumbnail, cascade, place_main_window,
                        ThemedProgressBar, TitledFrame)
 from .series_scroller import attach_series_scrolling
 from .config import NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LABELS, NUM_PARALLEL_WORKERS, THUMBNAIL_SCALE_FACTOR
-from .header import TrainHeaderClassifierLogic
-from .cnn import load_cnn_model
 from .utils import (extract_study_id_from_path, get_study_csv_name, get_study_dir_name,
                      get_nifti_name, get_nifti_prefix, sanitize_target_series,
                      get_classified_outputs_dir)
 from .logging_config import get_logger, setup_logging, update_log_file_location
-import joblib
 from PIL import Image, ImageTk
 import shutil
 import colorsys
 import platform
 import subprocess
 import importlib
-import pydicom
 
 logger = get_logger()
+
+
+class _LazyModule:
+    """Import a module on first attribute access.
+
+    Heavy dependencies (torch, scikit-learn, pandas, pydicom, joblib) are only
+    needed once the user trains/loads a model or scans DICOMs. Deferring them
+    keeps `import mrid_app.gui` — and therefore the time before the main window
+    appears — fast. Call sites use these exactly like the real module."""
+
+    def __init__(self, name, package=None):
+        self.__dict__['_name'] = name
+        self.__dict__['_package'] = package
+        self.__dict__['_mod'] = None
+
+    def _load(self):
+        if self._mod is None:
+            self.__dict__['_mod'] = importlib.import_module(self._name, self._package)
+        return self._mod
+
+    def __getattr__(self, attr):
+        return getattr(self._load(), attr)
+
+
+# Lazily-imported modules (see _LazyModule). pydicom/joblib are stdlib-light
+# but still cost ~250 ms combined at import; processing pulls in torch+sklearn.
+processing = _LazyModule('.processing', __package__)
+pydicom = _LazyModule('pydicom')
+joblib = _LazyModule('joblib')
+
+
+def load_center_slice_fast(*args, **kwargs):
+    """Thin wrapper so this name resolves without importing processing eagerly."""
+    return processing.load_center_slice_fast(*args, **kwargs)
 
 
 # Sanitize TARGET_SERIES to ensure safe filenames
@@ -597,7 +627,7 @@ class MainApp:
             num_classes = len(self.cnn_target_encoder.classes_)
 
             # Best available device: CUDA (NVIDIA/AMD ROCm) > Apple MPS > CPU
-            from .cnn import get_torch_device
+            from .cnn import get_torch_device, load_cnn_model
             map_loc = get_torch_device()
             logger.info(f"Loading CNN model on device: {map_loc}")
             self.cnn_model = load_cnn_model(model_path, num_classes, map_location=map_loc)
@@ -816,6 +846,7 @@ class MainApp:
 
         self.start_button.configure(state="disabled")
         self.train_button.configure(state="disabled")
+        from .header import TrainHeaderClassifierLogic
         training_gui = TrainClassifierGUI(self.master)
         self._active_training_gui = training_gui
         training_thread = threading.Thread(
@@ -3203,8 +3234,8 @@ from .config_io import (format_prefer3d_dict as _format_prefer3d_dict,
                         replace_single_assignment as _replace_single_assignment)
 
 
-from . import processing
-from .processing import load_center_slice_fast
+# `processing` and `load_center_slice_fast` are provided as lazy bindings near
+# the top of this module so importing it stays fast.
 
 
 def _extract_dicom_path(path_entry):

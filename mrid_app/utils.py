@@ -3,7 +3,6 @@ import yaml
 from collections import defaultdict
 from tkinter import messagebox
 from typing import Optional
-import pydicom
 import re
 import logging
 import hashlib
@@ -286,6 +285,7 @@ def safe_get_dicom_attribute(ds, tag_name):
     Returns:
         Attribute value (converted to string tuple if MultiValue), or "None" if not found
     """
+    import pydicom  # deferred: keeps GUI startup fast (see gui._LazyModule)
     value = getattr(ds, tag_name, None)
     if isinstance(value, pydicom.multival.MultiValue):
         value = str(tuple(value))
