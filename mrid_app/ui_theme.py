@@ -125,16 +125,40 @@ def cascade(window, parent=None, step=CASCADE_STEP):
 def place_main_window(window):
     """Size the main window to its content and place it deterministically.
 
-    Call after the window's widgets have been built: CTk applies a fixed
-    600x500 default geometry at creation, which would otherwise clip wide
-    content and leave empty space below short content."""
+    Call at the end of building the window's widgets (before mainloop): CTk
+    applies a fixed 600x500 default geometry at creation, which would otherwise
+    clip wide content and leave empty space below short content.
+
+    Setting the measured content size here — synchronously, before the window
+    is first mapped — makes it appear directly at the right size, instead of
+    the default size visibly resizing into place a frame later."""
     try:
         window.update_idletasks()
-        window.wm_geometry("")  # drop the fixed default size; fit to content
-        window.update_idletasks()
+        # winfo_reqwidth/reqheight are in real pixels, but CTk's geometry()
+        # works in logical units and multiplies by its window scaling, so divide
+        # the requirement by the scale factor.
+        scale = get_scale_factor() or 1.0
+        logical_w = int(round(window.winfo_reqwidth() / scale))
+        logical_h = int(round(window.winfo_reqheight() / scale))
         x = int(window.winfo_screenwidth() * 0.05)
         y = int(window.winfo_screenheight() * 0.07)
+        # CTk caps maxsize at its 600x500 default for ~1s after a scaling change,
+        # which would clip a wider window — lift the cap to the screen size.
+        window.maxsize(int(window.winfo_screenwidth() / scale),
+                       int(window.winfo_screenheight() / scale))
+        # Pin minsize to the content size: the control row is never clipped, even
+        # if the user shrinks the window.
+        window.minsize(logical_w, logical_h)
+        # Set the explicit size+position once so the window appears at the right
+        # size immediately (no default-size flash)...
+        window.geometry(f"{logical_w}x{logical_h}+{x}+{y}")
+        window.update_idletasks()
+        # ...then hand sizing back to the content so the window still grows when
+        # the progress bar is added during a run (an explicit WxH alone would
+        # freeze it). Re-assert the position, which wm_geometry("") clears.
+        window.wm_geometry("")
         window.wm_geometry(f"+{x}+{y}")
+        window.update_idletasks()
     except Exception:
         pass
 
