@@ -158,3 +158,95 @@ def test_check_dicom_batch_gdcm_fallback():
     assert results[0] is None
     assert results[1] is None
 
+
+
+def _make_marker_series(out_dir, num_slices=10):
+    """Synthetic series where the center column pixel encodes the spatial slice
+    index, so the chosen center thumbnail can be verified. Files are written in
+    shuffled order with records carrying ImagePositionPatient (as in scanning)."""
+    import numpy as np
+    import pydicom
+    from pydicom.dataset import FileDataset, FileMetaDataset
+    from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+
+    series_uid = generate_uid()
+    study_uid = generate_uid()
+    order = list(range(num_slices))
+    np.random.RandomState(0).shuffle(order)
+    records = []
+    for file_idx, slice_idx in enumerate(order):
+        meta = FileMetaDataset()
+        meta.MediaStorageSOPClassUID = pydicom.uid.MRImageStorage
+        meta.MediaStorageSOPInstanceUID = generate_uid()
+        meta.TransferSyntaxUID = ExplicitVRLittleEndian
+        path = os.path.join(out_dir, f"m_{file_idx:03d}.dcm")
+        ds = FileDataset(path, {}, file_meta=meta, preamble=b"\0" * 128)
+        ds.SOPClassUID = meta.MediaStorageSOPClassUID
+        ds.SOPInstanceUID = meta.MediaStorageSOPInstanceUID
+        ds.StudyInstanceUID = study_uid
+        ds.SeriesInstanceUID = series_uid
+        ds.Modality = "MR"
+        ds.InstanceNumber = slice_idx + 1
+        ds.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
+        ds.ImagePositionPatient = [0.0, 0.0, float(slice_idx)]
+        ds.Rows = 8
+        ds.Columns = 8
+        ds.SamplesPerPixel = 1
+        ds.PhotometricInterpretation = "MONOCHROME2"
+        ds.BitsAllocated = 16
+        ds.BitsStored = 16
+        ds.HighBit = 15
+        ds.PixelRepresentation = 0
+        # Zero background (normalization min), a center marker block encoding the
+        # slice index, and a constant bright corner anchor (normalization max).
+        arr = np.zeros((8, 8), dtype=np.uint16)
+        arr[2:6, 2:6] = slice_idx * 100  # center marker block
+        arr[0, 0] = 4000                 # anchor
+        ds.PixelData = arr.tobytes()
+        ds.save_as(path)
+        records.append({
+            "path": path,
+            "image_position": ds.ImagePositionPatient,
+            "image_orientation": ds.ImageOrientationPatient,
+        })
+    return records
+
+
+def test_extract_center_slice_picks_spatial_center():
+    """extract_and_save_center_slice must select the spatial center slice
+    (index num_slices // 2) using the scan-phase positions."""
+    import tempfile
+    import numpy as np
+    from PIL import Image
+    from mrid_app.scanner import extract_and_save_center_slice
+
+    with tempfile.TemporaryDirectory() as d:
+        records = _make_marker_series(d, num_slices=10)
+        tdir = os.path.join(d, "thumbs")
+        os.makedirs(tdir)
+        path = extract_and_save_center_slice(records, tdir, "MRN", "ST", "SE")
+        assert path is not None and os.path.exists(path)
+        img = np.array(Image.open(path).convert("L"))
+        assert img.shape == (256, 256)
+        # Center index 5 -> marker fill 500; normalization uses min 0 / max 4000
+        # (the anchor), so the marker maps to 500/4000*255 ~= 32. Sample a region
+        # away from the corner anchor and back out the slice index.
+        center_val = float(np.median(img[120:136, 120:136]))
+        recovered_slice = round(center_val / 255.0 * 4000.0 / 100.0)
+        assert recovered_slice == 5, (center_val, recovered_slice)
+
+
+def test_extract_center_slice_falls_back_without_positions():
+    """When records lack positions, ordering falls back to InstanceNumber via
+    header-only reads and still produces a thumbnail."""
+    import tempfile
+    from mrid_app.scanner import extract_and_save_center_slice
+
+    with tempfile.TemporaryDirectory() as d:
+        records = _make_marker_series(d, num_slices=6)
+        for rec in records:
+            rec["image_position"] = None  # force the fallback path
+        tdir = os.path.join(d, "thumbs")
+        os.makedirs(tdir)
+        path = extract_and_save_center_slice(records, tdir, "MRN", "ST", "SE")
+        assert path is not None and os.path.exists(path)

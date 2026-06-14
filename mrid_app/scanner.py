@@ -222,63 +222,63 @@ def extract_and_save_center_slice(file_records, thumbnail_dir, mrn, study_uid, s
         import pydicom
         from PIL import Image
 
-        # Build list of file paths from records
-        file_paths = [rec['path'] for rec in file_records]
-
-        # Get series UID from first file to verify consistency
+        # Determine the slice normal for spatial sorting from the orientation
+        # captured during scanning (fall back to a header-only read, then axial).
+        slice_normal = np.array([0, 0, 1], dtype=np.float32)
+        iop = file_records[0].get('image_orientation')
+        if iop is None:
+            try:
+                ds_ref = pydicom.dcmread(file_records[0]['path'], stop_before_pixels=True, force=True)
+                iop = getattr(ds_ref, "ImageOrientationPatient", None)
+            except Exception:
+                iop = None
         try:
-            first_ds = pydicom.dcmread(file_paths[0], stop_before_pixels=True, force=True)
-            target_series_uid = first_ds.SeriesInstanceUID
-        except Exception:
-            return None
-
-        # Load all slices with position information for sorting
-        slices = []
-
-        # Get orientation from first file for spatial sorting
-        try:
-            ds_ref = pydicom.dcmread(file_paths[0], stop_before_pixels=True, force=True)
-            iop = getattr(ds_ref, "ImageOrientationPatient", None)
             if iop is not None and len(iop) == 6:
                 R = np.array(iop[0:3], dtype=np.float32)
                 C = np.array(iop[3:6], dtype=np.float32)
                 slice_normal = np.cross(R, C)
-            else:
-                slice_normal = np.array([0, 0, 1], dtype=np.float32)
         except Exception:
-            slice_normal = np.array([0, 0, 1], dtype=np.float32)
+            pass
 
-        # Load and sort all slices
-        for fpath in file_paths:
-            try:
-                ds = pydicom.dcmread(fpath, force=True)
+        # Sort slices using the positions already captured during scanning, so
+        # only the single center slice needs its pixel data decoded. This avoids
+        # decoding (and decompressing) every slice in the series.
+        keyed = []
+        positions_missing = False
+        for order, rec in enumerate(file_records):
+            ipp = rec.get('image_position')
+            if ipp is not None and len(ipp) == 3:
+                try:
+                    sort_key = float(np.dot(np.array(ipp, dtype=np.float32), slice_normal))
+                except Exception:
+                    sort_key = float(order)
+                    positions_missing = True
+            else:
+                sort_key = float(order)
+                positions_missing = True
+            keyed.append((sort_key, rec['path']))
 
-                # Verify this file belongs to the target series
-                if getattr(ds, "SeriesInstanceUID", None) != target_series_uid:
-                    continue
+        # If positions were unavailable, fall back to ordering by InstanceNumber
+        # via cheap header-only reads (still no pixel decode).
+        if positions_missing:
+            def _instance_key(item):
+                try:
+                    ds = pydicom.dcmread(item[1], stop_before_pixels=True, force=True)
+                    return float(getattr(ds, "InstanceNumber", item[0]))
+                except Exception:
+                    return item[0]
+            keyed.sort(key=_instance_key)
+        else:
+            keyed.sort(key=lambda x: x[0])
 
-                # Calculate sort key based on position
-                ipp = getattr(ds, "ImagePositionPatient", None)
-                if ipp is not None and len(ipp) == 3:
-                    ipp_vec = np.array(ipp, dtype=np.float32)
-                    sort_key = np.dot(ipp_vec, slice_normal)
-                else:
-                    sort_key = float(getattr(ds, "InstanceNumber", 0))
+        center_path = keyed[len(keyed) // 2][1]
 
-                slices.append((sort_key, ds))
-            except Exception:
-                continue
-
-        if not slices:
+        # Decode pixel data for the center slice only
+        try:
+            ds_center = pydicom.dcmread(center_path, force=True)
+            arr = ds_center.pixel_array.astype(np.float32)
+        except Exception:
             return None
-
-        # Sort and get center slice
-        slices.sort(key=lambda x: x[0])
-        center_idx = len(slices) // 2
-        ds_center = slices[center_idx][1]
-
-        # Extract pixel array
-        arr = ds_center.pixel_array.astype(np.float32)
 
         # Apply windowing if available
         ww = getattr(ds_center, "WindowWidth", None)
