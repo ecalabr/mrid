@@ -40,13 +40,89 @@ PANEL_BG = "#1a1a1a"
 TOOLTIP_BG = "#2b2b2b"
 TOOLTIP_FG = "#e0e0e0"
 
+# Dark colors for classic tk.Menu widgets (the menubar and popup menus). On
+# Linux these render via Tk and would otherwise be light; on macOS the native
+# menubar ignores them.
+MENU_BG = "#2b2b2b"
+MENU_FG = "#dce4ee"
+MENU_ACTIVE_BG = "#1f6aa5"
+MENU_ACTIVE_FG = "#ffffff"
+MENU_DISABLED_FG = "#777777"
+
+
+def style_menu(menu):
+    """Apply the dark theme to a classic tk.Menu (menubar or popup)."""
+    try:
+        menu.configure(
+            bg=MENU_BG, fg=MENU_FG,
+            activebackground=MENU_ACTIVE_BG, activeforeground=MENU_ACTIVE_FG,
+            disabledforeground=MENU_DISABLED_FG,
+            activeborderwidth=0, borderwidth=0, relief="flat",
+        )
+    except Exception:
+        pass
+
 _SCALE_FACTOR = None
+
+
+def _ensure_linux_shape_font():
+    """Make CustomTkinter's anti-aliased corners work on Linux.
+
+    Smooth widget corners on Tk/X11 are only possible via text (Xft) rendering,
+    which CustomTkinter does with a bundled shapes font. If that font isn't
+    registered with fontconfig, CTk silently falls back to 'circle_shapes',
+    which draws blocky corners. Register the font with fontconfig and force the
+    font_shapes method. Best-effort and Linux-only (no effect elsewhere)."""
+    import sys
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        import os
+        import shutil
+        import subprocess
+
+        ctk_dir = os.path.dirname(ctk.__file__)
+        shapes_font = os.path.join(ctk_dir, "assets", "fonts",
+                                   "CustomTkinter_shapes_font.otf")
+        if not os.path.isfile(shapes_font):
+            return
+
+        target_dir = os.path.expanduser("~/.fonts")
+        os.makedirs(target_dir, exist_ok=True)
+        dest = os.path.join(target_dir, "CustomTkinter_shapes_font.otf")
+        if not os.path.isfile(dest):
+            shutil.copy(shapes_font, dest)
+
+        # Refresh the fontconfig cache so the running Tk/Xft can find the font.
+        try:
+            subprocess.run(["fc-cache", "-f", target_dir],
+                           check=False, capture_output=True, timeout=30)
+        except Exception:
+            pass
+
+        # Only force font_shapes if fontconfig can now see the font; otherwise
+        # forcing it would render corners as missing glyphs (worse).
+        registered = False
+        try:
+            out = subprocess.run(["fc-list"], check=False, capture_output=True,
+                                 timeout=30, text=True)
+            registered = "CustomTkinter_shapes_font" in (out.stdout or "")
+        except Exception:
+            registered = False
+
+        if registered:
+            from customtkinter.windows.widgets.core_rendering import DrawEngine
+            DrawEngine.preferred_drawing_method = "font_shapes"
+            logger.debug("Linux: using font_shapes for smooth widget corners")
+    except Exception as exc:
+        logger.debug(f"Could not set up Linux shape font: {exc}")
 
 
 def init_appearance():
     """Apply the global dark theme. Call once before creating any window."""
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("dark-blue")
+    _ensure_linux_shape_font()
 
 
 def init_scaling(window):

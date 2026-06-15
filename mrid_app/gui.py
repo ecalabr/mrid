@@ -373,15 +373,18 @@ class MainApp:
         self._selfsupervised_csv_path = None  # Path to the written CSV
 
         menubar = tk.Menu(master)
+        ui_theme.style_menu(menubar)
         master.config(menu=menubar)
 
         other_menu = tk.Menu(menubar, tearoff=0)
+        ui_theme.style_menu(other_menu)
         menubar.add_cascade(label="File Options", menu=other_menu)
         other_menu.add_command(label="Convert NIfTIs", command=self._convert_niftis_utility)
         other_menu.add_command(label="Export DICOMS", command=self._export_dicoms_utility)
         other_menu.add_command(label="Erase Data", command=self._erase_data_utility)
 
         config_menu = tk.Menu(menubar, tearoff=0)
+        ui_theme.style_menu(config_menu)
         menubar.add_cascade(label="Configuration", menu=config_menu)
         config_menu.add_command(label="Run Config Wizard", command=self._run_config_wizard)
         config_menu.add_command(label="Save Config File", command=self._save_config)
@@ -3933,6 +3936,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                                          fg_color=default_bg, hover_color=ui_theme.NEUTRAL_HOVER,
                                          text_color=default_fg)
                 self.menu = tk.Menu(parent, tearoff=0)
+                ui_theme.style_menu(self.menu)
 
                 for opt in self.options:
                     def _mk(v=opt):
