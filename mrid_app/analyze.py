@@ -157,7 +157,8 @@ def load_all_thumbnail_features(
 
 def _pca_to_variance(features_l2: np.ndarray) -> np.ndarray:
     """
-    L2-normalise (already done by caller) then PCA to _PCA_VARIANCE_TARGET.
+    PCA-reduce the (already L2-normalised) features so that at least
+    _PCA_VARIANCE_TARGET of the variance is retained.
 
     Returns the PCA-reduced array.
     """
@@ -232,8 +233,8 @@ def _hdbscan_cluster(
     fraction of exams.
 
     Noise points (label -1) are reassigned to the nearest cluster centroid
-    in UMAP space so no thumbnail is left unlabelled.  Noise probabilities are
-    set to 0.0 before reassignment.
+    in UMAP space so no thumbnail is left unlabelled.  Reassigned noise points
+    keep the 0.0 membership probability HDBSCAN gave them.
 
     Returns (labels, probabilities, n_clusters).
     """

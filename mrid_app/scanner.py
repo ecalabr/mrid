@@ -62,11 +62,12 @@ def check_dicom_batch(filepaths, include_types=None, exclude_types=None):
 
         for fp in filepaths:
             try:
-                # cheap preamble check
+                # Touch the 4 bytes after the 128-byte preamble (where the
+                # DICM marker lives); the value is not checked and any read
+                # error is ignored.
                 try:
                     with open(fp, 'rb') as fh:
                         fh.seek(128)
-                        # Check for DICM preamble (validation only)
                         fh.read(4)
                 except Exception:
                     pass
@@ -159,8 +160,7 @@ def is_folder_organized(dicom_records):
             dir_path = os.path.dirname(file_path)
             series_dirs[series_uid].add(dir_path)
 
-    # If any series has files in multiple directories, folder is organized
-    # If multiple series share the same directory, folder is unorganized
+    # Invert the mapping: directory -> set of series whose files live in it
     dir_to_series = defaultdict(set)
     for series_uid, dirs in series_dirs.items():
         for d in dirs:
@@ -222,63 +222,63 @@ def extract_and_save_center_slice(file_records, thumbnail_dir, mrn, study_uid, s
         import pydicom
         from PIL import Image
 
-        # Build list of file paths from records
-        file_paths = [rec['path'] for rec in file_records]
-
-        # Get series UID from first file to verify consistency
+        # Determine the slice normal for spatial sorting from the orientation
+        # captured during scanning (fall back to a header-only read, then axial).
+        slice_normal = np.array([0, 0, 1], dtype=np.float32)
+        iop = file_records[0].get('image_orientation')
+        if iop is None:
+            try:
+                ds_ref = pydicom.dcmread(file_records[0]['path'], stop_before_pixels=True, force=True)
+                iop = getattr(ds_ref, "ImageOrientationPatient", None)
+            except Exception:
+                iop = None
         try:
-            first_ds = pydicom.dcmread(file_paths[0], stop_before_pixels=True, force=True)
-            target_series_uid = first_ds.SeriesInstanceUID
-        except Exception:
-            return None
-
-        # Load all slices with position information for sorting
-        slices = []
-
-        # Get orientation from first file for spatial sorting
-        try:
-            ds_ref = pydicom.dcmread(file_paths[0], stop_before_pixels=True, force=True)
-            iop = getattr(ds_ref, "ImageOrientationPatient", None)
             if iop is not None and len(iop) == 6:
                 R = np.array(iop[0:3], dtype=np.float32)
                 C = np.array(iop[3:6], dtype=np.float32)
                 slice_normal = np.cross(R, C)
-            else:
-                slice_normal = np.array([0, 0, 1], dtype=np.float32)
         except Exception:
-            slice_normal = np.array([0, 0, 1], dtype=np.float32)
+            pass
 
-        # Load and sort all slices
-        for fpath in file_paths:
-            try:
-                ds = pydicom.dcmread(fpath, force=True)
+        # Sort slices using the positions already captured during scanning, so
+        # only the single center slice needs its pixel data decoded. This avoids
+        # decoding (and decompressing) every slice in the series.
+        keyed = []
+        positions_missing = False
+        for order, rec in enumerate(file_records):
+            ipp = rec.get('image_position')
+            if ipp is not None and len(ipp) == 3:
+                try:
+                    sort_key = float(np.dot(np.array(ipp, dtype=np.float32), slice_normal))
+                except Exception:
+                    sort_key = float(order)
+                    positions_missing = True
+            else:
+                sort_key = float(order)
+                positions_missing = True
+            keyed.append((sort_key, rec['path']))
 
-                # Verify this file belongs to the target series
-                if getattr(ds, "SeriesInstanceUID", None) != target_series_uid:
-                    continue
+        # If positions were unavailable, fall back to ordering by InstanceNumber
+        # via cheap header-only reads (still no pixel decode).
+        if positions_missing:
+            def _instance_key(item):
+                try:
+                    ds = pydicom.dcmread(item[1], stop_before_pixels=True, force=True)
+                    return float(getattr(ds, "InstanceNumber", item[0]))
+                except Exception:
+                    return item[0]
+            keyed.sort(key=_instance_key)
+        else:
+            keyed.sort(key=lambda x: x[0])
 
-                # Calculate sort key based on position
-                ipp = getattr(ds, "ImagePositionPatient", None)
-                if ipp is not None and len(ipp) == 3:
-                    ipp_vec = np.array(ipp, dtype=np.float32)
-                    sort_key = np.dot(ipp_vec, slice_normal)
-                else:
-                    sort_key = float(getattr(ds, "InstanceNumber", 0))
+        center_path = keyed[len(keyed) // 2][1]
 
-                slices.append((sort_key, ds))
-            except Exception:
-                continue
-
-        if not slices:
+        # Decode pixel data for the center slice only
+        try:
+            ds_center = pydicom.dcmread(center_path, force=True)
+            arr = ds_center.pixel_array.astype(np.float32)
+        except Exception:
             return None
-
-        # Sort and get center slice
-        slices.sort(key=lambda x: x[0])
-        center_idx = len(slices) // 2
-        ds_center = slices[center_idx][1]
-
-        # Extract pixel array
-        arr = ds_center.pixel_array.astype(np.float32)
 
         # Apply windowing if available
         ww = getattr(ds_center, "WindowWidth", None)
@@ -296,13 +296,10 @@ def extract_and_save_center_slice(file_records, thumbnail_dir, mrn, study_uid, s
         arr /= max(arr.max(), 1e-6)
         arr = (arr * 255).astype(np.uint8)
 
-        # Convert to PIL Image
         pil_img = Image.fromarray(arr)
 
-        # Resize to standard thumbnail size (256x256)
         pil_img = pil_img.resize((256, 256))
 
-        # Determine file extension based on format
         file_extension = '.jpg' if THUMBNAIL_FORMAT.upper() == 'JPEG' else '.png'
 
         # Create thumbnail filename
@@ -313,7 +310,6 @@ def extract_and_save_center_slice(file_records, thumbnail_dir, mrn, study_uid, s
 
         thumbnail_path = os.path.join(thumbnail_dir, thumbnail_filename)
 
-        # Save with appropriate format and quality
         if THUMBNAIL_FORMAT.upper() == 'JPEG':
             pil_img.save(thumbnail_path, 'JPEG', quality=THUMBNAIL_QUALITY)
         else:
@@ -349,7 +345,6 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
             shutil.rmtree(thumbnail_base)
         os.makedirs(thumbnail_base, exist_ok=True)
 
-    # Check if folder is organized
     folder_organized = is_folder_organized(dicom_records)
     if not folder_organized and temp_base:
         logger.info("Detected unorganized DICOM folder. Organizing files with symlinks in dicom_symlinks directory...")
@@ -406,8 +401,9 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
         unique_positions_set = {tuple(f['image_position']) for f in files if f['image_position']}
 
         if SEPARATE_STACKED_SERIES and len(unique_positions_set) != len(files):
-            # FAST SPLITTING: Use a occurrence counter to assign bucket IDs
-            # This handles multi-echo/dynamic data in O(N)
+            # Split by duplicate spatial position: an occurrence counter assigns
+            # each repeat of a position to the next volume bucket, handling
+            # multi-echo/dynamic data in O(N)
             pos_counts = {}
             subseries_buckets = []  # List of lists
 
@@ -582,16 +578,13 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
             except Exception as e:
                 return (task['entry_dict'], None)
 
-        # Generate thumbnails in parallel
         completed_thumbnails = 0
         with ThreadPoolExecutor(max_workers=NUM_PARALLEL_WORKERS) as executor:
-            # Submit all tasks
             future_to_task = {
                 executor.submit(generate_thumbnail_task, task): task
                 for task in thumbnail_tasks
             }
 
-            # Process results as they complete
             for future in as_completed(future_to_task):
                 try:
                     entry_dict, thumbnail_path = future.result()

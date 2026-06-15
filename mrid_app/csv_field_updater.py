@@ -33,7 +33,8 @@ def check_missing_fields(csv_path):
         expected_fields = get_expected_field_names()
         current_fields = set(df.columns)
 
-        # Fields that should be in CSV (excluding Classification and Path)
+        # Only the configured DICOM header fields are required; other columns
+        # (e.g. Classification, Path) are not checked.
         required_fields = set(expected_fields)
         missing_fields = required_fields - current_fields
 
@@ -114,7 +115,6 @@ def update_csv_with_missing_fields(csv_path, missing_fields, progress_callback=N
         bool: True if successful, False otherwise
     """
     try:
-        # Read existing CSV
         df = pd.read_csv(csv_path)
         total_rows = len(df)
 
@@ -122,25 +122,20 @@ def update_csv_with_missing_fields(csv_path, missing_fields, progress_callback=N
             logger.error(f"'Path' column not found in {csv_path}")
             return False
 
-        # Initialize missing columns with "None"
         for field in missing_fields:
             df[field] = "None"
 
-        # Extract values for each row
         for idx, row in df.iterrows():
             dicom_path = row['Path']
 
-            # Extract each missing field
             for field in missing_fields:
                 value = extract_dicom_field_value(dicom_path, field)
                 df.at[idx, field] = value
 
-            # Progress update
             if progress_callback and (idx % 10 == 0 or idx == total_rows - 1):
                 progress_callback(idx + 1, total_rows,
                                 f"Updating {os.path.basename(csv_path)}: {idx + 1}/{total_rows}")
 
-        # Save updated CSV
         df.to_csv(csv_path, index=False)
         logger.info(f"Successfully updated {csv_path} with {len(missing_fields)} field(s)")
         return True

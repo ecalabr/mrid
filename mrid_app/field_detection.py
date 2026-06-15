@@ -125,7 +125,6 @@ def analyze_dataframe_fields(df, field_names):
 
     for field_name in field_names:
         if field_name not in df.columns:
-            # Field not present, skip
             continue
 
         field_type = detect_field_type(df[field_name], field_name)
@@ -192,7 +191,7 @@ def preprocess_by_type(df, field_types):
         field_types: dict from analyze_dataframe_fields
 
     Returns:
-        tuple: (preprocessed_df, numerical_cols, categorical_cols, text_cols)
+        tuple: (preprocessed_df, categorical_cols, text_cols)
     """
     # Separate fields by type
     numerical_fields = []

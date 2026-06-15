@@ -3,7 +3,7 @@ This runner calls test functions directly so pytest isn't required.
 Tests multiple components for debugging and development purposes.
 """
 
-import importlib
+import importlib.util
 import sys
 import time
 from pathlib import Path
@@ -13,7 +13,9 @@ TEST_MODULES = [
     'tests.test_prep',
     'tests.test_field_detection',
     'tests.test_config',
+    'tests.test_config_io',
     'tests.test_processing',
+    'tests.test_cnn_slices',
     'tests.test_csv_field_updater',
     'tests.test_scaling',
     'tests.test_scanner',
@@ -30,7 +32,12 @@ def run_module_tests(module_name):
     print(f'{"="*70}')
 
     try:
-        tests = importlib.import_module(module_name)
+        # Load by file path: importing 'tests.test_*' normally would fail
+        # because this runner module (tests.py) shadows the tests/ directory.
+        module_file = Path(__file__).parent / f'{module_name.replace(".", "/")}.py'
+        spec = importlib.util.spec_from_file_location(module_name, module_file)
+        tests = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tests)
         test_functions = [name for name in dir(tests) if name.startswith('test_')]
 
         if not test_functions:

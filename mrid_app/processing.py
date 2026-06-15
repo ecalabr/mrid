@@ -86,9 +86,12 @@ def convert_series_to_nifti(series_dir, output_path, label):
 
 
 def background_conversion_worker(*args, convert=True, **kwargs):
-    """Backward-compatible wrapper. Supports both old signature
-    background_conversion_worker(mrn, study_uid, output_root, dropdown_vars, series_dict)
-    and new signature with accn parameter.
+    """Write the classification CSV for a study and, when convert is True,
+    convert each labeled (non-'Other') series to NIfTI.
+
+    Accepts positional args (mrn, study_uid, output_root, dropdown_vars,
+    series_dict[, accn][, convert]); the sixth positional may be either the
+    accn string or the convert bool, and the seventh (if present) is convert.
     """
     # Unpack positional args
     mrn = None
@@ -193,25 +196,25 @@ def background_conversion_worker(*args, convert=True, **kwargs):
                 logger.error(f"Failed to convert {first_path}: {e}")
 
 
-def load_center_slice(dicom_paths):
+def get_sorted_series_files(dicom_paths):
     """
-    Load the center slice from a DICOM series.
-    This is the original full implementation that scans all files.
+    Find all files belonging to the same series as dicom_paths[0] and return
+    their paths sorted spatially along the slice normal (falling back to
+    InstanceNumber when position information is missing).
     """
     if not dicom_paths:
-        return None
+        return []
     first_path = dicom_paths[0]
     base_dir = os.path.dirname(first_path)
     try:
         first_ds = pydicom.dcmread(first_path, stop_before_pixels=True, force=True)
         series_uid = first_ds.SeriesInstanceUID
     except Exception:
-        return None
+        return []
 
     series_files = []
-    search_dir = base_dir
-    for fname in os.listdir(search_dir):
-        fpath = os.path.join(search_dir, fname)
+    for fname in os.listdir(base_dir):
+        fpath = os.path.join(base_dir, fname)
         if not os.path.isfile(fpath):
             continue
         try:
@@ -222,9 +225,8 @@ def load_center_slice(dicom_paths):
             continue
 
     if not series_files:
-        return None
+        return []
 
-    slices = []
     ds_ref = pydicom.dcmread(series_files[0], stop_before_pixels=True, force=True)
     iop = getattr(ds_ref, "ImageOrientationPatient", None)
     if iop is not None and len(iop) == 6:
@@ -234,48 +236,65 @@ def load_center_slice(dicom_paths):
     else:
         slice_normal = np.array([0, 0, 1], dtype=np.float32)
 
+    keyed = []
     for fpath in series_files:
         try:
-            ds = pydicom.dcmread(fpath, force=True)
+            ds = pydicom.dcmread(fpath, stop_before_pixels=True, force=True)
             ipp = getattr(ds, "ImagePositionPatient", None)
             if ipp is not None and len(ipp) == 3:
-                ipp_vec = np.array(ipp, dtype=np.float32)
-                sort_key = np.dot(ipp_vec, slice_normal)
+                sort_key = float(np.dot(np.array(ipp, dtype=np.float32), slice_normal))
             else:
                 sort_key = float(getattr(ds, "InstanceNumber", 0))
-            slices.append((sort_key, ds))
+            keyed.append((sort_key, fpath))
         except Exception:
             continue
 
-    if not slices:
+    keyed.sort(key=lambda x: x[0])
+    return [fpath for _, fpath in keyed]
+
+
+def get_evenly_spaced_indices(num_total, num_slices):
+    """
+    Return num_slices evenly spaced indices into a sequence of length num_total:
+    indices num_total*i//(num_slices+1) for i in 1..num_slices. With
+    num_slices=1 this yields the center index (num_total // 2). Indices may
+    repeat when num_slices approaches num_total.
+    """
+    num_slices = max(1, int(num_slices))
+    return [num_total * (i + 1) // (num_slices + 1) for i in range(num_slices)]
+
+
+def load_series_slices(dicom_paths, num_slices=1):
+    """
+    Load num_slices evenly spaced slices from a DICOM series as PIL Images.
+    Returns a list of images in spatial order, or None on error.
+    """
+    sorted_files = get_sorted_series_files(dicom_paths)
+    if not sorted_files:
         return None
+    images = []
+    for idx in get_evenly_spaced_indices(len(sorted_files), num_slices):
+        img = _load_single_slice(sorted_files[idx])
+        if img is None:
+            return None
+        images.append(img)
+    return images
 
-    slices.sort(key=lambda x: x[0])
-    center_idx = len(slices) // 2
-    ds_center = slices[center_idx][1]
-    arr = ds_center.pixel_array.astype(np.float32)
 
-    ww = getattr(ds_center, "WindowWidth", None)
-    wc = getattr(ds_center, "WindowCenter", None)
-
-    if ww and wc:
-        if isinstance(ww, pydicom.multival.MultiValue):
-            ww = float(ww[0])
-        if isinstance(wc, pydicom.multival.MultiValue):
-            wc = float(wc[0])
-        arr = np.clip(arr, wc - ww / 2, wc + wc / 2)
-
-    arr -= arr.min()
-    arr /= max(arr.max(), 1e-6)
-    arr = (arr * 255).astype(np.uint8)
-
-    return Image.fromarray(arr)
+def load_center_slice(dicom_paths):
+    """Load the center slice of a DICOM series as a PIL Image."""
+    images = load_series_slices(dicom_paths, num_slices=1)
+    return images[0] if images else None
 
 
 def load_center_slice_fast(dicom_path):
     """
-    Fast version of load_center_slice that uses cached series information.
-    This version reads only the necessary files for better performance.
+    Load the center slice of the series containing dicom_path as a PIL Image.
+
+    Scans the file's directory reading headers only, collects files sharing
+    the same SeriesInstanceUID, sorts them by InstanceNumber (no spatial
+    sort), and decodes pixel data only for the center slice. Falls back to
+    loading dicom_path itself if the series cannot be determined.
 
     Args:
         dicom_path: Path to a DICOM file from the series
@@ -367,19 +386,11 @@ def _load_single_slice(dicom_path):
         return None
 
 
-def load_image_tensor(dicom_path, load_center_slice_func=None, transforms_func=None):
-    load_center = load_center_slice_func or load_center_slice
-    transforms = transforms_func
-    if transforms is None:
-        try:
-            from .cnn import _get_transforms
-            transforms = _get_transforms()
-        except Exception:
-            transforms = None
-    if transforms is None:
-        return None
+def load_image_tensor(dicom_path, num_slices=1, load_slices_func=None, image_size=None):
+    load_slices = load_slices_func or load_series_slices
     try:
-        tensor = prepare_cnn_input_data([dicom_path], load_center_slice_func=load_center)
+        tensor = prepare_cnn_input_data([dicom_path], load_slices_func=load_slices,
+                                        num_slices=num_slices, image_size=image_size)
         return tensor
     except Exception as e:
         logger.debug(f"Error applying image transform: {e}")
@@ -389,7 +400,14 @@ def load_image_tensor(dicom_path, load_center_slice_func=None, transforms_func=N
 def get_image_probabilities(dicom_path, model, target_encoder):
     if not all([model, target_encoder]):
         return None
-    input_tensor = load_image_tensor(dicom_path)
+    # Input slice count and image size are dictated by the loaded model, so
+    # inference always matches how the model was trained.
+    try:
+        num_slices = int(model.conv1.in_channels)
+    except Exception:
+        num_slices = 1
+    image_size = getattr(model, 'image_size', None)
+    input_tensor = load_image_tensor(dicom_path, num_slices=num_slices, image_size=image_size)
     if input_tensor is None:
         return None
     try:

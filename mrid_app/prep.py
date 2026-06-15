@@ -37,7 +37,6 @@ def _preprocess_df(df, is_training=True, field_types=None):
         If is_training: (preprocessed_df, categorical_cols, text_cols, field_types)
         If not is_training: preprocessed_df
     """
-    # Get list of field names to use
     field_names = [field[0] for field in DICOM_HEADER_FIELDS]
 
     # Select only the configured fields that exist in df
@@ -45,11 +44,9 @@ def _preprocess_df(df, is_training=True, field_types=None):
     X = df[available_fields].copy()
 
     if is_training or field_types is None:
-        # Analyze and detect field types
         logger.info("Analyzing DICOM header field types...")
         detected_field_types = analyze_dataframe_fields(X, available_fields)
 
-        # Preprocess based on detected types
         X_processed, categorical_cols, text_cols = preprocess_by_type(X, detected_field_types)
 
         if is_training:
@@ -57,7 +54,6 @@ def _preprocess_df(df, is_training=True, field_types=None):
         else:
             return X_processed
     else:
-        # Use pre-computed field types
         X_processed, categorical_cols, text_cols = preprocess_by_type(X, field_types)
         return X_processed
 
@@ -76,7 +72,6 @@ def encode_text_features(feature_df, text_cols):
 
     for col in text_cols:
         if col not in feature_df.columns:
-            # Column doesn't exist, skip
             emb_df = pd.DataFrame(index=feature_df.index)
             embedded_features.append(emb_df)
             continue

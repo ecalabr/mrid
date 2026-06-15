@@ -4,25 +4,60 @@ import threading
 import time
 import random
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import filedialog, messagebox
+import customtkinter as ctk
 from . import config
+from . import ui_theme
+from .ui_theme import (scale_value, scale_thumbnail, cascade, place_main_window,
+                       ThemedProgressBar, TitledFrame)
+from .series_scroller import attach_series_scrolling
 from .config import NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LABELS, NUM_PARALLEL_WORKERS, THUMBNAIL_SCALE_FACTOR
-from .header import TrainHeaderClassifierLogic
-from .cnn import SimpleCNN
 from .utils import (extract_study_id_from_path, get_study_csv_name, get_study_dir_name,
                      get_nifti_name, get_nifti_prefix, sanitize_target_series,
                      get_classified_outputs_dir)
 from .logging_config import get_logger, setup_logging, update_log_file_location
-import joblib
 from PIL import Image, ImageTk
 import shutil
 import colorsys
 import platform
 import subprocess
 import importlib
-import pydicom
 
 logger = get_logger()
+
+
+class _LazyModule:
+    """Import a module on first attribute access.
+
+    Heavy dependencies (torch, scikit-learn, pandas, pydicom, joblib) are only
+    needed once the user trains/loads a model or scans DICOMs. Deferring them
+    keeps `import mrid_app.gui` — and therefore the time before the main window
+    appears — fast. Call sites use these exactly like the real module."""
+
+    def __init__(self, name, package=None):
+        self.__dict__['_name'] = name
+        self.__dict__['_package'] = package
+        self.__dict__['_mod'] = None
+
+    def _load(self):
+        if self._mod is None:
+            self.__dict__['_mod'] = importlib.import_module(self._name, self._package)
+        return self._mod
+
+    def __getattr__(self, attr):
+        return getattr(self._load(), attr)
+
+
+# Lazily-imported modules (see _LazyModule). pydicom/joblib are stdlib-light
+# but still cost ~250 ms combined at import; processing pulls in torch+sklearn.
+processing = _LazyModule('.processing', __package__)
+pydicom = _LazyModule('pydicom')
+joblib = _LazyModule('joblib')
+
+
+def load_center_slice_fast(*args, **kwargs):
+    """Thin wrapper so this name resolves without importing processing eagerly."""
+    return processing.load_center_slice_fast(*args, **kwargs)
 
 
 # Sanitize TARGET_SERIES to ensure safe filenames
@@ -74,152 +109,6 @@ def _save_last_dirs(input_dir: str, output_dir: str):
         logger.debug(f"Could not save last-used directories to {_PREFS_FILE}: {exc}")
 
 
-# Global scaling factor to be calculated once
-_SCALE_FACTOR = None
-
-
-def _calculate_scale_factor(window):
-    """Calculate the appropriate scaling factor based on DPI and platform."""
-    try:
-        # Get DPI from the window
-        dpi = window.winfo_fpixels('1i')
-
-        # Base DPI reference (standard 96 DPI for Windows, 72 for Mac)
-        if platform.system() == 'Darwin':  # macOS
-            base_dpi = 72.0
-        else:  # Windows/Linux
-            base_dpi = 96.0
-
-        # Calculate scaling factor
-        scale = dpi / base_dpi
-
-        # Clamp the scaling factor to reasonable bounds
-        scale = max(0.75, min(scale, 3.0))
-
-        return scale
-    except Exception:
-        return 1.0
-
-
-def _enable_dpi_awareness():
-    """Enable DPI awareness for Windows to get correct DPI values."""
-    if platform.system() == 'Windows':
-        try:
-            from ctypes import windll
-            # Try SetProcessDpiAwareness first (Windows 8.1+)
-            try:
-                windll.shcore.SetProcessDpiAwareness(1)
-            except Exception:
-                # Fall back to SetProcessDPIAware (Windows Vista+)
-                try:
-                    windll.user32.SetProcessDPIAware()
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-
-def enable_tkinter_autoscaling(window):
-    """
-    Enable DPI-aware autoscaling for tkinter windows.
-    Call this once on the root window, and once on each Toplevel window.
-    """
-    global _SCALE_FACTOR
-
-    # Enable DPI awareness on Windows (only needs to be done once)
-    if _SCALE_FACTOR is None:
-        _enable_dpi_awareness()
-
-    # Calculate scale factor if not already done
-    if _SCALE_FACTOR is None:
-        _SCALE_FACTOR = _calculate_scale_factor(window)
-
-    # Apply tk scaling
-    try:
-        window.tk.call('tk', 'scaling', _SCALE_FACTOR * 1.33)
-    except Exception:
-        pass
-
-    # Scale fonts
-    try:
-        import tkinter.font as tkfont
-
-        # Default font sizes at 96 DPI
-        default_sizes = {
-            "TkDefaultFont": 9,
-            "TkTextFont": 9,
-            "TkFixedFont": 9,
-            "TkMenuFont": 9,
-            "TkHeadingFont": 9,
-            "TkCaptionFont": 9,
-            "TkSmallCaptionFont": 8,
-            "TkIconFont": 9,
-            "TkTooltipFont": 8,
-        }
-
-        for name, default_size in default_sizes.items():
-            try:
-                font = tkfont.nametofont(name)
-                # Scale the default size, not the current size
-                new_size = int(default_size * _SCALE_FACTOR)
-                # Ensure minimum readable size
-                new_size = max(8, new_size)
-                font.configure(size=new_size)
-            except Exception:
-                continue
-    except Exception:
-        pass
-
-
-def scale_geometry(geometry_string):
-    """
-    Scale a geometry string (e.g., "500x300") by the global scale factor.
-    Returns the scaled geometry string.
-    """
-    global _SCALE_FACTOR
-    if _SCALE_FACTOR is None:
-        return geometry_string
-
-    try:
-        # Parse geometry string like "500x300" or "500x300+100+100"
-        parts = geometry_string.split('+')
-        size_part = parts[0]
-        position_parts = parts[1:] if len(parts) > 1 else []
-
-        width, height = map(int, size_part.split('x'))
-        scaled_width = int(width * _SCALE_FACTOR)
-        scaled_height = int(height * _SCALE_FACTOR)
-
-        result = f"{scaled_width}x{scaled_height}"
-        if position_parts:
-            result += '+' + '+'.join(position_parts)
-
-        return result
-    except Exception:
-        return geometry_string
-
-
-def scale_value(value):
-    """Scale a numeric value by the global scale factor."""
-    global _SCALE_FACTOR
-    if _SCALE_FACTOR is None:
-        return value
-    return int(value * _SCALE_FACTOR)
-
-
-def scale_thumbnail(value):
-    """Scale a thumbnail pixel size by both the DPI scale factor and the user-configurable THUMBNAIL_SCALE_FACTOR.
-    Reads THUMBNAIL_SCALE_FACTOR directly from the config module so it always
-    reflects the current value even after a config reload."""
-    global _SCALE_FACTOR
-    sf = _SCALE_FACTOR if _SCALE_FACTOR is not None else 1.0
-    try:
-        tsf = config.THUMBNAIL_SCALE_FACTOR
-    except Exception:
-        tsf = 1.0
-    return int(value * sf * tsf)
-
-
 class _ToolTip:
     """Simple hover tooltip for a tkinter widget."""
 
@@ -243,7 +132,8 @@ class _ToolTip:
             tw.wm_overrideredirect(True)
             tw.wm_geometry(f"+{x}+{y}")
             tk.Label(tw, text=self.text, justify="left",
-                     background="#ffffe0", relief="solid", borderwidth=1,
+                     background=ui_theme.TOOLTIP_BG, foreground=ui_theme.TOOLTIP_FG,
+                     relief="solid", borderwidth=1,
                      font=("TkDefaultFont", 9)).pack()
         except Exception:
             pass
@@ -278,33 +168,36 @@ def _generate_color_map(labels):
 class TrainClassifierGUI:
     def __init__(self, master):
         self._cancelled = False
-        self.root = tk.Toplevel(master)
-        enable_tkinter_autoscaling(self.root)
+        self.root = ctk.CTkToplevel(master)
         self.root.title("Model Training In Progress...")
-        self.root.geometry(scale_geometry("450x155"))
+        cascade(self.root, master)
         self.root.protocol("WM_DELETE_WINDOW", self.do_nothing)
         self.root.grab_set()
         self.label = tk.StringVar(value="Initializing training process...")
-        tk.Label(self.root, textvariable=self.label).pack(pady=scale_value(10))
-        self.progress = ttk.Progressbar(self.root, orient="horizontal",
-                                        length=scale_value(400), mode="indeterminate")
+        ctk.CTkLabel(self.root, textvariable=self.label).pack(pady=scale_value(10))
+        self.progress = ThemedProgressBar(self.root, length=400, mode="indeterminate")
         self.progress.pack(pady=scale_value(5), padx=scale_value(20))
         self.progress.start(10)
-        self.cancel_button = tk.Button(
+        self.cancel_button = ctk.CTkButton(
             self.root,
             text="Cancel",
             command=self._on_cancel,
-            bg="#ff5f5f",
-            activebackground="#ff3333",
-            width=scale_value(10),
+            fg_color=ui_theme.RED,
+            hover_color=ui_theme.RED_HOVER,
+            width=100,
         )
         self.cancel_button.pack(pady=scale_value(8))
+        # Pin the size to the built content so status-text updates don't
+        # resize the window (real pixels, so bypass CTk geometry scaling)
+        self.root.update_idletasks()
+        width = max(self.root.winfo_reqwidth(), scale_value(460))
+        self.root.wm_geometry(f"{width}x{self.root.winfo_reqheight()}")
         self.root.update()
 
     def _on_cancel(self):
         """Called when the Cancel button is pressed."""
         self._cancelled = True
-        self.cancel_button.config(state="disabled", text="Cancelling…")
+        self.cancel_button.configure(state="disabled", text="Cancelling…")
         self.label.set("Cancelling – please wait…")
 
     def is_cancelled(self):
@@ -340,7 +233,6 @@ class TrainClassifierGUI:
 
     def close(self):
         def _safe_close():
-            # stop progressbar if it exists
             try:
                 if hasattr(self, 'progress') and self.progress.winfo_exists():
                     try:
@@ -349,7 +241,6 @@ class TrainClassifierGUI:
                         pass
             except Exception:
                 pass
-            # release grab and destroy root if still present
             try:
                 if hasattr(self, 'root') and self.root.winfo_exists():
                     try:
@@ -376,40 +267,37 @@ class TrainClassifierGUI:
 class ProgressGUI:
     def __init__(self, total_files, title="Scanning DICOM Files...", label_text="Scanning files..."):
         try:
-            self.root = tk.Toplevel(tk._default_root)
+            self.root = ctk.CTkToplevel(tk._default_root)
         except AttributeError:
-            self.root = tk.Toplevel()
-        enable_tkinter_autoscaling(self.root)
+            self.root = ctk.CTkToplevel()
         try:
             self.root.title(title)
         except Exception:
             pass
-        self.root.geometry(scale_geometry("500x320"))
+        # No fixed size: the window grows as the organize/thumbnail bars appear
+        cascade(self.root, tk._default_root)
         self.root.protocol("WM_DELETE_WINDOW", self.do_nothing)
 
         # First progress bar: Scanning files
-        self.label = tk.Label(self.root, text=label_text)
+        self.label = ctk.CTkLabel(self.root, text=label_text)
         self.label.pack(pady=scale_value(5))
-        self.progress = ttk.Progressbar(self.root, orient="horizontal",
-                                        length=scale_value(400), mode="determinate",
-                                        maximum=total_files)
-        self.progress.pack(pady=scale_value(3))
-        self.count_label = tk.Label(self.root, text="0 / 0")
+        self.progress = ThemedProgressBar(self.root, length=400, mode="determinate",
+                                          maximum=total_files)
+        self.progress.pack(pady=scale_value(3), padx=scale_value(30))
+        self.count_label = ctk.CTkLabel(self.root, text="0 / 0")
         self.count_label.pack(pady=scale_value(3))
 
         # Second progress bar: Organizing series (initially hidden)
-        self.organize_label = tk.Label(self.root, text="")
-        self.organize_progress = ttk.Progressbar(self.root, orient="horizontal",
-                                                  length=scale_value(400), mode="determinate",
-                                                  maximum=100)
-        self.organize_count_label = tk.Label(self.root, text="")
+        self.organize_label = ctk.CTkLabel(self.root, text="")
+        self.organize_progress = ThemedProgressBar(self.root, length=400, mode="determinate",
+                                                   maximum=100)
+        self.organize_count_label = ctk.CTkLabel(self.root, text="")
 
         # Third progress bar: Generating thumbnails (initially hidden)
-        self.thumbnail_label = tk.Label(self.root, text="")
-        self.thumbnail_progress = ttk.Progressbar(self.root, orient="horizontal",
-                                                  length=scale_value(400), mode="determinate",
-                                                  maximum=100)
-        self.thumbnail_count_label = tk.Label(self.root, text="")
+        self.thumbnail_label = ctk.CTkLabel(self.root, text="")
+        self.thumbnail_progress = ThemedProgressBar(self.root, length=400, mode="determinate",
+                                                    maximum=100)
+        self.thumbnail_count_label = ctk.CTkLabel(self.root, text="")
 
         self.root.update()
 
@@ -418,15 +306,15 @@ class ProgressGUI:
         self.progress["value"] = value
         if total is None:
             total = self.progress["maximum"]
-        self.count_label.config(text=f"{value} / {int(total)}")
+        self.count_label.configure(text=f"{value} / {int(total)}")
         self.root.update_idletasks()
 
     def show_organize_progress(self, label_text="Organizing series...", total=1):
         """Show the second progress bar for organizing series."""
-        self.organize_label.config(text=label_text)
+        self.organize_label.configure(text=label_text)
         self.organize_label.pack(pady=scale_value(5))
         self.organize_progress["maximum"] = total
-        self.organize_progress.pack(pady=scale_value(3))
+        self.organize_progress.pack(pady=scale_value(3), padx=scale_value(30))
         self.organize_count_label.pack(pady=scale_value(3))
         self.root.update_idletasks()
 
@@ -434,15 +322,15 @@ class ProgressGUI:
         """Update organizing progress bar and count text."""
         self.organize_progress["maximum"] = total
         self.organize_progress["value"] = current
-        self.organize_count_label.config(text=f"{current} / {total}")
+        self.organize_count_label.configure(text=f"{current} / {total}")
         self.root.update_idletasks()
 
     def show_thumbnail_progress(self, label_text="Generating thumbnails...", total=1):
         """Show the third progress bar for thumbnail generation."""
-        self.thumbnail_label.config(text=label_text)
+        self.thumbnail_label.configure(text=label_text)
         self.thumbnail_label.pack(pady=scale_value(5))
         self.thumbnail_progress["maximum"] = total
-        self.thumbnail_progress.pack(pady=scale_value(3))
+        self.thumbnail_progress.pack(pady=scale_value(3), padx=scale_value(30))
         self.thumbnail_count_label.pack(pady=scale_value(3))
         self.root.update_idletasks()
 
@@ -450,7 +338,7 @@ class ProgressGUI:
         """Update thumbnail progress bar and count text."""
         self.thumbnail_progress["maximum"] = total
         self.thumbnail_progress["value"] = current
-        self.thumbnail_count_label.config(text=f"{current} / {total}")
+        self.thumbnail_count_label.configure(text=f"{current} / {total}")
         self.root.update_idletasks()
 
     def close(self):
@@ -463,8 +351,7 @@ class ProgressGUI:
 class MainApp:
     def __init__(self, master):
         self.master = master
-        master.title("DICOM Classification Tool")
-        enable_tkinter_autoscaling(master)
+        master.title("MRID — DICOM Classification Tool")
         _default_input, _default_output = _load_last_dirs()
         self.input_dir = tk.StringVar(value=_default_input)
         self.output_dir = tk.StringVar(value=_default_output)
@@ -478,81 +365,68 @@ class MainApp:
         self.cnn_target_encoder = None
         self.stop_requested = threading.Event()
         self.is_running = False
-        # New flag for nifti conversion
         self.convert_to_nifti = tk.BooleanVar(value=False)
-        # Flag to indicate models should be loaded after training completes
-        self._auto_load_after_training = False
         # Track the currently active config file path
         self.active_config_path = None  # None means using repository config
         # Analyze-mode training state
         self._analyze_csv_ready = False       # True once selfsupervised CSV is written
         self._selfsupervised_csv_path = None  # Path to the written CSV
 
-        # Create menu bar
         menubar = tk.Menu(master)
         master.config(menu=menubar)
 
-        # Other Options menu
         other_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="File Options", menu=other_menu)
         other_menu.add_command(label="Convert NIfTIs", command=self._convert_niftis_utility)
         other_menu.add_command(label="Export DICOMS", command=self._export_dicoms_utility)
         other_menu.add_command(label="Erase Data", command=self._erase_data_utility)
 
-        # Configuration menu
         config_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Configuration", menu=config_menu)
+        config_menu.add_command(label="Run Config Wizard", command=self._run_config_wizard)
         config_menu.add_command(label="Save Config File", command=self._save_config)
         config_menu.add_command(label="Load Config File", command=self._load_config)
         config_menu.add_command(label="Edit Config File", command=self._edit_config_file)
         config_menu.add_command(label="Reload Config File", command=self._reload_config_menu)
 
         # UI layout
-        dir_frame = tk.LabelFrame(master, text="Directories", padx=scale_value(10), pady=scale_value(10))
+        dir_frame = TitledFrame(master, title="Directories")
         dir_frame.pack(padx=scale_value(20), pady=scale_value(10), fill="x")
-        tk.Label(dir_frame, text="Input DIR:").grid(row=0, column=0, padx=scale_value(5), pady=scale_value(5), sticky="w")
-        tk.Entry(dir_frame, textvariable=self.input_dir, width=50).grid(row=0, column=1, padx=scale_value(5), pady=scale_value(5), sticky="ew")
-        tk.Button(dir_frame, text="Browse", command=lambda: self.browse_dir(self.input_dir, "Select INPUT directory")).grid(row=0, column=2, padx=scale_value(5), pady=scale_value(5))
-        tk.Label(dir_frame, text="Output DIR:").grid(row=1, column=0, padx=scale_value(5), pady=scale_value(5), sticky="w")
-        tk.Entry(dir_frame, textvariable=self.output_dir, width=50).grid(row=1, column=1, padx=scale_value(5), pady=scale_value(5), sticky="ew")
-        tk.Button(dir_frame, text="Browse", command=lambda: self.browse_dir(self.output_dir, "Select OUTPUT directory")).grid(row=1, column=2, padx=scale_value(5), pady=scale_value(5))
-        dir_frame.columnconfigure(1, weight=1)
+        dirs = dir_frame.content
+        ctk.CTkLabel(dirs, text="Input DIR:").grid(row=0, column=0, padx=scale_value(5), pady=scale_value(5), sticky="w")
+        ctk.CTkEntry(dirs, textvariable=self.input_dir, width=420).grid(row=0, column=1, padx=scale_value(5), pady=scale_value(5), sticky="ew")
+        ctk.CTkButton(dirs, text="Browse", width=90, command=lambda: self.browse_dir(self.input_dir, "Select INPUT directory")).grid(row=0, column=2, padx=scale_value(5), pady=scale_value(5))
+        ctk.CTkLabel(dirs, text="Output DIR:").grid(row=1, column=0, padx=scale_value(5), pady=scale_value(5), sticky="w")
+        ctk.CTkEntry(dirs, textvariable=self.output_dir, width=420).grid(row=1, column=1, padx=scale_value(5), pady=scale_value(5), sticky="ew")
+        ctk.CTkButton(dirs, text="Browse", width=90, command=lambda: self.browse_dir(self.output_dir, "Select OUTPUT directory")).grid(row=1, column=2, padx=scale_value(5), pady=scale_value(5))
+        dirs.columnconfigure(1, weight=1)
 
-        control_frame = tk.Frame(master, padx=scale_value(20), pady=scale_value(10))
-        control_frame.pack(fill="x")
-        mode_frame = tk.Frame(control_frame)
-        mode_frame.pack(side="right", padx=scale_value(5))
-        tk.Label(mode_frame, text="Mode:").pack(side="left", padx=scale_value(5))
+        control_frame = ctk.CTkFrame(master, fg_color="transparent")
+        control_frame.pack(fill="x", padx=scale_value(20), pady=scale_value(10))
+        # Mode selector at the far left, before the Start button
+        mode_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
+        mode_frame.pack(side="left", padx=scale_value(5))
+        ctk.CTkLabel(mode_frame, text="Mode:").pack(side="left", padx=scale_value(5))
         mode_options = ["Analyze", "Manual", "Semi-Auto", "Full-Auto", "Verify"]
-        # Replaced ttk.Combobox with tk.OptionMenu. Keep using the same
-        # StringVar (self.classification_mode) and call _check_model_status via
-        # the OptionMenu 'command' so existing logic that relies on the
-        # variable and event handling remains unchanged.
-        mode_menu = tk.OptionMenu(mode_frame, self.classification_mode, *mode_options, command=self._check_model_status)
-        try:
-            mode_menu.config(width=12)
-        except Exception:
-            pass
+        mode_menu = ctk.CTkOptionMenu(mode_frame, variable=self.classification_mode,
+                                      values=mode_options, width=130,
+                                      command=self._check_model_status)
         mode_menu.pack(side="left", padx=scale_value(5))
-        model_type_frame = tk.Frame(control_frame)
+        model_type_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
         model_type_frame.pack(side="right", padx=scale_value(5))
-        tk.Label(model_type_frame, text="Model Type:").pack(side="left", padx=scale_value(5))
+        ctk.CTkLabel(model_type_frame, text="Model Type:").pack(side="left", padx=scale_value(5))
         model_options = ["DICOM Header Model", "Image-Based Model", "Header + Image Model"]
-        # Replace model-type Combobox with OptionMenu; preserve self.model_type
-        # StringVar and call _check_model_status on selection changes.
-        model_menu = tk.OptionMenu(model_type_frame, self.model_type, *model_options, command=self._check_model_status)
-        try:
-            model_menu.config(width=20)
-        except Exception:
-            pass
+        model_menu = ctk.CTkOptionMenu(model_type_frame, variable=self.model_type,
+                                       values=model_options, width=200,
+                                       command=self._check_model_status)
         model_menu.pack(side="left", padx=scale_value(5))
 
-        # New convert toggle (Yes/No)
-        convert_frame = tk.Frame(control_frame)
+        # Convert toggle (Yes/No)
+        convert_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
         convert_frame.pack(side="right", padx=scale_value(10))
-        tk.Label(convert_frame, text="Convert to NIfTI:").pack(side="left", padx=(0, scale_value(5)))
+        ctk.CTkLabel(convert_frame, text="Convert to NIfTI:").pack(side="left", padx=(0, scale_value(5)))
 
-        # Single Button toggle showing Yes/No. Clicking flips the underlying BooleanVar
+        # Single button toggle showing Yes/No. Clicking flips the underlying BooleanVar
         def _convert_button_toggle():
             new_state = not bool(self.convert_to_nifti.get())
             self.convert_to_nifti.set(new_state)
@@ -560,24 +434,38 @@ class MainApp:
             self._on_toggle_convert()
             # reflect final state on the button text
             try:
-                self._convert_button.config(text=("Yes" if self.convert_to_nifti.get() else "No"))
+                self._convert_button.configure(text=("Yes" if self.convert_to_nifti.get() else "No"))
             except Exception:
                 pass
 
-        self._convert_button = tk.Button(convert_frame, text=("Yes" if self.convert_to_nifti.get() else "No"), command=_convert_button_toggle, bd=1, relief='raised')
+        self._convert_button = ctk.CTkButton(convert_frame, width=60,
+                                             fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
+                                             text=("Yes" if self.convert_to_nifti.get() else "No"),
+                                             command=_convert_button_toggle)
         self._convert_button.pack(side="left")
 
-        self.start_button = tk.Button(control_frame, text="▶ Start Classification", font=("Arial", scale_value(12), "bold"), command=self.start_classification, state="normal")
+        button_font = ctk.CTkFont(size=13, weight="bold")
+        # Fixed width sized for the longest text ("▶ Start Classification") so
+        # mode changes never resize the window
+        self.start_button = ctk.CTkButton(control_frame, text="▶ Start Classification", font=button_font,
+                                          width=190, command=self.start_classification, state="normal")
         self.start_button.pack(side="left", padx=scale_value(5))
-        self.stop_button = tk.Button(control_frame, text="Stop", font=("Arial", scale_value(12)), command=self.stop_classification, state="disabled")
+        self.stop_button = ctk.CTkButton(control_frame, text="Stop", width=70,
+                                         fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
+                                         command=self.stop_classification, state="disabled")
         self.stop_button.pack(side="left", padx=scale_value(5))
-        self.train_button = tk.Button(control_frame, text="Train Model(s)", font=("Arial", scale_value(12)), command=self._train_model)
+        self.train_button = ctk.CTkButton(control_frame, text="Train Model(s)", width=120,
+                                          command=self._train_model)
         self.train_button.pack(side="right", padx=scale_value(5))
         self._train_button_tooltip = _ToolTip(self.train_button, "")
-        self.load_button = tk.Button(control_frame, text="Load Model(s)", font=("Arial", scale_value(12)), command=self._load_model_handler)
+        self.load_button = ctk.CTkButton(control_frame, text="Load Model(s)", width=120,
+                                         command=self._load_model_handler)
         self.load_button.pack(side="right", padx=scale_value(5))
         self._load_button_tooltip = _ToolTip(self.load_button, "")
         self._check_model_status()
+        # Size the window to fit the UI and place it (CTk's fixed default
+        # geometry would otherwise clip the control row)
+        place_main_window(master)
 
     def browse_dir(self, var, title):
         directory = filedialog.askdirectory(title=title, initialdir=var.get())
@@ -603,16 +491,13 @@ class MainApp:
         """Handler for the convert-to-nifti toggle. If enabling, check for dcm2niix in PATH.
         If not found, revert toggle and show an error dialog."""
         enabled = bool(self.convert_to_nifti.get())
-        # update the button text to show current state
         try:
-            # update the main toggle button to reflect the state
             if hasattr(self, '_convert_button'):
-                self._convert_button.config(text=("Yes" if enabled else "No"))
+                self._convert_button.configure(text=("Yes" if enabled else "No"))
         except Exception:
             pass
 
         if enabled:
-            # Check for dcm2niix availability
             dcm2niix_path = shutil.which("dcm2niix")
             if not dcm2niix_path:
                 try:
@@ -623,7 +508,7 @@ class MainApp:
                 self.convert_to_nifti.set(False)
                 try:
                     if hasattr(self, '_convert_button'):
-                        self._convert_button.config(text="No")
+                        self._convert_button.configure(text="No")
                 except Exception:
                     pass
                 return
@@ -639,11 +524,9 @@ class MainApp:
         rf_model_path = os.path.join(model_files_dir, "rf_classifier_model.joblib")
         cnn_model_path = os.path.join(model_files_dir, "cnn_classifier_model.pth")
 
-        # Check which models exist and which are missing
         rf_exists = os.path.exists(rf_model_path) if rf_needed else True
         cnn_exists = os.path.exists(cnn_model_path) if cnn_needed else True
 
-        # If all needed models exist, load them
         if rf_exists and cnn_exists:
             if rf_needed:
                 self._load_classifier_and_encoder()
@@ -652,7 +535,6 @@ class MainApp:
             self._check_model_status()
             return
 
-        # Models are missing - ask user if they want to train
         missing_models = []
         if rf_needed and not rf_exists:
             missing_models.append("DICOM Header Model")
@@ -671,10 +553,7 @@ class MainApp:
         if not response:
             return
 
-        # User wants to train - set flag to load models after training
-        self._auto_load_after_training = True
-
-        # Start training for missing models
+        # Models load automatically when training completes
         if rf_needed and not rf_exists:
             self.train_classifier_rf()
         if cnn_needed and not cnn_exists:
@@ -746,24 +625,12 @@ class MainApp:
 
             self.cnn_target_encoder = joblib.load(target_encoder_path)
             num_classes = len(self.cnn_target_encoder.classes_)
-            self.cnn_model = SimpleCNN(num_classes=num_classes)
 
-            # Load saved state dict with map_location to handle CPU-only environments
-            try:
-                cuda_avail = torch.cuda.is_available()
-            except Exception:
-                cuda_avail = False
-
-            map_loc = torch.device('cuda') if cuda_avail else torch.device('cpu')
+            # Best available device: CUDA (NVIDIA/AMD ROCm) > Apple MPS > CPU
+            from .cnn import get_torch_device, load_cnn_model
+            map_loc = get_torch_device()
             logger.info(f"Loading CNN model on device: {map_loc}")
-            state_dict = torch.load(model_path, map_location=map_loc)
-            self.cnn_model.load_state_dict(state_dict)
-            # Move model to the appropriate device
-            try:
-                self.cnn_model.to(map_loc)
-            except Exception:
-                pass
-            self.cnn_model.eval()
+            self.cnn_model = load_cnn_model(model_path, num_classes, map_location=map_loc)
             logger.info("Image-Based Model (CNN) loaded successfully")
         except Exception as e:
             logger.error(f"Failed to load CNN model: {e}")
@@ -828,27 +695,27 @@ class MainApp:
         # Update start button
         if can_start:
             if mode_is_analyze:
-                self.start_button.config(text="▶ Start Analysis", state="normal", bg="#4fff5b", activebackground="#4fff5b")
+                self.start_button.configure(text="▶ Start Analysis", state="normal", fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER)
             elif mode_is_verify:
-                self.start_button.config(text="▶ Start Verification", state="normal", bg="#4fff5b", activebackground="#4fff5b")
+                self.start_button.configure(text="▶ Start Verification", state="normal", fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER)
             else:
-                self.start_button.config(text="▶ Start Classification", state="normal", bg="#4fff5b", activebackground="#4fff5b")
+                self.start_button.configure(text="▶ Start Classification", state="normal", fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER)
         else:
-            self.start_button.config(text="▶ Start Classification", state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
+            self.start_button.configure(text="▶ Start Classification", state="disabled", fg_color=ui_theme.DISABLED)
 
         # Update load button
         _MIN_CASES = 10
         if models_loaded:
-            self.load_button.config(text="Model(s) Loaded", state="disabled", bg="#4fff5b", activebackground="#4fff5b")
+            self.load_button.configure(text="Model(s) Loaded", state="disabled", fg_color=ui_theme.GREEN)
             load_tip = ""
         elif mode_is_analyze:
-            self.load_button.config(text="Load Model(s)", state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
+            self.load_button.configure(text="Load Model(s)", state="disabled", fg_color=ui_theme.DISABLED)
             load_tip = "Cannot load models in Analyze mode"
         elif mode_is_verify:
-            self.load_button.config(text="Load Model(s)", state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
+            self.load_button.configure(text="Load Model(s)", state="disabled", fg_color=ui_theme.DISABLED)
             load_tip = "Cannot load models in Verify mode"
         elif mode_is_manual:
-            self.load_button.config(text="Load Model(s)", state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
+            self.load_button.configure(text="Load Model(s)", state="disabled", fg_color=ui_theme.DISABLED)
             load_tip = "Cannot load models in Manual mode"
         else:
             # Semi-Auto / Full-Auto: check whether model files exist
@@ -863,15 +730,15 @@ class MainApp:
 
             if models_exist:
                 # Models on disk — always allow load
-                self.load_button.config(text="Load Model(s)", state="normal", bg="#ff4f4f", activebackground="#ff4f4f")
+                self.load_button.configure(text="Load Model(s)", state="normal", fg_color=ui_theme.RED, hover_color=ui_theme.RED_HOVER)
                 load_tip = ""
             elif n_cases >= _MIN_CASES:
                 # No models yet but enough data to train — allow (will offer to train)
-                self.load_button.config(text="Load Model(s)", state="normal", bg="#ff4f4f", activebackground="#ff4f4f")
+                self.load_button.configure(text="Load Model(s)", state="normal", fg_color=ui_theme.RED, hover_color=ui_theme.RED_HOVER)
                 load_tip = ""
             else:
                 # No models and not enough data yet
-                self.load_button.config(text="Load Model(s)", state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
+                self.load_button.configure(text="Load Model(s)", state="disabled", fg_color=ui_theme.DISABLED)
                 load_tip = f"Classify at least {_MIN_CASES} cases to enable model loading/training"
 
         try:
@@ -899,9 +766,9 @@ class MainApp:
             pass
 
         if train_available:
-            self.train_button.config(state="normal", bg="#4fff5b", activebackground="#4fff5b")
+            self.train_button.configure(state="normal", fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER)
         else:
-            self.train_button.config(state="disabled", bg="#f0f0f0", activebackground="#f0f0f0")
+            self.train_button.configure(state="disabled", fg_color=ui_theme.DISABLED)
 
     def _train_model(self):
         if self.is_running:
@@ -960,7 +827,6 @@ class MainApp:
             except Exception as e:
                 messagebox.showerror("Error", f"Could not load self-supervised CSV:\n{e}", parent=self.master)
                 return
-        # Create callback for missing fields prompt
         def prompt_update_missing_fields(num_csvs, missing_fields):
             """Prompt user about updating CSVs with missing fields."""
             fields_str = "\n  - ".join(missing_fields)
@@ -978,8 +844,9 @@ class MainApp:
             )
             return response
 
-        self.start_button.config(state="disabled")
-        self.train_button.config(state="disabled")
+        self.start_button.configure(state="disabled")
+        self.train_button.configure(state="disabled")
+        from .header import TrainHeaderClassifierLogic
         training_gui = TrainClassifierGUI(self.master)
         self._active_training_gui = training_gui
         training_thread = threading.Thread(
@@ -1013,8 +880,8 @@ class MainApp:
                 return
 
         logger.info("Starting Image-Based Model (CNN) training")
-        self.start_button.config(state="disabled")
-        self.train_button.config(state="disabled")
+        self.start_button.configure(state="disabled")
+        self.train_button.configure(state="disabled")
         training_gui = TrainClassifierGUI(self.master)
         self._active_training_gui = training_gui
         training_thread = threading.Thread(
@@ -1042,36 +909,29 @@ class MainApp:
             self.master.after(100, self._poll_training_status, thread, training_gui)
         else:
             # Training completed (or was cancelled)
-            self.start_button.config(state="normal")
+            self.start_button.configure(state="normal")
 
             # Check if training was cancelled — skip auto-load and model check
             was_cancelled = training_gui is not None and training_gui.is_cancelled()
             if was_cancelled:
-                self._auto_load_after_training = False
                 self._check_model_status()
                 return
 
-            # If auto-load flag is set, load the models
-            if self._auto_load_after_training:
-                self._auto_load_after_training = False  # Reset flag
+            # Automatically load the freshly trained model(s)
+            model_type = self.model_type.get()
+            rf_needed = model_type in ["DICOM Header Model", "Header + Image Model"]
+            cnn_needed = model_type in ["Image-Based Model", "Header + Image Model"]
 
-                # Load the models based on model type
-                model_type = self.model_type.get()
-                rf_needed = model_type in ["DICOM Header Model", "Header + Image Model"]
-                cnn_needed = model_type in ["Image-Based Model", "Header + Image Model"]
+            output_dir = self.output_dir.get()
+            model_files_dir = os.path.join(output_dir, "model_files")
+            rf_model_path = os.path.join(model_files_dir, "rf_classifier_model.joblib")
+            cnn_model_path = os.path.join(model_files_dir, "cnn_classifier_model.pth")
 
-                output_dir = self.output_dir.get()
-                model_files_dir = os.path.join(output_dir, "model_files")
-                rf_model_path = os.path.join(model_files_dir, "rf_classifier_model.joblib")
-                cnn_model_path = os.path.join(model_files_dir, "cnn_classifier_model.pth")
+            if rf_needed and os.path.exists(rf_model_path):
+                self._load_classifier_and_encoder()
 
-                # Load RF model if needed and exists
-                if rf_needed and os.path.exists(rf_model_path):
-                    self._load_classifier_and_encoder()
-
-                # Load CNN model if needed and exists
-                if cnn_needed and os.path.exists(cnn_model_path):
-                    self._load_image_classifier()
+            if cnn_needed and os.path.exists(cnn_model_path):
+                self._load_image_classifier()
 
             self._check_model_status()
 
@@ -1079,12 +939,10 @@ class MainApp:
         if self.is_running: return
         current_mode = self.classification_mode.get()
 
-        # Handle Analyze mode separately
         if current_mode == "Analyze":
             self.start_analysis()
             return
 
-        # Handle Verify mode separately
         if current_mode == "Verify":
             self.start_verification()
             return
@@ -1110,9 +968,7 @@ class MainApp:
         logger.info(f"Input directory: {input_dir}")
         logger.info(f"Output directory: {output_dir}")
 
-        # New: if hierarchy.yaml exists in output_dir, ask user whether to load it or rescan
-        # Also check for config.py and offer to load it
-        # Automatically load existing hierarchy and config files if they exist
+        # Automatically load hierarchy.yaml and config.py from the output directory if present
         existing_hierarchy = None
         try:
             hierarchy_path = os.path.join(output_dir, "hierarchy.yaml")
@@ -1130,38 +986,10 @@ class MainApp:
                 except Exception as e:
                     logger.warning(f"Failed to load config.py: {e} - using current config")
             else:
-                # No config in output dir — ask the user if they want to copy the default
-                copy_default = messagebox.askyesno(
-                    "No Config File Found",
-                    "No config.py was found in the output directory.\n\n"
-                    "Would you like to copy the default config file to the output directory "
-                    "and use it as the active configuration?\n\n"
-                    "Select 'No' to continue using the default repository config.",
-                    parent=self.master
-                )
-                if copy_default:
-                    try:
-                        # Determine the source: active custom config or the repo config
-                        if self.active_config_path and os.path.exists(self.active_config_path):
-                            source_config_path = self.active_config_path
-                        else:
-                            source_config_path = config.__file__
-                            if source_config_path.endswith('.pyc'):
-                                source_config_path = source_config_path[:-1]
-
-                        os.makedirs(output_dir, exist_ok=True)
-                        shutil.copy(source_config_path, config_path)
-                        logger.info(f"Copied default config to: {config_path}")
-
-                        if self._load_config_from_file(config_path):
-                            self.active_config_path = config_path
-                            logger.info(f"Loaded copied config from: {config_path}")
-                        else:
-                            logger.warning(f"Copied config to {config_path} but failed to load it, using current config")
-                    except Exception as e:
-                        logger.warning(f"Failed to copy default config to output directory: {e} - using current config")
-                else:
-                    logger.info("User declined to copy default config - continuing with repository config")
+                # No config in output dir — a project config is required
+                if not self._handle_missing_config(output_dir, config_path):
+                    logger.info("Classification start aborted (no project config)")
+                    return
 
             # Automatically load hierarchy if it exists
             if hierarchy_exists:
@@ -1181,18 +1009,18 @@ class MainApp:
 
         self.is_running = True
         self.stop_requested.clear()
-        self.start_button.config(state="disabled")
-        self.stop_button.config(state="normal")
-        self.train_button.config(state="disabled")
+        self.start_button.configure(state="disabled")
+        self.stop_button.configure(state="normal")
+        self.train_button.configure(state="disabled")
 
-        self.progress_frame = tk.Frame(self.master)
-        self.progress_frame.pack(padx=20, pady=10, fill='x')
+        self.progress_frame = ctk.CTkFrame(self.master, fg_color="transparent")
+        self.progress_frame.pack(padx=scale_value(20), pady=scale_value(10), fill='x')
 
         self.progress_label = tk.StringVar(value="Starting...")
-        tk.Label(self.progress_frame, textvariable=self.progress_label).pack(side="top")
+        ctk.CTkLabel(self.progress_frame, textvariable=self.progress_label).pack(side="top")
 
-        self.progress_bar = ttk.Progressbar(self.progress_frame, orient="horizontal", mode="determinate")
-        self.progress_bar.pack(fill='x', pady=5)
+        self.progress_bar = ThemedProgressBar(self.progress_frame, mode="determinate")
+        self.progress_bar.pack(fill='x', pady=scale_value(5))
 
         # Pass existing_hierarchy into the background worker so it can skip scanning when appropriate
         classification_thread = threading.Thread(
@@ -1206,7 +1034,7 @@ class MainApp:
     def stop_classification(self):
         if not self.is_running: return
         self.stop_requested.set()
-        self.stop_button.config(text="Stopping...", state="disabled")
+        self.stop_button.configure(text="Stopping...", state="disabled")
 
     def _poll_classification_status(self, thread):
         if thread.is_alive():
@@ -1217,8 +1045,8 @@ class MainApp:
     def classification_finished(self, aborted):
         self.is_running = False
         self.stop_requested.clear()
-        self.start_button.config(state="normal")
-        self.stop_button.config(text="Stop", state="disabled")
+        self.start_button.configure(state="normal")
+        self.stop_button.configure(text="Stop", state="disabled")
 
         if aborted:
             logger.info("Classification workflow stopped by user")
@@ -1276,7 +1104,6 @@ class MainApp:
                     batch_size = 64
                     chunks = [all_files[i:i+batch_size] for i in range(0, len(all_files), batch_size)]
 
-                    # Use the batched scanner; import the batch function
                     from .scanner import check_dicom_batch
 
                     processed = 0
@@ -1288,7 +1115,6 @@ class MainApp:
                         else:
                             # if a worker returned None or failed, assume the corresponding chunk files yielded None
                             processed += batch_size
-                        # clamp processed to total files
                         if processed > total_files:
                             processed = total_files
                         gui.update(processed, total_files)
@@ -1314,11 +1140,10 @@ class MainApp:
                 except Exception:
                     total_groups = max(1, len(dicom_records))
 
-                # Reuse the same GUI window for hierarchy building and thumbnail generation
+                # Hierarchy building and thumbnail generation report progress in the same ProgressGUI window
                 organize_started = False
                 thumbnail_started = False
                 try:
-                    # Callback for hierarchy building progress
                     def _build_progress_cb(n):
                         nonlocal organize_started
                         try:
@@ -1330,7 +1155,6 @@ class MainApp:
                         except Exception:
                             pass
 
-                    # Callback for thumbnail generation progress
                     def _thumbnail_progress_cb(current, total):
                         nonlocal thumbnail_started
                         try:
@@ -1348,7 +1172,6 @@ class MainApp:
                         progress_callback=_build_progress_cb,
                         thumbnail_progress_callback=_thumbnail_progress_cb
                     )
-                    # save hierarchy to YAML
                     try:
                         write_yaml_hierarchy(hierarchy, output_dir)
                     except Exception as e:
@@ -1365,7 +1188,6 @@ class MainApp:
             all_studies = []
             for mrn, studies in hierarchy.items():
                 for study_uid, study_data in studies.items():
-                    # Extract accession number and series from the hierarchy structure
                     accn = study_data.get("accn", "")
                     series_dict = study_data.get("series", {})
                     all_studies.append((mrn, study_uid, accn, series_dict))
@@ -1462,7 +1284,6 @@ class MainApp:
             messagebox.showerror("Error", "Please specify a valid output directory.", parent=self.master)
             return
 
-        # Ask user for confirmation
         response = messagebox.askyesno(
             "Convert NIfTIs",
             "This will convert all classified studies to NIfTI format (if not already converted).\n\n"
@@ -1477,7 +1298,6 @@ class MainApp:
 
         logger.info("Starting NIfTI conversion utility")
 
-        # Check for dcm2niix
         dcm2niix_path = shutil.which("dcm2niix")
         if not dcm2niix_path:
             logger.error("dcm2niix not found in PATH")
@@ -1488,7 +1308,6 @@ class MainApp:
             )
             return
 
-        # Count studies to process
         study_folders = []
         classified_dir = get_classified_outputs_dir(output_dir)
         if os.path.isdir(classified_dir):
@@ -1504,20 +1323,19 @@ class MainApp:
             messagebox.showinfo("No Studies", "No classified studies found in output directory.", parent=self.master)
             return
 
-        # Create progress window
-        progress_window = tk.Toplevel(self.master)
-        enable_tkinter_autoscaling(progress_window)
+        progress_window = ctk.CTkToplevel(self.master)
         progress_window.title("Converting to NIfTI...")
-        progress_window.geometry(scale_geometry("500x150"))
+        progress_window.geometry("500x150")
+        cascade(progress_window, self.master)
         progress_window.protocol("WM_DELETE_WINDOW", lambda: None)  # Disable close
 
-        status_label = tk.Label(progress_window, text=f"Converting {len(study_folders)} studies...")
+        status_label = ctk.CTkLabel(progress_window, text=f"Converting {len(study_folders)} studies...")
         status_label.pack(pady=scale_value(10))
 
-        progress_bar = ttk.Progressbar(progress_window, orient="horizontal", length=scale_value(400), mode="determinate", maximum=len(study_folders))
+        progress_bar = ThemedProgressBar(progress_window, length=400, mode="determinate", maximum=len(study_folders))
         progress_bar.pack(pady=scale_value(10))
 
-        current_label = tk.Label(progress_window, text="")
+        current_label = ctk.CTkLabel(progress_window, text="")
         current_label.pack(pady=scale_value(5))
 
         # Convert in background thread
@@ -1529,11 +1347,9 @@ class MainApp:
             for idx, study_path in enumerate(study_folders):
                 study_id = extract_study_id_from_path(study_path)
 
-                # Update UI
-                progress_window.after(0, lambda i=idx, sid=study_id: current_label.config(text=f"Processing: {sid}"))
+                progress_window.after(0, lambda i=idx, sid=study_id: current_label.configure(text=f"Processing: {sid}"))
                 progress_window.after(0, lambda i=idx: progress_bar.config(value=i))
 
-                # Read classification CSV
                 csv_path = os.path.join(study_path, get_study_csv_name(study_id))
                 try:
                     import pandas as pd
@@ -1548,17 +1364,15 @@ class MainApp:
                         if not path or not os.path.exists(path):
                             continue
 
-                        # Check if NIfTI already exists
                         series_dir = os.path.dirname(path)
                         expected_nifti_name = get_nifti_name(study_id, classification)
                         expected_nifti_path = os.path.join(study_path, expected_nifti_name)
 
-                        # Check if NIfTI file exists
+                        # Skip if the NIfTI already exists
                         if os.path.exists(expected_nifti_path):
                             skipped_count += 1
                             continue
 
-                        # Convert to NIfTI using existing function
                         try:
                             processing.convert_series_to_nifti(
                                 series_dir=series_dir,
@@ -1574,11 +1388,9 @@ class MainApp:
                     logger.error(f"Error processing {csv_path}: {e}")
                     error_count += 1
 
-            # Update final progress
             progress_window.after(0, lambda: progress_bar.config(value=len(study_folders)))
-            progress_window.after(0, lambda: current_label.config(text="Complete!"))
+            progress_window.after(0, lambda: current_label.configure(text="Complete!"))
 
-            # Show summary
             summary = "Conversion Complete!\n\n"
             summary += f"Converted: {converted_count}\n"
             summary += f"Skipped (already exist): {skipped_count}\n"
@@ -1604,7 +1416,6 @@ class MainApp:
             messagebox.showerror("Error", "Please specify a valid output directory.", parent=self.master)
             return
 
-        # Prompt user for export location
         export_dir = filedialog.askdirectory(
             title="Select Export Directory",
             parent=self.master
@@ -1616,7 +1427,6 @@ class MainApp:
 
         logger.info(f"Starting DICOM export to: {export_dir}")
 
-        # Count studies to process
         study_folders = []
         classified_dir = get_classified_outputs_dir(output_dir)
         if os.path.isdir(classified_dir):
@@ -1632,20 +1442,19 @@ class MainApp:
             messagebox.showinfo("No Studies", "No classified studies found in output directory.", parent=self.master)
             return
 
-        # Create progress window
-        progress_window = tk.Toplevel(self.master)
-        enable_tkinter_autoscaling(progress_window)
+        progress_window = ctk.CTkToplevel(self.master)
         progress_window.title("Exporting DICOMs...")
-        progress_window.geometry(scale_geometry("500x150"))
+        progress_window.geometry("500x150")
+        cascade(progress_window, self.master)
         progress_window.protocol("WM_DELETE_WINDOW", lambda: None)  # Disable close
 
-        status_label = tk.Label(progress_window, text=f"Exporting DICOMs from {len(study_folders)} studies...")
+        status_label = ctk.CTkLabel(progress_window, text=f"Exporting DICOMs from {len(study_folders)} studies...")
         status_label.pack(pady=scale_value(10))
 
-        progress_bar = ttk.Progressbar(progress_window, orient="horizontal", length=scale_value(400), mode="determinate", maximum=len(study_folders))
+        progress_bar = ThemedProgressBar(progress_window, length=400, mode="determinate", maximum=len(study_folders))
         progress_bar.pack(pady=scale_value(10))
 
-        current_label = tk.Label(progress_window, text="")
+        current_label = ctk.CTkLabel(progress_window, text="")
         current_label.pack(pady=scale_value(5))
 
         # Export in background thread
@@ -1661,11 +1470,9 @@ class MainApp:
             for idx, study_path in enumerate(study_folders):
                 study_id = extract_study_id_from_path(study_path)
 
-                # Update UI
-                progress_window.after(0, lambda i=idx, sid=study_id: current_label.config(text=f"Processing: {sid}"))
+                progress_window.after(0, lambda i=idx, sid=study_id: current_label.configure(text=f"Processing: {sid}"))
                 progress_window.after(0, lambda i=idx: progress_bar.config(value=i))
 
-                # Read classification CSV
                 csv_path = os.path.join(study_path, get_study_csv_name(study_id))
                 try:
                     with open(csv_path, 'r', newline='') as f:
@@ -1684,7 +1491,6 @@ class MainApp:
                                 continue
 
                             try:
-                                # Read metadata from the DICOM file
                                 ds = pydicom.dcmread(path, stop_before_pixels=True)
                                 mrn = str(getattr(ds, 'PatientID', '')).strip()
                                 study_uid = str(getattr(ds, 'StudyInstanceUID', '')).strip()
@@ -1695,7 +1501,6 @@ class MainApp:
                                     error_count += 1
                                     continue
 
-                                # Check if we've already processed this series
                                 series_key = (mrn, study_uid, series_uid, classification)
                                 if series_key in processed_series:
                                     continue
@@ -1745,10 +1550,8 @@ class MainApp:
                                         f"{instance_uid}.dcm"
                                     )
 
-                                    # Create directories if needed
                                     os.makedirs(os.path.dirname(export_path), exist_ok=True)
 
-                                    # Copy the file
                                     shutil.copy2(dicom_file, export_path)
                                     total_files_copied += 1
 
@@ -1760,11 +1563,9 @@ class MainApp:
                     logger.error(f"Error processing {csv_path}: {e}")
                     error_count += 1
 
-            # Update final progress
             progress_window.after(0, lambda: progress_bar.config(value=len(study_folders)))
-            progress_window.after(0, lambda: current_label.config(text="Complete!"))
+            progress_window.after(0, lambda: current_label.configure(text="Complete!"))
 
-            # Show summary
             summary = "DICOM Export Complete!\n\n"
             summary += f"Files copied: {total_files_copied}\n"
             summary += f"Series skipped (Other/None): {skipped_count}\n"
@@ -1790,67 +1591,52 @@ class MainApp:
             messagebox.showerror("Error", "Please specify a valid output directory.", parent=self.master)
             return
 
-        # Create dialog with checkboxes
-        dialog = tk.Toplevel(self.master)
-        enable_tkinter_autoscaling(dialog)
+        dialog = ctk.CTkToplevel(self.master)
         dialog.title("Erase Data")
-        dialog.geometry(scale_geometry("550x320"))
+        dialog.geometry("550x340")
+        cascade(dialog, self.master)
         dialog.transient(self.master)
         dialog.grab_set()
 
-        tk.Label(dialog, text="Select data to erase:", font=("Arial", scale_value(12), "bold")).pack(pady=scale_value(10))
+        ctk.CTkLabel(dialog, text="Select data to erase:", font=ctk.CTkFont(size=13, weight="bold")).pack(pady=scale_value(10))
 
-        # Checkboxes
         delete_classifications = tk.BooleanVar(value=False)
         delete_models = tk.BooleanVar(value=False)
         delete_hierarchy = tk.BooleanVar(value=False)
         delete_config = tk.BooleanVar(value=False)
 
-        tk.Checkbutton(
+        ctk.CTkCheckBox(
             dialog,
             text="Delete Classifications (study folders, NIfTIs, CSVs)",
             variable=delete_classifications,
-            font=("Arial", scale_value(10)),
-            wraplength=scale_value(500),
-            justify="left"
         ).pack(anchor="w", padx=scale_value(20), pady=scale_value(5))
 
-        tk.Checkbutton(
+        ctk.CTkCheckBox(
             dialog,
             text="Delete Models (trained models, encoders, results)",
             variable=delete_models,
-            font=("Arial", scale_value(10)),
-            wraplength=scale_value(500),
-            justify="left"
         ).pack(anchor="w", padx=scale_value(20), pady=scale_value(5))
 
-        tk.Checkbutton(
+        ctk.CTkCheckBox(
             dialog,
             text="Delete Hierarchy (hierarchy.yaml, dicom_symlinks)",
             variable=delete_hierarchy,
-            font=("Arial", scale_value(10)),
-            wraplength=scale_value(500),
-            justify="left"
         ).pack(anchor="w", padx=scale_value(20), pady=scale_value(5))
 
-        tk.Checkbutton(
+        ctk.CTkCheckBox(
             dialog,
             text="Delete Config (config.py saved in output directory)",
             variable=delete_config,
-            font=("Arial", scale_value(10)),
-            wraplength=scale_value(500),
-            justify="left"
         ).pack(anchor="w", padx=scale_value(20), pady=scale_value(5))
 
-        tk.Label(
+        ctk.CTkLabel(
             dialog,
             text="Warning: This action cannot be undone!",
-            fg="red",
-            font=("Arial", scale_value(10), "bold")
+            text_color="#ff6b6b",
+            font=ctk.CTkFont(size=12, weight="bold")
         ).pack(pady=scale_value(10))
 
-        # Button frame
-        button_frame = tk.Frame(dialog)
+        button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
         button_frame.pack(pady=scale_value(10))
 
         def confirm_delete():
@@ -1858,7 +1644,6 @@ class MainApp:
                 messagebox.showwarning("No Selection", "Please select at least one option to delete.", parent=dialog)
                 return
 
-            # Build confirmation message
             items = []
             if delete_classifications.get():
                 items.append("- All classification study folders")
@@ -1880,8 +1665,11 @@ class MainApp:
             dialog.destroy()
             self._perform_data_deletion(delete_classifications.get(), delete_models.get(), delete_hierarchy.get(), delete_config.get())
 
-        tk.Button(button_frame, text="Delete", command=confirm_delete, bg="#ff4444", fg="white", font=("Arial", scale_value(10), "bold"), width=10).pack(side="left", padx=scale_value(5))
-        tk.Button(button_frame, text="Cancel", command=dialog.destroy, font=("Arial", scale_value(10)), width=10).pack(side="left", padx=scale_value(5))
+        ctk.CTkButton(button_frame, text="Delete", command=confirm_delete, width=100,
+                      fg_color=ui_theme.RED, hover_color=ui_theme.RED_HOVER,
+                      font=ctk.CTkFont(weight="bold")).pack(side="left", padx=scale_value(5))
+        ctk.CTkButton(button_frame, text="Cancel", command=dialog.destroy, width=100,
+                      fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER).pack(side="left", padx=scale_value(5))
 
     def _perform_data_deletion(self, delete_classifications, delete_models, delete_hierarchy, delete_config):
         """Perform the actual data deletion."""
@@ -1969,7 +1757,6 @@ class MainApp:
                     except Exception as e:
                         errors.append(f"Failed to delete config.py: {e}")
 
-            # Show results
             if deleted_items or errors:
                 # Create simplified messages based on what was deleted
                 messages = []
@@ -2003,7 +1790,6 @@ class MainApp:
     def _edit_config_file(self):
         """Open the currently active config.py in the system's default text editor."""
         try:
-            # Get path to the currently active config file
             if self.active_config_path and os.path.exists(self.active_config_path):
                 # Using a custom config that was loaded
                 config_path = self.active_config_path
@@ -2030,7 +1816,6 @@ class MainApp:
             else:  # Linux and others
                 subprocess.Popen(['xdg-open', config_path])
 
-            # Show different message based on config source
             if config_source == "custom":
                 message = (
                     f"The currently active config file has been opened:\n{config_path}\n\n"
@@ -2060,7 +1845,6 @@ class MainApp:
     def _reload_config(self, parent_dialog=None):
         """Reload the currently active config to apply any changes."""
         try:
-            # Determine which config to reload
             if self.active_config_path and os.path.exists(self.active_config_path):
                 # Reload custom config file
                 config_path = self.active_config_path
@@ -2087,10 +1871,6 @@ class MainApp:
             ALLOW_DUPLICATE_LABELS = config.ALLOW_DUPLICATE_LABELS
             THUMBNAIL_SCALE_FACTOR = config.THUMBNAIL_SCALE_FACTOR
 
-            # Update the UI elements if they need to reflect updated values
-            # (input_dir and output_dir StringVars are set from these at startup)
-
-            # Show success message with warning
             config_source = "custom" if self.active_config_path else "repository"
             messagebox.showinfo(
                 "Config Reloaded",
@@ -2138,7 +1918,6 @@ class MainApp:
             # Get expected globals from the repository config
             expected_globals = self._get_config_globals()
 
-            # Load the config file and check for required globals
             import importlib.util
             spec = importlib.util.spec_from_file_location("temp_config", config_path)
             if spec is None or spec.loader is None:
@@ -2147,7 +1926,6 @@ class MainApp:
             temp_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(temp_module)
 
-            # Check which globals are missing
             missing_vars = []
             for var_name in expected_globals:
                 if not hasattr(temp_module, var_name):
@@ -2174,27 +1952,31 @@ class MainApp:
             bool: True if successful, False otherwise
         """
         try:
-            # Validate the config file first
             success, missing_vars, error_msg = self._validate_config_file(config_path)
             if not success:
-                messagebox.showwarning(
-                    "Invalid Config File",
-                    f"The selected config file is invalid:\n\n{error_msg}\n\n"
-                    "The original configuration will be used.",
-                    parent=self.master
-                )
-                return False
+                if missing_vars:
+                    # Config predates newer settings — load it and keep the
+                    # current defaults for whatever it lacks.
+                    logger.warning(
+                        f"Config {config_path} is missing newer settings "
+                        f"({', '.join(missing_vars)}); defaults will be used for those."
+                    )
+                else:
+                    messagebox.showwarning(
+                        "Invalid Config File",
+                        f"The selected config file is invalid:\n\n{error_msg}\n\n"
+                        "The original configuration will be used.",
+                        parent=self.master
+                    )
+                    return False
 
-            # Load the config file
             import importlib.util
             spec = importlib.util.spec_from_file_location("temp_config", config_path)
             temp_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(temp_module)
 
-            # Get list of globals to update
             config_globals = self._get_config_globals()
 
-            # Update the config module with values from the loaded file
             for var_name in config_globals:
                 if hasattr(temp_module, var_name):
                     setattr(config, var_name, getattr(temp_module, var_name))
@@ -2223,6 +2005,131 @@ class MainApp:
             logger.error(f"Failed to load config from {config_path}: {e}")
             return False
 
+    def _run_config_wizard(self):
+        """Run the config wizard on the currently active config file."""
+        if self.is_running:
+            messagebox.showwarning("Busy", "Cannot run the config wizard while a workflow is running.",
+                                   parent=self.master)
+            return
+
+        output_dir = self.output_dir.get()
+        output_config = os.path.join(output_dir, "config.py") if output_dir else None
+
+        # Choose the wizard's template (initial values) and save destination
+        if self.active_config_path and os.path.exists(self.active_config_path):
+            base_path = save_path = self.active_config_path
+        elif output_config and os.path.exists(output_config):
+            base_path = save_path = output_config
+        elif output_dir and os.path.isdir(output_dir):
+            base_path = None  # repository defaults
+            save_path = output_config
+        else:
+            messagebox.showerror("Error", "Please specify a valid output directory first.",
+                                 parent=self.master)
+            return
+
+        from .config_wizard import run_config_wizard
+        saved = run_config_wizard(self.master, base_config_path=base_path, save_path=save_path,
+                                  analyze_mode=(self.classification_mode.get() == "Analyze"))
+        if saved and self._load_config_from_file(saved):
+            self.active_config_path = saved
+            self._check_model_status()
+            messagebox.showinfo(
+                "Config Saved",
+                f"Configuration written and loaded:\n{saved}",
+                parent=self.master
+            )
+
+    def _prompt_no_config(self):
+        """
+        Ask the user what to do when the output directory has no config.py.
+        Returns 'wizard', 'copy', or 'cancel' (abort the workflow — a project
+        config is required to proceed).
+        """
+        result = {"choice": "cancel"}
+
+        dlg = ctk.CTkToplevel(self.master)
+        dlg.title("No Config File Found")
+        cascade(dlg, self.master)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        ctk.CTkLabel(
+            dlg,
+            text=("No config.py was found in the output directory.\n\n"
+                  "A project config file is required: run the Config Wizard to "
+                  "set one up, or copy the default config file as-is.\n"
+                  "Cancel to abort."),
+            wraplength=scale_value(440), justify="left"
+        ).pack(padx=scale_value(20), pady=scale_value(16))
+
+        btns = ctk.CTkFrame(dlg, fg_color="transparent")
+        btns.pack(pady=(0, scale_value(16)))
+
+        def choose(choice):
+            result["choice"] = choice
+            dlg.grab_release()
+            dlg.destroy()
+
+        ctk.CTkButton(btns, text="Run Config Wizard", width=150,
+                      fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER,
+                      command=lambda: choose("wizard")).pack(side="left", padx=scale_value(6))
+        ctk.CTkButton(btns, text="Copy Default Config", width=150,
+                      command=lambda: choose("copy")).pack(side="left", padx=scale_value(6))
+        ctk.CTkButton(btns, text="Cancel", width=100,
+                      fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
+                      command=lambda: choose("cancel")).pack(side="left", padx=scale_value(6))
+
+        dlg.protocol("WM_DELETE_WINDOW", lambda: choose("cancel"))
+        dlg.wait_window()
+        return result["choice"]
+
+    def _handle_missing_config(self, output_dir, config_path, analyze_mode=False):
+        """
+        Require a project config for an output directory that has none: offer
+        the wizard or a copy of the default config. Returns True once a config
+        exists and is loaded, False if the user cancelled (abort the workflow).
+        """
+        while True:
+            choice = self._prompt_no_config()
+
+            if choice == "wizard":
+                from .config_wizard import run_config_wizard
+                base = self.active_config_path if (self.active_config_path and
+                                                   os.path.exists(self.active_config_path)) else None
+                os.makedirs(output_dir, exist_ok=True)
+                saved = run_config_wizard(self.master, base_config_path=base,
+                                          save_path=config_path, analyze_mode=analyze_mode)
+                if saved and self._load_config_from_file(saved):
+                    self.active_config_path = saved
+                    logger.info(f"Config wizard created and loaded: {saved}")
+                    return True
+                # Wizard cancelled — re-offer the choices
+                continue
+            elif choice == "copy":
+                try:
+                    if self.active_config_path and os.path.exists(self.active_config_path):
+                        source_config_path = self.active_config_path
+                    else:
+                        source_config_path = config.__file__
+                        if source_config_path.endswith('.pyc'):
+                            source_config_path = source_config_path[:-1]
+                    os.makedirs(output_dir, exist_ok=True)
+                    shutil.copy(source_config_path, config_path)
+                    logger.info(f"Copied default config to: {config_path}")
+                    if self._load_config_from_file(config_path):
+                        self.active_config_path = config_path
+                    return True
+                except Exception as e:
+                    logger.warning(f"Failed to copy default config to output directory: {e}")
+                    messagebox.showerror("Copy Failed",
+                                         f"Could not copy the default config:\n{e}",
+                                         parent=self.master)
+                    continue
+            else:
+                logger.info("User cancelled config setup - aborting workflow start")
+                return False
+
     def _save_config(self):
         """Save the current config.py file to the output directory and make it the active config."""
         output_dir = self.output_dir.get()
@@ -2236,7 +2143,6 @@ class MainApp:
             return
 
         try:
-            # Get the path to the currently active config (repository or custom)
             if self.active_config_path and os.path.exists(self.active_config_path):
                 # Save the currently active custom config
                 source_config_path = self.active_config_path
@@ -2246,13 +2152,10 @@ class MainApp:
                 if source_config_path.endswith('.pyc'):
                     source_config_path = source_config_path[:-1]  # Remove 'c' to get .py
 
-            # Destination path in output directory
             dest_path = os.path.join(output_dir, "config.py")
 
-            # Copy the file
             shutil.copy(source_config_path, dest_path)
 
-            # Make the saved config the active config
             self.active_config_path = dest_path
 
             messagebox.showinfo(
@@ -2273,7 +2176,6 @@ class MainApp:
 
     def _load_config(self):
         """Load a config.py file from a user-selected location."""
-        # Open file dialog to select config file
         config_path = filedialog.askopenfilename(
             title="Select Config File",
             initialdir=self.output_dir.get() if os.path.isdir(self.output_dir.get()) else None,
@@ -2283,7 +2185,6 @@ class MainApp:
         if not config_path:
             return  # User cancelled
 
-        # Load the config file
         if self._load_config_from_file(config_path):
             messagebox.showinfo(
                 "Config Loaded",
@@ -2306,38 +2207,19 @@ class MainApp:
             messagebox.showerror("Error", "Please specify a valid input directory.", parent=self.master)
             return
 
-        # Ensure output directory exists
         try:
             os.makedirs(output_dir, exist_ok=True)
         except Exception as e:
             messagebox.showerror("Error", f"Cannot create output directory:\n{e}", parent=self.master)
             return
 
-        # Config copy prompt (same logic as start_classification)
+        # Config setup prompt (same logic as start_classification); the
+        # target-series section is locked since Analyze mode determines it
         config_path = os.path.join(output_dir, "config.py")
         if not os.path.exists(config_path):
-            copy_default = messagebox.askyesno(
-                "No Config File Found",
-                "No config.py was found in the output directory.\n\n"
-                "Would you like to copy the default config file to the output directory "
-                "and use it as the active configuration?\n\n"
-                "Select 'No' to continue using the default repository config.",
-                parent=self.master
-            )
-            if copy_default:
-                try:
-                    if self.active_config_path and os.path.exists(self.active_config_path):
-                        source_config_path = self.active_config_path
-                    else:
-                        source_config_path = config.__file__
-                        if source_config_path.endswith('.pyc'):
-                            source_config_path = source_config_path[:-1]
-                    shutil.copy(source_config_path, config_path)
-                    if self._load_config_from_file(config_path):
-                        self.active_config_path = config_path
-                        logger.info(f"Copied and loaded config to: {config_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to copy config: {e}")
+            if not self._handle_missing_config(output_dir, config_path, analyze_mode=True):
+                logger.info("Analysis start aborted (no project config)")
+                return
 
         # Check whether scanning has already been done
         hierarchy_path = os.path.join(output_dir, "hierarchy.yaml")
@@ -2357,16 +2239,16 @@ class MainApp:
         # Lock UI
         self.is_running = True
         self.stop_requested.clear()
-        self.start_button.config(state="disabled")
-        self.stop_button.config(state="normal")
-        self.train_button.config(state="disabled")
+        self.start_button.configure(state="disabled")
+        self.stop_button.configure(state="normal")
+        self.train_button.configure(state="disabled")
 
-        self.progress_frame = tk.Frame(self.master)
-        self.progress_frame.pack(padx=20, pady=10, fill='x')
+        self.progress_frame = ctk.CTkFrame(self.master, fg_color="transparent")
+        self.progress_frame.pack(padx=scale_value(20), pady=scale_value(10), fill='x')
         self.progress_label = tk.StringVar(value="Starting analysis…")
-        tk.Label(self.progress_frame, textvariable=self.progress_label).pack(side="top")
-        self.progress_bar = ttk.Progressbar(self.progress_frame, orient="horizontal", mode="indeterminate")
-        self.progress_bar.pack(fill='x', pady=5)
+        ctk.CTkLabel(self.progress_frame, textvariable=self.progress_label).pack(side="top")
+        self.progress_bar = ThemedProgressBar(self.progress_frame, mode="indeterminate")
+        self.progress_bar.pack(fill='x', pady=scale_value(5))
         self.progress_bar.start(10)
 
         analysis_thread = threading.Thread(
@@ -2594,17 +2476,16 @@ class MainApp:
         best_examples = analysis_result["best_examples"]
         representative_names = analysis_result.get("representative_names", [])
 
-        win = tk.Toplevel(self.master)
+        win = ctk.CTkToplevel(self.master)
         win.title("Analyze — Name Your Series Types")
-        enable_tkinter_autoscaling(win)
+        cascade(win, self.master)
         win.grab_set()
         win.resizable(True, True)
 
         THUMB_PX = scale_value(192)  # display size per thumbnail
         PAD = scale_value(6)
 
-        # Header label
-        tk.Label(
+        ctk.CTkLabel(
             win,
             text=(
                 f"Found {k} series type cluster(s).  "
@@ -2618,14 +2499,14 @@ class MainApp:
         ).grid(row=0, column=0, columnspan=2, padx=PAD * 2, pady=PAD * 2, sticky="w")
 
         # Scrollable canvas for clusters
-        container = tk.Frame(win)
+        container = ctk.CTkFrame(win, fg_color="transparent")
         container.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=PAD, pady=PAD)
         win.grid_rowconfigure(1, weight=1)
         win.grid_columnconfigure(0, weight=1)
 
-        canvas = tk.Canvas(container)
-        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
-        scroll_frame = tk.Frame(canvas)
+        canvas = tk.Canvas(container, highlightthickness=0, bg=ui_theme.PANEL_BG)
+        scrollbar = ctk.CTkScrollbar(container, orientation="vertical", command=canvas.yview)
+        scroll_frame = ctk.CTkFrame(canvas, fg_color="transparent")
         scroll_frame.bind(
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
@@ -2642,26 +2523,33 @@ class MainApp:
         row_frames = []
         thumb_refs = []   # keep ImageTk references alive
 
+        # Thumbnail filename -> DICOM path map so example thumbnails support
+        # mouse-wheel series scrolling
+        thumb_to_dicom = {}
+        try:
+            from .analyze import _build_thumbnail_to_dicom_map
+            hierarchy = getattr(self, '_last_hierarchy', None)
+            if hierarchy:
+                thumb_to_dicom = _build_thumbnail_to_dicom_map(hierarchy)
+        except Exception:
+            pass
+
         for c in range(k):
-            row_frame = tk.LabelFrame(
-                scroll_frame,
-                text=f"Name your series",
-                padx=PAD, pady=PAD
-            )
+            row_frame = TitledFrame(scroll_frame, title="Name your series")
             row_frame.pack(fill="x", padx=PAD, pady=PAD)
             row_frames.append(row_frame)
 
             # Thumbnail grid (up to 4) — each slot is a fixed-pixel Frame so
             # sizing is always in pixels whether or not an image is loaded.
-            thumb_frame = tk.Frame(row_frame)
+            thumb_frame = ctk.CTkFrame(row_frame.content, fg_color="transparent")
             thumb_frame.pack(side="left", padx=PAD)
             example_paths = best_examples.get(c, [])
             cluster_refs = []
             for col_i, img_path in enumerate(example_paths[:4]):
-                slot = tk.Frame(thumb_frame, width=THUMB_PX, height=THUMB_PX, bg="gray")
+                slot = tk.Frame(thumb_frame, width=THUMB_PX, height=THUMB_PX, bg=ui_theme.PANEL_BG)
                 slot.grid(row=0, column=col_i, padx=2, pady=2)
                 slot.grid_propagate(False)
-                lbl = tk.Label(slot, bg="gray")
+                lbl = tk.Label(slot, bg=ui_theme.PANEL_BG)
                 lbl.place(relwidth=1, relheight=1)
                 try:
                     pil_img = Image.open(img_path).convert("RGB").resize(
@@ -2670,18 +2558,22 @@ class MainApp:
                     tk_img = ImageTk.PhotoImage(pil_img, master=lbl)
                     lbl.config(image=tk_img)
                     cluster_refs.append(tk_img)
+                    # Mouse-wheel over the example scrolls through its series
+                    dicom_path = thumb_to_dicom.get(os.path.basename(img_path))
+                    if dicom_path and os.path.exists(dicom_path):
+                        attach_series_scrolling(lbl, dicom_path, THUMB_PX)
                 except Exception:
                     cluster_refs.append(None)
             # Pad remaining slots if fewer than 4
             for col_i in range(len(example_paths), 4):
-                slot = tk.Frame(thumb_frame, width=THUMB_PX, height=THUMB_PX, bg="#cccccc")
+                slot = tk.Frame(thumb_frame, width=THUMB_PX, height=THUMB_PX, bg=ui_theme.PANEL_BG)
                 slot.grid(row=0, column=col_i, padx=2, pady=2)
                 slot.grid_propagate(False)
-                tk.Label(slot, bg="#cccccc", text="N/A", anchor="center").place(relwidth=1, relheight=1)
+                tk.Label(slot, bg=ui_theme.PANEL_BG, fg="#888888", text="N/A", anchor="center").place(relwidth=1, relheight=1)
             thumb_refs.append(cluster_refs)
 
             # Controls: name entry, prefer 3D, include toggle
-            ctrl_frame = tk.Frame(row_frame)
+            ctrl_frame = ctk.CTkFrame(row_frame.content, fg_color="transparent")
             ctrl_frame.pack(side="left", padx=PAD * 2, anchor="w")
 
             default_name = (representative_names[c]
@@ -2696,45 +2588,40 @@ class MainApp:
                 def _toggle(*_):
                     included = iv.get()
                     state = "normal" if included else "disabled"
-                    fg = "black" if included else "#aaaaaa"
-                    rf.config(fg=fg)
-                    for child in rf.winfo_children():
-                        try:
-                            child.config(state=state)
-                        except Exception:
-                            pass
-                    # keep Include checkbox itself always enabled
+                    rf.set_title_color("#e0e0e0" if included else "#777777")
                     for child in ctrl_frame.winfo_children():
                         if getattr(child, '_is_include_cb', False):
-                            child.config(state="normal")
-                    # shade the name entry red when excluded, white when included
+                            continue  # keep the Include checkbox itself enabled
+                        try:
+                            child.configure(state=state)
+                        except Exception:
+                            pass
+                    # shade the name entry red when excluded
                     try:
                         if included:
-                            ne.config(state="normal", bg="white")
+                            ne.configure(state="normal", border_color="#565b5e")
                         else:
-                            ne.config(state="disabled", bg="#ffaaaa")
+                            ne.configure(state="disabled", border_color="#aa4444")
                     except Exception:
                         pass
                 return _toggle
 
-            include_cb = tk.Checkbutton(
+            include_cb = ctk.CTkCheckBox(
                 ctrl_frame,
-                font=("Arial", scale_value(8)),
                 text="Include",
                 variable=include_var,
             )
             include_cb._is_include_cb = True
             include_cb.grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
 
-            tk.Label(ctrl_frame, text="Series name:").grid(row=1, column=0, sticky="w", pady=2)
-            name_entry = tk.Entry(ctrl_frame, textvariable=name_var, width=20)
+            ctk.CTkLabel(ctrl_frame, text="Series name:").grid(row=1, column=0, sticky="w", pady=2)
+            name_entry = ctk.CTkEntry(ctrl_frame, textvariable=name_var, width=170)
             name_entry.grid(row=1, column=1, sticky="w", padx=PAD, pady=2)
 
             include_var.trace_add("write", _make_toggle(row_frame, name_var, prefer3d_var, include_var, name_entry))
 
-            prefer3d_cb = tk.Checkbutton(
+            prefer3d_cb = ctk.CTkCheckBox(
                 ctrl_frame,
-                font=("Arial", scale_value(8)),
                 text="Prefer 3D acquisition",
                 variable=prefer3d_var,
             )
@@ -2744,8 +2631,7 @@ class MainApp:
             prefer3d_vars.append(prefer3d_var)
             include_vars.append(include_var)
 
-        # Buttons row
-        btn_frame = tk.Frame(win)
+        btn_frame = ctk.CTkFrame(win, fg_color="transparent")
         btn_frame.grid(row=2, column=0, columnspan=2, pady=PAD * 2)
 
         def _on_apply():
@@ -2784,9 +2670,10 @@ class MainApp:
             win.destroy()
             self.classification_finished(aborted=False)
 
-        tk.Button(btn_frame, text="Apply", width=12, command=_on_apply,
-                  bg="#4fff5b").pack(side="left", padx=PAD)
-        tk.Button(btn_frame, text="Cancel", width=12, command=_on_cancel).pack(side="left", padx=PAD)
+        ctk.CTkButton(btn_frame, text="Apply", width=110, command=_on_apply,
+                      fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER).pack(side="left", padx=PAD)
+        ctk.CTkButton(btn_frame, text="Cancel", width=110, command=_on_cancel,
+                      fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER).pack(side="left", padx=PAD)
 
         # ── Size and position the window ──────────────────────────────────────
         def _fit_window():
@@ -2823,8 +2710,9 @@ class MainApp:
             x = max(0, min(x, screen_w - final_w))
             y = max(0, min(y, screen_h - final_h))
 
-            win.geometry(f"{final_w}x{final_h}+{x}+{y}")
-            win.minsize(final_w, min(final_h, scale_value(400)))
+            # wm_geometry: sizes are measured real pixels, bypass CTk scaling
+            win.wm_geometry(f"{final_w}x{final_h}+{x}+{y}")
+            win.wm_minsize(final_w, min(final_h, scale_value(400)))
 
         win.after(0, _fit_window)
         win.wait_window()
@@ -2996,7 +2884,7 @@ class MainApp:
             _done = threading.Event()
 
             # Progress window
-            prog_win = tk.Toplevel(self.master)
+            prog_win = ctk.CTkToplevel(self.master)
             prog_win.title("Retrieving DICOM data…")
             prog_win.resizable(False, False)
             prog_win.grab_set()
@@ -3005,19 +2893,15 @@ class MainApp:
             PAD = scale_value(8)
             prog_label_var = tk.StringVar(
                 value=f"Retrieving data from DICOM files (0/{total_files})")
-            tk.Label(prog_win, textvariable=prog_label_var,
-                     anchor="w").pack(padx=PAD * 2, pady=(PAD * 2, PAD), fill="x")
-            prog_bar = ttk.Progressbar(prog_win, orient="horizontal",
-                                       mode="determinate", maximum=total_files, value=0)
+            ctk.CTkLabel(prog_win, textvariable=prog_label_var,
+                         anchor="w").pack(padx=PAD * 2, pady=(PAD * 2, PAD), fill="x")
+            prog_bar = ThemedProgressBar(prog_win, mode="determinate",
+                                         maximum=total_files, value=0)
             prog_bar.pack(padx=PAD * 2, pady=(0, PAD * 2), fill="x")
             prog_win.update_idletasks()
 
-            # Centre the progress window over the main window
-            prog_win.geometry(
-                f"{scale_value(420)}x{scale_value(80)}"
-                f"+{self.master.winfo_rootx() + scale_value(60)}"
-                f"+{self.master.winfo_rooty() + scale_value(60)}"
-            )
+            prog_win.geometry("420x90")
+            cascade(prog_win, self.master, step=60)
 
             # Shared counter updated by background thread, read by poll callback
             _completed = [0]
@@ -3148,18 +3032,18 @@ class MainApp:
 
         self.is_running = True
         self.stop_requested.clear()
-        self.start_button.config(state="disabled")
-        self.stop_button.config(state="normal")
-        self.train_button.config(state="disabled")
+        self.start_button.configure(state="disabled")
+        self.stop_button.configure(state="normal")
+        self.train_button.configure(state="disabled")
 
-        self.progress_frame = tk.Frame(self.master)
-        self.progress_frame.pack(padx=20, pady=10, fill='x')
+        self.progress_frame = ctk.CTkFrame(self.master, fg_color="transparent")
+        self.progress_frame.pack(padx=scale_value(20), pady=scale_value(10), fill='x')
 
         self.progress_label = tk.StringVar(value="Starting verification...")
-        tk.Label(self.progress_frame, textvariable=self.progress_label).pack(side="top")
+        ctk.CTkLabel(self.progress_frame, textvariable=self.progress_label).pack(side="top")
 
-        self.progress_bar = ttk.Progressbar(self.progress_frame, orient="horizontal", mode="determinate")
-        self.progress_bar.pack(fill='x', pady=5)
+        self.progress_bar = ThemedProgressBar(self.progress_frame, mode="determinate")
+        self.progress_bar.pack(fill='x', pady=scale_value(5))
 
         verification_thread = threading.Thread(
             target=self.run_verification_main,
@@ -3208,7 +3092,6 @@ class MainApp:
                 self.classification_finished(aborted=False)
                 return
 
-            # Combine all classifications
             all_df = pd.concat(all_classifications, ignore_index=True)
 
             # 2. Group by TARGET_SERIES
@@ -3250,7 +3133,6 @@ class MainApp:
                 target_df = series_groups[target_series]
                 total_series = len(target_df)
 
-                # Check if no series for this target
                 if total_series == 0:
                     continue
 
@@ -3292,10 +3174,8 @@ class MainApp:
                         self.classification_finished(aborted=True)
                         return
 
-                    # Add incorrect studies to deletion list
                     studies_to_delete.update(incorrect_studies)
 
-                    # Update progress
                     current_window += 1
                     self.progress_bar.config(value=current_window)
                     self.master.update_idletasks()
@@ -3347,116 +3227,15 @@ class MainApp:
 
 
 
-# ── Config rewrite helpers (used by _write_analysis_to_config) ────────────────
-
-def _format_prefer3d_dict(prefer3d_dict: dict) -> str:
-    """
-    Render a PREFER_3D dict as a nicely-indented Python literal, e.g.::
-
-        {
-            "T1": True,
-            "T2": False,
-        }
-    """
-    lines = ["{"]
-    for k, v in prefer3d_dict.items():
-        lines.append(f'    "{k}": {v},')
-    lines.append("}")
-    return "\n".join(lines)
+# Config rewrite helpers live in config_io; keep the old underscore names
+# used throughout this module as aliases.
+from .config_io import (format_prefer3d_dict as _format_prefer3d_dict,
+                        rewrite_config_assignments as _rewrite_config_assignments,
+                        replace_single_assignment as _replace_single_assignment)
 
 
-def _rewrite_config_assignments(source: str, replacements: dict) -> str:
-    """
-    Replace top-level simple assignment statements in *source* for each variable
-    name in *replacements*.
-
-    Strategy (robust against multi-line values and varied formatting):
-    1. Tokenise the source to find each target assignment's start line.
-    2. Use the ``ast`` module to find the byte-offset of the whole statement
-       (including its complete right-hand side, however many lines it spans).
-    3. Splice the new value string in place of the old RHS text.
-
-    Parameters
-    ----------
-    source       : str   – full content of the config file
-    replacements : dict  – {var_name: new_rhs_repr_string}
-
-    Returns
-    -------
-    str  – updated source
-    """
-    import ast
-
-    for var_name, new_rhs in replacements.items():
-        source = _replace_single_assignment(source, var_name, new_rhs)
-    return source
-
-
-def _replace_single_assignment(source: str, var_name: str, new_rhs: str) -> str:
-    """
-    Replace the RHS of a single top-level ``var_name = <expr>`` assignment.
-
-    If the variable is not found in the source it is *appended* at the end.
-    """
-    import ast
-
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        # Fall back: crude regex replacement if the file has a syntax error
-        import re
-        pattern = re.compile(
-            r'^' + re.escape(var_name) + r'\s*=\s*.+?(?=\n[A-Z_#\n]|\Z)',
-            re.MULTILINE | re.DOTALL
-        )
-        new_stmt = f"{var_name} = {new_rhs}"
-        if pattern.search(source):
-            return pattern.sub(new_stmt, source, count=1)
-        return source + f"\n{new_stmt}\n"
-
-    # Find the target Assign node at module level
-    target_node = None
-    for node in ast.iter_child_nodes(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-            if node.targets[0].id == var_name:
-                target_node = node
-                break
-
-    if target_node is None:
-        # Variable not present — append it
-        return source.rstrip() + f"\n\n{var_name} = {new_rhs}\n"
-
-    # ast gives us line numbers (1-based). Translate to character offsets.
-    lines = source.splitlines(keepends=True)
-
-    stmt_start_line = target_node.lineno - 1        # 0-based index
-    stmt_end_line = target_node.end_lineno - 1      # 0-based index (inclusive)
-
-    # Preserve any trailing comment on the last line of the assignment.
-    # We look at the last source line of the statement to detect a comment.
-    last_line = lines[stmt_end_line]
-    # Find the end column of the expression within that line
-    end_col = target_node.end_col_offset
-    trailing = last_line[end_col:].rstrip('\n')
-
-    # Build the replacement statement text
-    new_stmt = f"{var_name} = {new_rhs}"
-    # Append trailing comment if one existed
-    if trailing.lstrip().startswith('#'):
-        new_stmt += "  " + trailing.lstrip()
-    new_stmt += "\n"
-
-    # Splice: everything before the statement + new statement + everything after
-    before = "".join(lines[:stmt_start_line])
-    after = "".join(lines[stmt_end_line + 1:])
-    return before + new_stmt + after
-
-
-# At end of file, add asynchronous image loader and per-study classification GUI
-from . import processing
-from .processing import load_center_slice_fast
+# `processing` and `load_center_slice_fast` are provided as lazy bindings near
+# the top of this module so importing it stays fast.
 
 
 def _extract_dicom_path(path_entry):
@@ -3586,7 +3365,7 @@ def _fit_window_to_screen(root, content_frame, button_frame, pad_x=0, pad_y=0):
             # The scrollbar is the second child of the outer frame (canvas sibling)
             outer = content_frame.master.master  # content_frame → canvas → outer
             for child in outer.winfo_children():
-                if isinstance(child, ttk.Scrollbar):
+                if isinstance(child, ctk.CTkScrollbar):
                     child.update_idletasks()
                     scrollbar_w = child.winfo_reqwidth()
                     break
@@ -3612,7 +3391,8 @@ def _fit_window_to_screen(root, content_frame, button_frame, pad_x=0, pad_y=0):
         x = max(0, min(cur_x, screen_w - win_w))
         y = max(0, min(cur_y, screen_h - win_h))
 
-        root.geometry(f"{win_w}x{win_h}+{x}+{y}")
+        # wm_geometry: sizes are measured real pixels, bypass CTk scaling
+        root.wm_geometry(f"{win_w}x{win_h}+{x}+{y}")
         root.update_idletasks()
     except Exception:
         pass
@@ -3630,21 +3410,21 @@ def _make_scrollable_frame(root, pad_x=0, pad_y=0):
     (<Button-4> / <Button-5>), and macOS (<MouseWheel> with delta/120).
     """
     # Outer frame holds canvas + scrollbar side-by-side
-    outer = tk.Frame(root)
+    outer = ctk.CTkFrame(root, fg_color="transparent")
     outer.grid(row=0, column=0, padx=pad_x, pady=pad_y, sticky="nsew")
     root.grid_rowconfigure(0, weight=1)
     root.grid_columnconfigure(0, weight=1)
     outer.grid_rowconfigure(0, weight=1)
     outer.grid_columnconfigure(0, weight=1)
 
-    canvas = tk.Canvas(outer, highlightthickness=0)
+    canvas = tk.Canvas(outer, highlightthickness=0, bg=ui_theme.PANEL_BG)
     canvas.grid(row=0, column=0, sticky="nsew")
 
-    scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+    scrollbar = ctk.CTkScrollbar(outer, orientation="vertical", command=canvas.yview)
     scrollbar.grid(row=0, column=1, sticky="ns")
     canvas.configure(yscrollcommand=scrollbar.set)
 
-    content_frame = tk.Frame(canvas)
+    content_frame = tk.Frame(canvas, bg=ui_theme.PANEL_BG)
     canvas_window = canvas.create_window((0, 0), window=content_frame, anchor="nw")
 
     def _on_frame_configure(event):
@@ -3699,8 +3479,8 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         stop_all: List with single boolean element to signal Stop All
         output_dir: Output directory containing series_thumbnails folder
     """
-    root = tk.Toplevel()
-    enable_tkinter_autoscaling(root)
+    root = ctk.CTkToplevel()
+    cascade(root, tk._default_root)
 
     batch_end = batch_start + len(batch_df)
     root.title(f"Verify {target_series} - Showing {batch_start+1}-{batch_end} of {total_series}")
@@ -3714,18 +3494,15 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
     # Scrollable content area (canvas + scrollbar in row 0)
     _canvas, content_frame = _make_scrollable_frame(root, pad_x=scale_value(20), pad_y=scale_value(20))
 
-    # Configure grid columns
     for i in range(NUM_COLUMNS):
         content_frame.grid_columnconfigure(i, weight=1)
 
     # Thumbnail pixel size (DPI-scaled + user scale factor)
     thumb_px = scale_thumbnail(256)
 
-    # Create loading indicator image
-    loading_img = Image.new("RGB", (thumb_px, thumb_px), (220, 220, 220))
+    loading_img = Image.new("RGB", (thumb_px, thumb_px), (45, 45, 45))
     tk_loading = ImageTk.PhotoImage(loading_img)
 
-    # Store toggle states and widgets
     toggle_states = {}  # path -> BooleanVar (True = Incorrect, False = Correct)
     toggle_buttons = {}  # path -> Button widget
     panel_widgets = {}  # path -> Label widget
@@ -3739,8 +3516,8 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         series_desc = row_data.get('SeriesDescription', 'Unknown')
         study_folder = row_data['study_folder']
 
-        # Create frame for this series
-        series_frame = tk.Frame(content_frame, padx=scale_value(5), pady=scale_value(5))
+        series_frame = tk.Frame(content_frame, bg=ui_theme.PANEL_BG,
+                                padx=scale_value(5), pady=scale_value(5))
         series_frame.grid(row=row_num, column=col_num, sticky="nsew")
         series_frame.grid_columnconfigure(0, weight=1)
 
@@ -3750,13 +3527,16 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
             row_num += 1
 
         # Image panel with loading indicator
-        panel = tk.Label(series_frame, image=tk_loading, width=thumb_px, height=thumb_px)
+        panel = tk.Label(series_frame, image=tk_loading, width=thumb_px, height=thumb_px,
+                         bg=ui_theme.PANEL_BG)
         panel.image = tk_loading
         panel.grid(row=0, column=0, pady=(0, scale_value(5)))
         panel_widgets[series_path] = panel
+        # Mouse-wheel over the thumbnail scrolls through the full series
+        attach_series_scrolling(panel, series_path, thumb_px)
 
-        # Series description label
-        tk.Label(series_frame, text=series_desc, wraplength=scale_thumbnail(250), justify="center").grid(
+        tk.Label(series_frame, text=series_desc, wraplength=scale_thumbnail(250), justify="center",
+                 bg=ui_theme.PANEL_BG, fg="#e0e0e0").grid(
             row=1, column=0, pady=scale_value(5))
 
         # Toggle button for Correct/Incorrect
@@ -3768,20 +3548,20 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
                 new_state = not var.get()
                 var.set(new_state)
                 if new_state:  # Incorrect
-                    btn.config(text="Incorrect", bg="#ff4f4f", activebackground="#ff4f4f")
+                    btn.configure(text="Incorrect", fg_color=ui_theme.RED, hover_color=ui_theme.RED_HOVER)
                 else:  # Correct
-                    btn.config(text="Correct", bg="#f0f0f0", activebackground="#f0f0f0")
+                    btn.configure(text="Correct", fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER)
             return toggle
 
-        toggle_btn = tk.Button(
+        toggle_btn = ctk.CTkButton(
             series_frame,
             text="Correct",
-            width=scale_value(15),
-            bg="#f0f0f0",
-            activebackground="#f0f0f0",
+            width=130,
+            fg_color=ui_theme.NEUTRAL,
+            hover_color=ui_theme.NEUTRAL_HOVER,
             command=None  # Will set below
         )
-        toggle_btn.config(command=make_toggle_callback(toggle_var, toggle_btn, series_path, study_folder))
+        toggle_btn.configure(command=make_toggle_callback(toggle_var, toggle_btn, series_path, study_folder))
         toggle_btn.grid(row=2, column=0, pady=(0, scale_value(5)))
         toggle_buttons[series_path] = toggle_btn
 
@@ -3789,7 +3569,7 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     def load_single_thumbnail(series_path, panel, output_dir):
-        """Load a single thumbnail - optimized version with pre-generated thumbnail support (JPEG/PNG)."""
+        """Load a single thumbnail, preferring a pre-generated thumbnail (JPEG/PNG)."""
         try:
             pil_img = None
 
@@ -3810,7 +3590,6 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
             if pil_img is None:
                 return None
 
-            # Resize to target size
             target_size = scale_thumbnail(256)
             pil_img = pil_img.resize((target_size, target_size))
 
@@ -3834,11 +3613,9 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         except Exception as e:
             logger.debug(f"Error updating thumbnail: {e}")
 
-    # Start parallel loading in background
     def load_all_thumbnails():
         """Load all thumbnails in parallel."""
         with ThreadPoolExecutor(max_workers=NUM_PARALLEL_WORKERS) as executor:
-            # Submit all loading tasks
             future_to_path = {
                 executor.submit(load_single_thumbnail, row_data['Path'], panel_widgets[row_data['Path']], output_dir): row_data['Path']
                 for idx, row_data in batch_df.iterrows()
@@ -3855,12 +3632,10 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
                 except Exception as e:
                     logger.debug(f"Error in parallel loading for {series_path}: {e}")
 
-    # Start loading thread
     threading.Thread(target=load_all_thumbnails, daemon=True).start()
 
-    # Button frame at bottom
-    button_frame = tk.Frame(root, pady=scale_value(10))
-    button_frame.grid(row=1, column=0, sticky="ew")
+    button_frame = ctk.CTkFrame(root, fg_color="transparent")
+    button_frame.grid(row=1, column=0, sticky="ew", pady=scale_value(10))
     button_frame.grid_columnconfigure(0, weight=1)
     button_frame.grid_columnconfigure(1, weight=0)
     button_frame.grid_columnconfigure(2, weight=0)
@@ -3888,7 +3663,6 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
                 marked_incorrect.add(study_folder)
 
         if marked_incorrect:
-            # Confirm deletion
             response = messagebox.askyesno(
                 "Mark for Deletion",
                 f"{len(marked_incorrect)} series marked as incorrect.\n\n"
@@ -3904,41 +3678,39 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         root.destroy()
         done_event.set()
 
-    # Create buttons
-    btn_stop = tk.Button(
+    action_font = ctk.CTkFont(size=15, weight="bold")
+    btn_stop = ctk.CTkButton(
         button_frame,
-        bg="#e0a2a2",
-        activebackground="#e0a2a2",
+        fg_color=ui_theme.RED,
+        hover_color=ui_theme.RED_HOVER,
         text="Stop All (a)",
-        font=("Arial", scale_value(14)),
+        font=action_font,
         command=on_stop_all
     )
-    btn_skip = tk.Button(
+    btn_skip = ctk.CTkButton(
         button_frame,
-        bg="#fff7a8",
-        activebackground="#fff7a8",
+        fg_color=ui_theme.YELLOW,
+        hover_color=ui_theme.YELLOW_HOVER,
         text="Skip (s)",
-        font=("Arial", scale_value(14)),
+        font=action_font,
         command=on_skip
     )
-    btn_approve = tk.Button(
+    btn_approve = ctk.CTkButton(
         button_frame,
-        bg="#a2e0b2",
-        activebackground="#a2e0b2",
+        fg_color=ui_theme.GREEN,
+        hover_color=ui_theme.GREEN_HOVER,
         text="Approve (d)",
-        font=("Arial", scale_value(14)),
+        font=action_font,
         command=on_approve
     )
 
-    # Grid buttons
     btn_stop.grid(row=0, column=1, padx=scale_value(10))
     btn_skip.grid(row=0, column=2, padx=scale_value(10))
     btn_approve.grid(row=0, column=3, padx=scale_value(10))
 
-    # add hotkeys
-    root.bind("<a>", lambda event: btn_stop.invoke())
-    root.bind("<s>", lambda event: btn_skip.invoke())
-    root.bind("<d>", lambda event: btn_approve.invoke())
+    root.bind("<a>", lambda event: on_stop_all())
+    root.bind("<s>", lambda event: on_skip())
+    root.bind("<d>", lambda event: on_approve())
 
     _fit_window_to_screen(root, content_frame, button_frame,
                           pad_x=scale_value(20), pad_y=scale_value(20))
@@ -3949,7 +3721,6 @@ def load_image_worker(dicom_paths, panel_label_ref, root):
     of the PhotoImage on the main thread. The worker only does PIL work; the
     PhotoImage is constructed on the Tk main thread to avoid invisible images.
     """
-    # Calculate target size based on scale factor + thumbnail scale factor
     target_size = scale_thumbnail(256)
 
     try:
@@ -3998,32 +3769,11 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     if stop_event.is_set():
         return
 
-    root = tk.Toplevel()
-    enable_tkinter_autoscaling(root)
+    root = ctk.CTkToplevel()
     root.title(f"Classify Study ({mode}): MRN {mrn} | Accn {accn}")
 
-    # Classification window appears fixed offset from main window
-    root.update_idletasks()
-
-    try:
-        # Get main window position
-        main_x = root.master.winfo_x()
-        main_y = root.master.winfo_y()
-
-        # Offset from main window
-        x = main_x + scale_value(50)
-        y = main_y + scale_value(50)
-
-        root.geometry(f"+{x}+{y}")
-    except Exception:
-        # Fallback to screen center
-        screen_width = root.winfo_screenwidth()
-        screen_height = root.winfo_screenheight()
-        window_width = root.winfo_reqwidth()
-        window_height = root.winfo_reqheight()
-        x = (screen_width - window_width) // 2
-        y = (screen_height - window_height) // 2
-        root.geometry(f"+{x}+{y}")
+    # Classification window appears at a fixed cascade offset from the main window
+    cascade(root, root.master)
 
     root.protocol("WM_DELETE_WINDOW", lambda: None)
     root.grab_set()
@@ -4051,7 +3801,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     # Thumbnail pixel size (DPI-scaled + user scale factor)
     thumb_px = scale_thumbnail(256)
 
-    placeholder_img = Image.new("RGB", (thumb_px, thumb_px), (200, 200, 200))
+    placeholder_img = Image.new("RGB", (thumb_px, thumb_px), (45, 45, 45))
     tk_placeholder = ImageTk.PhotoImage(placeholder_img)
 
     optimized_assignments = {}
@@ -4081,7 +3831,8 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         logger.info(f"Semi-auto classifying exam {study_uid}...")
 
     for series_desc, dicom_paths in study_dict.items():
-        series_frame = tk.Frame(content_frame, padx=scale_value(5), pady=scale_value(5))
+        series_frame = tk.Frame(content_frame, bg=ui_theme.PANEL_BG,
+                                padx=scale_value(5), pady=scale_value(5))
         series_frame.grid(row=row_num, column=col_num, sticky="nsew")
         series_frame.grid_columnconfigure(0, weight=1)
 
@@ -4090,10 +3841,12 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
             col_num = 0
             row_num += 1
 
-        panel = tk.Label(series_frame, image=tk_placeholder, width=thumb_px, height=thumb_px)
+        panel = tk.Label(series_frame, image=tk_placeholder, width=thumb_px, height=thumb_px,
+                         bg=ui_theme.PANEL_BG)
         panel.image = tk_placeholder
         panel.grid(row=0, column=0, pady=(0, scale_value(5)))
-        tk.Label(series_frame, text=series_desc, wraplength=scale_thumbnail(250), justify="center").grid(row=1, column=0, pady=scale_value(5))
+        tk.Label(series_frame, text=series_desc, wraplength=scale_thumbnail(250), justify="center",
+                 bg=ui_theme.PANEL_BG, fg="#e0e0e0").grid(row=1, column=0, pady=scale_value(5))
 
         # Extract DICOM and thumbnail paths from hierarchy entry
         first_entry = dicom_paths[0]
@@ -4162,12 +3915,9 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
 
         variable = tk.StringVar(value=initial_value)
 
-        # determine sensible defaults
-        try:
-            default_bg = series_frame.cget('bg') or '#f0f0f0'
-        except Exception:
-            default_bg = '#f0f0f0'
-        default_fg = '#000000'
+        # neutral colors for the un-assigned ("Other") state
+        default_bg = ui_theme.NEUTRAL
+        default_fg = '#e0e0e0'
 
         # per-series colored dropdown implementation
         class ColoredDropdown:
@@ -4179,7 +3929,9 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 self.key = key
                 self.all_vars = all_vars
                 self.mode = mode
-                self.btn = tk.Button(parent, text=self.var.get(), width=scale_value(20), relief='raised')
+                self.btn = ctk.CTkButton(parent, text=self.var.get(), width=170,
+                                         fg_color=default_bg, hover_color=ui_theme.NEUTRAL_HOVER,
+                                         text_color=default_fg)
                 self.menu = tk.Menu(parent, tearoff=0)
 
                 for opt in self.options:
@@ -4189,10 +3941,9 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                                 self.var.set(v)
                             except Exception:
                                 pass
-                            # update this button's display
                             self._update_display(v)
-                            # enforce uniqueness in Semi-Auto mode: if user selected a non-'Other' value,
-                            # find any other dropdowns with that same value and set them to 'Other'
+                            # enforce uniqueness when duplicates are not allowed: clear this
+                            # value from any other dropdowns that currently hold it
                             try:
                                 self._handle_duplicates(v)
                             except Exception:
@@ -4238,8 +3989,8 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                     pass
 
             def _handle_duplicates(self, val):
-                # Enforce uniqueness based on AUTO_CLEAR_DUPLICATE_LABELS config
-                # When enabled, selecting a non-'Other' label clears that label from all other dropdowns
+                # When ALLOW_DUPLICATE_LABELS is disabled, selecting a non-'Other'
+                # label clears that label from all other dropdowns
                 if ALLOW_DUPLICATE_LABELS or not self.all_vars or val == 'Other':
                     return
                 try:
@@ -4259,10 +4010,11 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 val = self.var.get() if v is None else v
                 if val == 'Other':
                     try:
-                        self.btn.config(bg=default_bg, fg=default_fg, activebackground=default_bg, activeforeground=default_fg, text=val)
+                        self.btn.configure(fg_color=default_bg, text_color=default_fg,
+                                           hover_color=ui_theme.NEUTRAL_HOVER, text=val)
                     except Exception:
                         try:
-                            self.btn.config(text=val)
+                            self.btn.configure(text=val)
                         except Exception:
                             pass
                     try:
@@ -4274,9 +4026,9 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 bg, fg = self.cmap.get(val, (None, None))
                 try:
                     if bg is not None:
-                        self.btn.config(bg=bg, fg=fg, activebackground=bg, activeforeground=fg, text=val)
+                        self.btn.configure(fg_color=bg, text_color=fg, hover_color=bg, text=val)
                     else:
-                        self.btn.config(bg=default_bg, fg=default_fg, text=val)
+                        self.btn.configure(fg_color=default_bg, text_color=default_fg, text=val)
                     try:
                         self.btn.update_idletasks()
                     except Exception:
@@ -4284,8 +4036,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 except Exception:
                     pass
 
-        # create control row and widget
-        control_row = tk.Frame(series_frame)
+        control_row = tk.Frame(series_frame, bg=ui_theme.PANEL_BG)
         cd = ColoredDropdown(control_row, variable, dropdown_values, color_map, key=first_path, all_vars=dropdown_vars, mode=mode)
         try:
             cd.btn.pack(side='left')
@@ -4310,9 +4061,11 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
 
         dropdown_vars[first_path] = variable
         panel_widgets[first_path] = (panel, dicom_paths, thumbnail_path)  # Store for parallel loading
+        # Mouse-wheel over the thumbnail scrolls through the full series
+        attach_series_scrolling(panel, first_path, thumb_px)
 
-        # Enforce uniqueness for initial assignments based on ALLOW_DUPLICATE_LABELS config
-        # If enabled and this dropdown's initial value duplicates an existing assignment, reset it to 'Other'
+        # If duplicate labels are not allowed and this dropdown's initial value
+        # duplicates an existing assignment, reset it to 'Other'
         try:
             if not ALLOW_DUPLICATE_LABELS and variable.get() != 'Other':
                 for k, ov in dropdown_vars.items():
@@ -4335,7 +4088,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     def load_single_thumbnail(first_path, panel, dicom_paths, thumbnail_path):
-        """Load a single thumbnail - optimized version with pre-generated thumbnail support (JPEG/PNG)."""
+        """Load a single thumbnail, preferring a pre-generated thumbnail (JPEG/PNG)."""
         try:
             pil_img = None
 
@@ -4358,13 +4111,12 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 pil_img = load_center_slice_fast(first_path)
 
                 if pil_img is None:
-                    # Fallback to original method
+                    # Fall back to the slower full-series loader
                     pil_img = processing.load_center_slice(dicom_path_list)
 
             if pil_img is None:
                 return None
 
-            # Resize to target size
             target_size = scale_thumbnail(256)
             pil_img = pil_img.resize((target_size, target_size))
 
@@ -4392,11 +4144,9 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         except Exception as e:
             logger.debug(f"Error updating thumbnail: {e}")
 
-    # Start parallel loading in background
     def load_all_thumbnails():
         """Load all thumbnails in parallel."""
         with ThreadPoolExecutor(max_workers=NUM_PARALLEL_WORKERS) as executor:
-            # Submit all loading tasks
             future_to_path = {
                 executor.submit(load_single_thumbnail, path, panel_data[0], panel_data[1], panel_data[2]): path
                 for path, panel_data in panel_widgets.items()
@@ -4413,11 +4163,10 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 except Exception as e:
                     logger.debug(f"Error in parallel loading for {series_path}: {e}")
 
-    # Start loading thread
     threading.Thread(target=load_all_thumbnails, daemon=True).start()
 
-    button_frame = tk.Frame(root, pady=scale_value(10))
-    button_frame.grid(row=1, column=0, sticky="ew")
+    button_frame = ctk.CTkFrame(root, fg_color="transparent")
+    button_frame.grid(row=1, column=0, sticky="ew", pady=scale_value(10))
     button_frame.grid_columnconfigure(0, weight=1)
     button_frame.grid_columnconfigure(1, weight=0)
     button_frame.grid_columnconfigure(2, weight=0)
@@ -4459,20 +4208,21 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         except Exception:
             pass
 
-    # make buttons
-    btn_stop = tk.Button(button_frame, bg="#e0a2a2", activebackground="#e0a2a2", text="Stop All (a)", font=("Arial", scale_value(14)), command=on_stop)
-    btn_skip = tk.Button(button_frame, bg="#fff7a8", activebackground="#fff7a8", text="Skip (s)", font=("Arial", scale_value(14)), command=on_skip)
-    btn_done = tk.Button(button_frame, bg="#a2e0b2", activebackground="#a2e0b2", text="Approve (d)", font=("Arial", scale_value(14)), command=on_done)
+    action_font = ctk.CTkFont(size=15, weight="bold")
+    btn_stop = ctk.CTkButton(button_frame, fg_color=ui_theme.RED, hover_color=ui_theme.RED_HOVER,
+                             text="Stop All (a)", font=action_font, command=on_stop)
+    btn_skip = ctk.CTkButton(button_frame, fg_color=ui_theme.YELLOW, hover_color=ui_theme.YELLOW_HOVER,
+                             text="Skip (s)", font=action_font, command=on_skip)
+    btn_done = ctk.CTkButton(button_frame, fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER,
+                             text="Approve (d)", font=action_font, command=on_done)
 
-    # grid buttons
     btn_stop.grid(row=0, column=1, padx=scale_value(10))
     btn_skip.grid(row=0, column=2, padx=scale_value(10))
     btn_done.grid(row=0, column=3, padx=scale_value(10))
 
-    # add hotkeys
-    root.bind("<a>", lambda event: btn_stop.invoke())
-    root.bind("<s>", lambda event: btn_skip.invoke())
-    root.bind("<d>", lambda event: btn_done.invoke())
+    root.bind("<a>", lambda event: on_stop())
+    root.bind("<s>", lambda event: on_skip())
+    root.bind("<d>", lambda event: on_done())
 
     _fit_window_to_screen(root, content_frame, button_frame,
                           pad_x=scale_value(20), pad_y=scale_value(20))

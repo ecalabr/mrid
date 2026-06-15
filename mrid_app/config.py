@@ -1,7 +1,7 @@
 # ============================================================================
 # Filepath configuration options (modify only at beginning of project)
 # ============================================================================
-# Output naming template
+# Output naming template; valid fields are {mrn}, {study_uid}, and {accn}
 STUDY_NAME_TEMPLATE = "{mrn}-{accn}"
 # Thumbnail generation settings
 THUMBNAIL_FORMAT = 'JPEG'  # Format for generated thumbnails: 'JPEG' or 'PNG'
@@ -33,7 +33,7 @@ NUM_ROWS = 4  # max number of rows in verification UI
 THUMBNAIL_SCALE_FACTOR = 1.0  # additional static scale multiplier applied to thumbnail size only (e.g. 0.75 to shrink, 1.5 to enlarge)
 OVERRIDE_THRESHOLD = 0.5  # probability threshold for auto-classification
 ALLOW_DUPLICATE_LABELS = False  # allow multiple series to have the same label for manual classification
-NUM_PARALLEL_WORKERS = 8  # number of parallel threads for various file loading operations
+NUM_PARALLEL_WORKERS = 8  # number of parallel workers (threads/processes) for file scanning, loading, and CNN data loading
 RANDOMIZE_STUDY_ORDER = True  # randomize the order of studies during manual/semi-auto classification
 STUDY_ORDER_SEED = 42  # seed for pseudo-random study ordering (ensures reproducibility)
 
@@ -42,6 +42,12 @@ IMAGE_SIZE = 128
 NUM_EPOCHS = 100
 BATCH_SIZE = 8
 LR = 0.001
+# Number of evenly spaced slices fed to the CNN as input channels.
+# 1 = classic 2D mode (center slice only). N > 1 = 2.5D mode: for a series of
+# length L, slices at indices L*1//(N+1), L*2//(N+1), ..., L*N//(N+1) are used
+# (e.g. N=3 on a 100-slice series -> slices 25, 50, 75).
+# NOTE: a model must be used with the same CNN_NUM_SLICES it was trained with.
+CNN_NUM_SLICES = 1
 
 # Random Forest hyperparameters
 N_ESTIMATORS = 400
