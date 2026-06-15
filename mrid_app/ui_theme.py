@@ -65,14 +65,20 @@ def style_menu(menu):
 _SCALE_FACTOR = None
 
 
-def _ensure_linux_shape_font():
-    """Make CustomTkinter's anti-aliased corners work on Linux.
+SHAPE_FONT_NAME = "CustomTkinter_shapes_font"
+
+
+def _register_linux_shape_font():
+    """Register CustomTkinter's shapes font with fontconfig on Linux.
 
     Smooth widget corners on Tk/X11 are only possible via text (Xft) rendering,
-    which CustomTkinter does with a bundled shapes font. If that font isn't
-    registered with fontconfig, CTk silently falls back to 'circle_shapes',
-    which draws blocky corners. Register the font with fontconfig and force the
-    font_shapes method. Best-effort and Linux-only (no effect elsewhere)."""
+    which CustomTkinter does with a bundled shapes font. CustomTkinter itself
+    only copies that font to the legacy ``~/.fonts``, which modern fontconfig
+    (Ubuntu) no longer scans by default — so the font is never found and CTk
+    falls back to blocky 'circle_shapes' corners. Copy the font to the current
+    XDG fonts dir (``~/.local/share/fonts``) as well and refresh the cache.
+
+    Best-effort and Linux-only (no effect on macOS/Windows)."""
     import sys
     if not sys.platform.startswith("linux"):
         return
@@ -82,47 +88,63 @@ def _ensure_linux_shape_font():
         import subprocess
 
         ctk_dir = os.path.dirname(ctk.__file__)
-        shapes_font = os.path.join(ctk_dir, "assets", "fonts",
-                                   "CustomTkinter_shapes_font.otf")
-        if not os.path.isfile(shapes_font):
+        font_src = os.path.join(ctk_dir, "assets", "fonts",
+                                f"{SHAPE_FONT_NAME}.otf")
+        if not os.path.isfile(font_src):
             return
 
-        target_dir = os.path.expanduser("~/.fonts")
-        os.makedirs(target_dir, exist_ok=True)
-        dest = os.path.join(target_dir, "CustomTkinter_shapes_font.otf")
-        if not os.path.isfile(dest):
-            shutil.copy(shapes_font, dest)
+        # ~/.local/share/fonts is the XDG path modern fontconfig scans;
+        # ~/.fonts is kept for older setups.
+        xdg = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+        target_dirs = [os.path.join(xdg, "fonts"), os.path.expanduser("~/.fonts")]
+        for d in target_dirs:
+            try:
+                os.makedirs(d, exist_ok=True)
+                dest = os.path.join(d, f"{SHAPE_FONT_NAME}.otf")
+                if not os.path.isfile(dest):
+                    shutil.copy(font_src, dest)
+            except Exception:
+                pass
 
-        # Refresh the fontconfig cache so the running Tk/Xft can find the font.
+        # Refresh the fontconfig cache so a freshly-started Tk/Xft finds it.
         try:
-            subprocess.run(["fc-cache", "-f", target_dir],
-                           check=False, capture_output=True, timeout=30)
+            subprocess.run(["fc-cache", "-f"] + target_dirs,
+                           check=False, capture_output=True, timeout=60)
         except Exception:
             pass
-
-        # Only force font_shapes if fontconfig can now see the font; otherwise
-        # forcing it would render corners as missing glyphs (worse).
-        registered = False
-        try:
-            out = subprocess.run(["fc-list"], check=False, capture_output=True,
-                                 timeout=30, text=True)
-            registered = "CustomTkinter_shapes_font" in (out.stdout or "")
-        except Exception:
-            registered = False
-
-        if registered:
-            from customtkinter.windows.widgets.core_rendering import DrawEngine
-            DrawEngine.preferred_drawing_method = "font_shapes"
-            logger.debug("Linux: using font_shapes for smooth widget corners")
     except Exception as exc:
-        logger.debug(f"Could not set up Linux shape font: {exc}")
+        logger.debug(f"Could not register Linux shape font: {exc}")
+
+
+def _apply_linux_corner_rendering(window):
+    """On Linux, enable CustomTkinter's anti-aliased corners only if Tk can
+    actually see the shapes font; otherwise warn. Must run before any widget is
+    drawn. No-op on other platforms."""
+    import sys
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        import tkinter.font as tkfont
+        from customtkinter.windows.widgets.core_rendering import DrawEngine
+        available = SHAPE_FONT_NAME in set(tkfont.families(window))
+        if available:
+            DrawEngine.preferred_drawing_method = "font_shapes"
+            logger.debug("Linux: anti-aliased (font_shapes) widget corners enabled")
+        else:
+            logger.warning(
+                "CustomTkinter shapes font not visible to Tk; widget corners "
+                "may render blocky. Try installing fontconfig or run "
+                "'fc-cache -f ~/.local/share/fonts'."
+            )
+    except Exception as exc:
+        logger.debug(f"Could not configure Linux corner rendering: {exc}")
 
 
 def init_appearance():
     """Apply the global dark theme. Call once before creating any window."""
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("dark-blue")
-    _ensure_linux_shape_font()
+    _register_linux_shape_font()
 
 
 def init_scaling(window):
@@ -132,6 +154,9 @@ def init_scaling(window):
     Call once on the root window.
     """
     global _SCALE_FACTOR
+    # Choose the corner draw method now that a Tk window exists (before any
+    # widget is built) so it can check whether the shapes font is loadable.
+    _apply_linux_corner_rendering(window)
     if _SCALE_FACTOR is not None:
         return _SCALE_FACTOR
     try:
