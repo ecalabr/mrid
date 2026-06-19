@@ -6,8 +6,8 @@ import shutil
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .config import (IGNORE_MULTIPLE_ORIENTATIONS, SEPARATE_STACKED_SERIES, MAX_SPLIT,
-                     NUM_PARALLEL_WORKERS, THUMBNAIL_FORMAT, THUMBNAIL_QUALITY)
-from .utils import get_symlink_dir_name
+                     THUMBNAIL_FORMAT, THUMBNAIL_QUALITY)
+from .utils import get_symlink_dir_name, get_num_parallel_workers
 from .logging_config import get_logger
 
 logger = get_logger()
@@ -579,7 +579,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
                 return (task['entry_dict'], None)
 
         completed_thumbnails = 0
-        with ThreadPoolExecutor(max_workers=NUM_PARALLEL_WORKERS) as executor:
+        with ThreadPoolExecutor(max_workers=get_num_parallel_workers()) as executor:
             future_to_task = {
                 executor.submit(generate_thumbnail_task, task): task
                 for task in thumbnail_tasks

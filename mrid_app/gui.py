@@ -11,10 +11,10 @@ from . import ui_theme
 from .ui_theme import (scale_value, scale_thumbnail, cascade, place_main_window,
                        ThemedProgressBar, TitledFrame)
 from .series_scroller import attach_series_scrolling
-from .config import NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LABELS, NUM_PARALLEL_WORKERS, THUMBNAIL_SCALE_FACTOR
+from .config import NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LABELS, THUMBNAIL_SCALE_FACTOR
 from .utils import (extract_study_id_from_path, get_study_csv_name, get_study_dir_name,
                      get_nifti_name, get_nifti_prefix, sanitize_target_series,
-                     get_classified_outputs_dir)
+                     get_classified_outputs_dir, get_num_parallel_workers)
 from .logging_config import get_logger, setup_logging, update_log_file_location
 from PIL import Image, ImageTk
 import shutil
@@ -1099,7 +1099,7 @@ class MainApp:
                 gui = ProgressGUI(total_files=total_files)
 
                 # 3. Parallel processing (scan) — use batched workers to reduce per-file overhead
-                pool = mp.Pool(max(1, min(mp.cpu_count() - 1, NUM_PARALLEL_WORKERS)))
+                pool = mp.Pool(get_num_parallel_workers())
                 results = []
 
                 try:
@@ -2291,7 +2291,7 @@ class MainApp:
                 total_files = len(all_files)
                 gui = ProgressGUI(total_files=total_files, title="Analyze — Scanning…")
 
-                pool = mp.Pool(max(1, min(mp.cpu_count() - 1, NUM_PARALLEL_WORKERS)))
+                pool = mp.Pool(get_num_parallel_workers())
                 results = []
                 try:
                     from .scanner import check_dicom_batch
@@ -2374,7 +2374,7 @@ class MainApp:
 
             # ── Phase 2: Feature loading ──────────────────────────────────────
             from mrid_app import config as _cfg
-            num_workers = getattr(_cfg, 'NUM_PARALLEL_WORKERS', 8)
+            num_workers = get_num_parallel_workers()
 
             thumbnail_files = [
                 f for f in os.listdir(thumbnail_dir)
@@ -3618,7 +3618,7 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
 
     def load_all_thumbnails():
         """Load all thumbnails in parallel."""
-        with ThreadPoolExecutor(max_workers=NUM_PARALLEL_WORKERS) as executor:
+        with ThreadPoolExecutor(max_workers=get_num_parallel_workers()) as executor:
             future_to_path = {
                 executor.submit(load_single_thumbnail, row_data['Path'], panel_widgets[row_data['Path']], output_dir): row_data['Path']
                 for idx, row_data in batch_df.iterrows()
@@ -4150,7 +4150,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
 
     def load_all_thumbnails():
         """Load all thumbnails in parallel."""
-        with ThreadPoolExecutor(max_workers=NUM_PARALLEL_WORKERS) as executor:
+        with ThreadPoolExecutor(max_workers=get_num_parallel_workers()) as executor:
             future_to_path = {
                 executor.submit(load_single_thumbnail, path, panel_data[0], panel_data[1], panel_data[2]): path
                 for path, panel_data in panel_widgets.items()

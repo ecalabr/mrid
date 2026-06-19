@@ -17,6 +17,21 @@ except ImportError:
 logger = logging.getLogger('mrid')
 
 
+def get_num_parallel_workers():
+    """Number of parallel workers (threads/processes) to use.
+
+    Read live from config.NUM_PARALLEL_WORKERS so the value the user set — and
+    any config loaded/reloaded at runtime — is always honored. The configured
+    value is used exactly (clamped only to a minimum of 1); it is intentionally
+    not capped to the CPU count, since the work is I/O-bound. Every parallel
+    section of the app routes through this helper."""
+    try:
+        from . import config
+        return max(1, int(config.NUM_PARALLEL_WORKERS))
+    except Exception:
+        return 1
+
+
 # ============================================================================
 # Output Naming Functions
 # ============================================================================

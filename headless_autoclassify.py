@@ -207,13 +207,13 @@ def scan_dicom_directory(input_dir, output_dir, num_workers=None):
         logger.warning("No DICOM files found!")
         return {}
 
-    # Parallel processing with batched workers
+    # Parallel processing with batched workers. Follow config.NUM_PARALLEL_WORKERS
+    # unless the caller passed an explicit count (e.g. the --jobs CLI option).
     if num_workers is None:
-        try:
-            from mrid_app.config import NUM_PARALLEL_WORKERS
-        except Exception:
-            NUM_PARALLEL_WORKERS = 8
-        num_workers = max(1, min(mp.cpu_count() - 1, NUM_PARALLEL_WORKERS))
+        from mrid_app.utils import get_num_parallel_workers
+        num_workers = get_num_parallel_workers()
+    else:
+        num_workers = max(1, num_workers)
 
     pool = mp.Pool(num_workers)
     results = []

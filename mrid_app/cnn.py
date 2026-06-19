@@ -4,7 +4,8 @@ import numpy as np
 import pickle
 import hashlib
 import multiprocessing as mp
-from .utils import extract_study_id_from_path, get_study_csv_name, get_classified_outputs_dir
+from .utils import (extract_study_id_from_path, get_study_csv_name,
+                    get_classified_outputs_dir, get_num_parallel_workers)
 from .logging_config import get_logger
 
 logger = get_logger()
@@ -25,13 +26,12 @@ _AUGMENTATION_TRANSFORMS = None
 # Fallback defaults; live values are read from the config module at call time
 # (via _cfg) so configs loaded at runtime are respected.
 try:
-    from .config import IMAGE_SIZE, NUM_EPOCHS, BATCH_SIZE, LR, NUM_PARALLEL_WORKERS
+    from .config import IMAGE_SIZE, NUM_EPOCHS, BATCH_SIZE, LR
 except Exception:
     IMAGE_SIZE = 64
     NUM_EPOCHS = 200
     BATCH_SIZE = 8
     LR = 0.001
-    NUM_PARALLEL_WORKERS = 8
 
 
 def _cfg(name, default):
@@ -251,7 +251,7 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_slices_func, output_dir, 
         load_slices_func: Function(paths, num_slices) loading slices from a DICOM series
         output_dir: Directory to save cache file
         progress_callback: Optional callback function(current, total, message) for progress updates
-        num_workers: Number of parallel workers (default: cpu_count - 1)
+        num_workers: Number of parallel workers (default: config.NUM_PARALLEL_WORKERS)
         num_slices: Slices per series fed as CNN channels (default: CNN_NUM_SLICES)
     """
     transforms = _get_transforms()
@@ -295,14 +295,10 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_slices_func, output_dir, 
     if hasattr(labels, 'tolist'):
         labels = labels.tolist()
 
-    # Determine number of workers. Re-read from config at call time to respect
-    # any runtime changes the user may have made since module import.
+    # Number of workers follows config.NUM_PARALLEL_WORKERS (read live via the
+    # shared helper); an explicit num_workers argument overrides it.
     if num_workers is None:
-        try:
-            from .config import NUM_PARALLEL_WORKERS as _npw
-        except Exception:
-            _npw = NUM_PARALLEL_WORKERS
-        num_workers = max(1, min(mp.cpu_count() - 1, _npw))
+        num_workers = get_num_parallel_workers()
     else:
         num_workers = max(1, num_workers)
 
@@ -653,20 +649,14 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
             gui.update_progress(current)
             gui.update_status(f"2/6: {message}")
 
-        # Re-read NUM_PARALLEL_WORKERS at call time to respect any runtime changes
-        try:
-            from .config import NUM_PARALLEL_WORKERS as _npw
-        except Exception:
-            _npw = NUM_PARALLEL_WORKERS
-
-        # Try to load from cache first, or preprocess and cache
+        # Try to load from cache first, or preprocess and cache. Worker count is
+        # resolved from config.NUM_PARALLEL_WORKERS inside prepare_and_cache_cnn_data.
         cache_path = prepare_and_cache_cnn_data(
             dicom_paths.tolist(),
             master_df['Classification'].tolist(),
             load_slices_func=processing_module.load_series_slices,
             output_dir=output_dir,
             progress_callback=preprocessing_progress,
-            num_workers=_npw,
         )
 
         gui.set_indeterminate_mode()
