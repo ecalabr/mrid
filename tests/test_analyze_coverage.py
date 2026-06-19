@@ -93,3 +93,26 @@ def test_hdbscan_cluster_method_from_config():
         assert analyze._hdbscan_cluster_selection_method() == "leaf"
     finally:
         config.ANALYZE_HDBSCAN_CLUSTER_METHOD = original
+
+
+def test_exam_id_handles_underscores_in_mrn():
+    """Exam grouping must not collapse when the MRN contains underscores
+    (e.g. de-identified IDs like 'Duke_Liver_001'). Regression for n_exams=1."""
+    from mrid_app.analyze import _thumbnail_filename_to_exam_id as eid
+
+    study = "1.2.840.113619.2.55"   # dotted UID, no underscores
+    series_a = "1.3.6.1.4.1.14519.5.1"
+    series_b = "1.3.6.1.4.1.14519.5.2"
+
+    # Same patient+study, two different series -> one exam
+    assert eid(f"Duke_Liver_001_{study}_{series_a}.jpg") == \
+           eid(f"Duke_Liver_001_{study}_{series_b}.jpg")
+    # A split-index suffix doesn't change the exam id
+    assert eid(f"Duke_Liver_001_{study}_{series_a}_02.jpg") == \
+           eid(f"Duke_Liver_001_{study}_{series_a}.jpg")
+    # Different patients are different exams
+    assert eid(f"Duke_Liver_001_{study}_{series_a}.jpg") != \
+           eid(f"Duke_Liver_002_{study}_{series_a}.jpg")
+    # 8 patients -> 8 distinct exams (not 1)
+    names = [f"Pt_X_{p}_{study}_{series_a}.jpg" for p in range(8)]
+    assert len({eid(n) for n in names}) == 8

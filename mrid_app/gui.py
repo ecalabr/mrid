@@ -2611,6 +2611,30 @@ class MainApp:
         best_examples = analysis_result["best_examples"]
         representative_names = analysis_result.get("representative_names", [])
 
+        # Guard against an unreasonable number of clusters: naming hundreds of
+        # series types by hand is impractical, and rendering that many widgets
+        # can exhaust the window system (X pixmap limits). This almost always
+        # means ANALYZE_COVERAGE_THRESHOLD is set too low.
+        _MAX_NAMING_CLUSTERS = 60
+        if k > _MAX_NAMING_CLUSTERS:
+            try:
+                threshold = getattr(config, 'ANALYZE_COVERAGE_THRESHOLD', 0.1)
+            except Exception:
+                threshold = 0.1
+            messagebox.showwarning(
+                "Too Many Clusters",
+                f"Analyze produced {k} clusters — too many to name individually.\n\n"
+                f"This usually means ANALYZE_COVERAGE_THRESHOLD (currently "
+                f"{threshold}) is too low. A cluster is kept only if it appears "
+                f"in at least that fraction of exams, so raising the threshold "
+                f"yields fewer, larger series-type clusters.\n\n"
+                f"Increase ANALYZE_COVERAGE_THRESHOLD in the config and run "
+                f"Analyze again.",
+                parent=self.master
+            )
+            self.classification_finished(aborted=False)
+            return
+
         win = ctk.CTkToplevel(self.master)
         win.title("Analyze — Name Your Series Types")
         cascade(win, self.master)

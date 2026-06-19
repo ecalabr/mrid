@@ -71,10 +71,26 @@ _CONSENSUS_RUNS = 3
 # ── Filename → exam-id helper ─────────────────────────────────────────────────
 
 def _thumbnail_filename_to_exam_id(filename: str) -> str:
+    """Group a thumbnail by its exam (patient + study).
+
+    Thumbnail names are ``{mrn}_{study_uid}_{series_uid}[_{split_idx}]``. The MRN
+    may itself contain underscores (common in de-identified datasets, e.g.
+    ``Duke_Liver_001``), but DICOM UIDs never do — so the series_uid is a single
+    token (the last one, after any numeric split-index suffix). The exam id is
+    everything before the series_uid, i.e. ``{mrn}_{study_uid}``.
+
+    The previous implementation assumed the MRN was a single token and used the
+    first two tokens, which collapsed all exams to one id when MRNs contained
+    underscores (breaking the coverage threshold)."""
     stem = os.path.splitext(filename)[0]
     parts = stem.split("_")
-    if len(parts) >= 2:
-        return f"{parts[0]}_{parts[1]}"
+    # Drop an optional trailing split index (pure digits; UIDs contain dots so
+    # are never pure digits).
+    if len(parts) >= 4 and parts[-1].isdigit():
+        parts = parts[:-1]
+    if len(parts) >= 3:
+        # parts == [*mrn_tokens, study_uid, series_uid]; exclude series_uid.
+        return "_".join(parts[:-1])
     return stem
 
 
@@ -354,12 +370,15 @@ def _parse_thumbnail_stem(stem: str) -> tuple:
     parts = stem.split("_")
     if len(parts) < 3:
         return stem, "", ""
-    # Strip trailing split index (2-digit numeric suffix)
+    # Strip trailing split index (numeric suffix). UIDs contain dots, so a
+    # series_uid token is never all-digits.
     if parts[-1].isdigit() and len(parts) > 3:
         parts = parts[:-1]
-    mrn = parts[0]
-    study_uid = parts[1]
-    series_uid = "_".join(parts[2:])
+    # DICOM UIDs have no underscores: series_uid and study_uid are the last two
+    # tokens; the MRN (which may contain underscores) is everything before them.
+    series_uid = parts[-1]
+    study_uid = parts[-2]
+    mrn = "_".join(parts[:-2])
     return mrn, study_uid, series_uid
 
 
