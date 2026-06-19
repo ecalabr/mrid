@@ -132,3 +132,25 @@ def test_load_cnn_model_infers_slices_from_checkpoint():
         torch.save(SimpleCNN(num_classes=4, num_slices=3).state_dict(), model_path)
         loaded = load_cnn_model(model_path, num_classes=4)
         assert loaded.conv1.in_channels == 3
+
+
+def test_preprocessing_cancel_aborts_promptly():
+    """prepare_and_cache_cnn_data must return None quickly when cancel_check
+    becomes True, without processing the whole dataset."""
+    from mrid_app import cnn
+
+    n = 500
+    paths = [f"/nonexistent/{i}.dcm" for i in range(n)]
+    labels = ["T1"] * n
+    calls = {"n": 0}
+
+    def cancel_check():
+        calls["n"] += 1
+        return calls["n"] >= 2  # cancel almost immediately
+
+    result = cnn.prepare_and_cache_cnn_data(
+        paths, labels, lambda p, s: None, "/tmp/mrid_cancel_regression",
+        num_workers=2, cancel_check=cancel_check)
+
+    assert result is None
+    assert calls["n"] < n  # aborted early, did not run to completion

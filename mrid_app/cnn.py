@@ -239,11 +239,12 @@ def _process_single_image(args):
         return (idx, None, None)
 
 
-def prepare_and_cache_cnn_data(filepaths, labels, load_slices_func, output_dir, progress_callback=None, num_workers=None, num_slices=None):
+def prepare_and_cache_cnn_data(filepaths, labels, load_slices_func, output_dir, progress_callback=None, num_workers=None, num_slices=None, cancel_check=None):
     """
     Preprocess training data by applying standard transforms and save to cache for fast I/O.
     Uses parallel processing for faster preprocessing.
-    Returns the cache file path if successful, None otherwise.
+    Returns the cache file path if successful, None otherwise (including if the
+    user cancelled — callers should check cancel state to distinguish).
 
     Args:
         filepaths: List of file paths to process
@@ -253,6 +254,9 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_slices_func, output_dir, 
         progress_callback: Optional callback function(current, total, message) for progress updates
         num_workers: Number of parallel workers (default: config.NUM_PARALLEL_WORKERS)
         num_slices: Slices per series fed as CNN channels (default: CNN_NUM_SLICES)
+        cancel_check: Optional callable returning True to abort; checked during
+            preprocessing so cancellation takes effect promptly (worker pool is
+            terminated immediately).
     """
     transforms = _get_transforms()
     if transforms is None:
@@ -319,6 +323,12 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_slices_func, output_dir, 
     try:
         with mp.Pool(processes=num_workers) as pool:
             for result in pool.imap_unordered(_process_single_image, args_list, chunksize=chunksize):
+                # Abort promptly on cancel: kill the worker processes and stop.
+                if cancel_check is not None and cancel_check():
+                    logger.info("CNN preprocessing cancelled by user.")
+                    pool.terminate()
+                    pool.join()
+                    return None
                 completed += 1
 
                 if result[1] is not None:
@@ -334,6 +344,9 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_slices_func, output_dir, 
         logger.info("Falling back to sequential processing...")
         processed_results = []
         for idx, path in enumerate(filepaths):
+            if cancel_check is not None and cancel_check():
+                logger.info("CNN preprocessing cancelled by user.")
+                return None
             slice_imgs = load_slices_func([path], num_slices)
             if not slice_imgs:
                 continue
@@ -346,6 +359,11 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_slices_func, output_dir, 
             # Update progress every 10 images or on last image
             if progress_callback and (idx % 10 == 0 or idx == total_files - 1):
                 progress_callback(idx + 1, total_files, f"Preprocessing {idx + 1}/{total_files} images...")
+
+    # A late cancel (e.g. just as the loop finished) should still abort.
+    if cancel_check is not None and cancel_check():
+        logger.info("CNN preprocessing cancelled by user.")
+        return None
 
     if not processed_results:
         logger.error("No images were successfully processed")
@@ -651,12 +669,14 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
 
         # Try to load from cache first, or preprocess and cache. Worker count is
         # resolved from config.NUM_PARALLEL_WORKERS inside prepare_and_cache_cnn_data.
+        # cancel_check lets the user abort preprocessing promptly.
         cache_path = prepare_and_cache_cnn_data(
             dicom_paths.tolist(),
             master_df['Classification'].tolist(),
             load_slices_func=processing_module.load_series_slices,
             output_dir=output_dir,
             progress_callback=preprocessing_progress,
+            cancel_check=gui.is_cancelled,
         )
 
         gui.set_indeterminate_mode()
