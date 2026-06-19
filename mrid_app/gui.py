@@ -2656,14 +2656,25 @@ class MainApp:
                     parent=win
                 )
                 return
-            # Validate: no duplicate names among included clusters
-            if len(set(names)) != len(names):
-                messagebox.showwarning(
-                    "Duplicate Names",
-                    "Each included cluster must have a unique name.",
+            # Clusters given the same name are combined into one series type.
+            # Confirm so an accidental duplicate name doesn't silently merge them.
+            from collections import OrderedDict
+            groups = OrderedDict()
+            for nm in names:
+                groups[nm] = groups.get(nm, 0) + 1
+            merged = {nm: count for nm, count in groups.items() if count > 1}
+            if merged:
+                summary = "\n".join(f"  • \"{nm}\": {count} clusters"
+                                    for nm, count in merged.items())
+                proceed = messagebox.askyesno(
+                    "Combine Clusters",
+                    "Clusters sharing the same name will be combined into a "
+                    "single series type for training:\n\n" + summary +
+                    "\n\nContinue?",
                     parent=win
                 )
-                return
+                if not proceed:
+                    return
             win.destroy()
             self._write_analysis_to_config(names, prefer3d, output_dir)
             self._write_selfsupervised_csv(included, names, output_dir)
@@ -2733,19 +2744,28 @@ class MainApp:
         import tokenize
         import io
 
-        # ── 0. Always append "Other" as the final catch-all entry ─────────────
-        # Strip any existing "Other" the user may have typed so we control its
-        # position, then add it at the end.
-        other_idx = next((i for i, n in enumerate(names) if n.strip().lower() == "other"), None)
-        if other_idx is not None:
-            names = [n for i, n in enumerate(names) if i != other_idx]
-            prefer3d = [p for i, p in enumerate(prefer3d) if i != other_idx]
-        names = list(names) + ["Other"]
-        prefer3d = list(prefer3d) + [False]
+        # ── 0. Merge clusters sharing a name, then append "Other" ─────────────
+        # Clusters the user gave the same name are one series type: collapse to
+        # unique names (preserving first-seen order) and OR their 3D preference.
+        # Any cluster named "Other" is dropped here so we control the single
+        # catch-all "Other" entry at the end.
+        unique_names = []
+        prefer3d_by_name = {}
+        for name, p3d in zip(names, prefer3d):
+            if name.strip().lower() == "other":
+                continue
+            if name not in prefer3d_by_name:
+                unique_names.append(name)
+                prefer3d_by_name[name] = bool(p3d)
+            else:
+                prefer3d_by_name[name] = prefer3d_by_name[name] or bool(p3d)
+
+        names = unique_names + ["Other"]
+        prefer3d_by_name["Other"] = False
 
         # ── 1. Update in-memory config ────────────────────────────────────────
         setattr(config, 'TARGET_SERIES', names)
-        prefer3d_dict = {name: p3d for name, p3d in zip(names, prefer3d)}
+        prefer3d_dict = {name: prefer3d_by_name[name] for name in names}
         setattr(config, 'PREFER_3D', prefer3d_dict)
         # Also update the module-level global used elsewhere in gui.py
         global TARGET_SERIES
