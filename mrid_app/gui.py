@@ -4,8 +4,9 @@ import threading
 import time
 import random
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog
 import customtkinter as ctk
+from . import themed_dialogs as messagebox
 from . import config
 from . import ui_theme
 from .ui_theme import (scale_value, scale_thumbnail, cascade, place_main_window,

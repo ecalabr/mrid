@@ -15,12 +15,12 @@ values, preserving all comments and formatting, and writes it to *save_path*.
 
 import os
 import tkinter as tk
-from tkinter import messagebox
 
 import customtkinter as ctk
 
 from . import config as config_module
 from . import ui_theme
+from . import themed_dialogs as messagebox
 from .config_io import (format_prefer3d_dict, rewrite_config_assignments,
                         get_default_config_path)
 from .logging_config import get_logger

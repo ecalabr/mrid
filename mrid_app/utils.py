@@ -1,7 +1,6 @@
 import os
 import yaml
 from collections import defaultdict
-from tkinter import messagebox
 from typing import Optional
 import re
 import logging
@@ -333,6 +332,8 @@ def warn_if_no_gpu_for_cnn(gui_parent: Optional[object] = None) -> bool:
       False if the operation should be cancelled (PyTorch missing or user
       chose not to continue).
     """
+    # Imported lazily so non-GUI/headless imports of utils don't pull in the GUI.
+    from . import themed_dialogs as messagebox
     try:
         import torch
     except Exception:
