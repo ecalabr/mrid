@@ -45,7 +45,18 @@ _UMAP_METRIC      = "cosine"
 
 # ── HDBSCAN ──────────────────────────────────────────────────────────────────
 _HDBSCAN_MIN_SAMPLES         = None    # lower = group everything, higher = more stringent inclusion in clusters, None = defaults to min cluster size
-_HDBSCAN_CLUSTER_SELECTION   = "leaf"  # eom = fewer clusters, leaf = more clusters
+
+
+def _hdbscan_cluster_selection_method():
+    """cluster_selection_method for HDBSCAN, read live from config
+    (ANALYZE_HDBSCAN_CLUSTER_METHOD). 'eom' = fewer/larger clusters,
+    'leaf' = more/finer clusters. Falls back to 'leaf' on an invalid value."""
+    try:
+        from . import config
+        method = str(getattr(config, 'ANALYZE_HDBSCAN_CLUSTER_METHOD', 'leaf')).lower()
+        return method if method in ('eom', 'leaf') else 'leaf'
+    except Exception:
+        return 'leaf'
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
 _BEST_EXAMPLES = 4
@@ -249,16 +260,18 @@ def _hdbscan_cluster(
     # would pass the coverage gate; the distinct-exam gate below is authoritative.
     min_exams = max(1, math.ceil(coverage_threshold * n_exams))
     min_cluster_size = max(2, min_exams)
+    cluster_method = _hdbscan_cluster_selection_method()
     logger.info(
         f"HDBSCAN: coverage_threshold={coverage_threshold:.2f}, "
-        f"n_exams={n_exams}, min_exams={min_exams}, min_cluster_size={min_cluster_size}"
+        f"n_exams={n_exams}, min_exams={min_exams}, min_cluster_size={min_cluster_size}, "
+        f"cluster_selection_method={cluster_method}"
     )
 
     clusterer = _hdbscan.HDBSCAN(
         min_cluster_size=min_cluster_size,
         min_samples= _HDBSCAN_MIN_SAMPLES,
         metric="euclidean",
-        cluster_selection_method=_HDBSCAN_CLUSTER_SELECTION,
+        cluster_selection_method=cluster_method,
     )
     labels = clusterer.fit_predict(features_umap)
     probabilities = np.array(clusterer.probabilities_, dtype=np.float32)

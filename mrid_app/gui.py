@@ -391,6 +391,7 @@ class MainApp:
         config_menu.add_command(label="Load Config File", command=self._load_config)
         config_menu.add_command(label="Edit Config File", command=self._edit_config_file)
         config_menu.add_command(label="Reload Config File", command=self._reload_config_menu)
+        config_menu.add_command(label="Add Missing Parameters", command=self._add_missing_params_menu)
 
         # UI layout
         dir_frame = TitledFrame(master, title="Directories")
@@ -1895,6 +1896,33 @@ class MainApp:
         """Wrapper for _reload_config when called from Configuration menu."""
         self._reload_config(parent_dialog=None)
 
+    def _add_missing_params_menu(self):
+        """Configuration-menu action: check the active config file for missing
+        parameters and offer to add them with editable suggested defaults."""
+        # Determine the active config file (custom/output config, else repo default)
+        config_path = self.active_config_path
+        if not config_path or not os.path.exists(config_path):
+            output_config = os.path.join(self.output_dir.get(), "config.py") if self.output_dir.get() else None
+            if output_config and os.path.exists(output_config):
+                config_path = output_config
+            else:
+                config_path = config.__file__
+                if config_path.endswith('.pyc'):
+                    config_path = config_path[:-1]
+        if not config_path or not os.path.exists(config_path):
+            messagebox.showerror("Error", "No config file found to check.", parent=self.master)
+            return
+
+        success, missing_vars, _ = self._validate_config_file(config_path)
+        if not missing_vars:
+            messagebox.showinfo(
+                "Config Up To Date",
+                f"No missing parameters found in:\n{config_path}",
+                parent=self.master
+            )
+            return
+        self._prompt_add_missing_params(config_path, missing_vars)
+
     def _get_config_globals(self):
         """
         Extract all uppercase global variable names from the config module.
@@ -1944,12 +1972,15 @@ class MainApp:
         except Exception as e:
             return False, [], f"Error validating config file: {e}"
 
-    def _load_config_from_file(self, config_path):
+    def _load_config_from_file(self, config_path, prompt_missing=True):
         """
         Load config variables from a file and update the config module.
 
         Args:
             config_path: Path to the config file to load
+            prompt_missing: If True and the file lacks newer parameters, offer to
+                add them (with editable suggested defaults). Disabled on the
+                internal reload after writing, to avoid recursion.
 
         Returns:
             bool: True if successful, False otherwise
@@ -1996,6 +2027,10 @@ class MainApp:
             self.active_config_path = config_path
 
             logger.info(f"Successfully loaded config from: {config_path}")
+
+            # Offer to add any parameters this (older) config file is missing.
+            if prompt_missing and missing_vars:
+                self._prompt_add_missing_params(config_path, missing_vars)
             return True
 
         except Exception as e:
@@ -2007,6 +2042,103 @@ class MainApp:
             )
             logger.error(f"Failed to load config from {config_path}: {e}")
             return False
+
+    def _prompt_add_missing_params(self, config_path, missing_vars):
+        """
+        Prompt the user to add parameters that *config_path* is missing relative
+        to the current MRID version, with editable suggested defaults. On accept,
+        the chosen values are written into the config file and it is reloaded.
+        """
+        import ast
+
+        # Suggested default for each missing param = the repository default
+        # (config module still holds it, since the loaded file didn't set it).
+        rows = []  # (name, default_repr)
+        for name in missing_vars:
+            try:
+                rows.append((name, repr(getattr(config, name))))
+            except Exception:
+                rows.append((name, "None"))
+        if not rows:
+            return
+
+        dlg = ctk.CTkToplevel(self.master)
+        dlg.title("Add New Config Parameters")
+        cascade(dlg, self.master)
+        dlg.grab_set()
+
+        ctk.CTkLabel(
+            dlg,
+            text=("This config file is missing parameters available in this "
+                  "version of MRID.\nReview the suggested defaults below (edit "
+                  "if desired) and click \"Add to Config\" to write them into:\n"
+                  f"{config_path}"),
+            justify="left", wraplength=scale_value(560)
+        ).pack(padx=scale_value(16), pady=(scale_value(14), scale_value(8)), anchor="w")
+
+        scroll = ctk.CTkScrollableFrame(dlg, width=scale_value(560), height=scale_value(260))
+        scroll.pack(fill="both", expand=True, padx=scale_value(16))
+        entry_vars = {}
+        for r, (name, default_repr) in enumerate(rows):
+            ctk.CTkLabel(scroll, text=name, anchor="w").grid(
+                row=r, column=0, sticky="w", padx=scale_value(4), pady=scale_value(4))
+            var = tk.StringVar(value=default_repr)
+            ctk.CTkEntry(scroll, textvariable=var, width=scale_value(320)).grid(
+                row=r, column=1, sticky="w", padx=scale_value(6), pady=scale_value(4))
+            entry_vars[name] = var
+        scroll.grid_columnconfigure(1, weight=1)
+
+        btns = ctk.CTkFrame(dlg, fg_color="transparent")
+        btns.pack(pady=scale_value(14))
+
+        def on_add():
+            # Validate every value is a safe Python literal before writing.
+            replacements = {}
+            for name, var in entry_vars.items():
+                text = var.get().strip()
+                try:
+                    ast.literal_eval(text)
+                except Exception as e:
+                    messagebox.showwarning(
+                        "Invalid Value",
+                        f"The value for {name} is not a valid Python literal:\n\n{text}\n\n{e}",
+                        parent=dlg
+                    )
+                    return
+                replacements[name] = text
+            try:
+                with open(config_path, "r", encoding="utf-8") as fh:
+                    source = fh.read()
+                new_source = _rewrite_config_assignments(source, replacements)
+                with open(config_path, "w", encoding="utf-8") as fh:
+                    fh.write(new_source)
+            except Exception as e:
+                messagebox.showerror("Write Failed",
+                                     f"Could not update the config file:\n{e}", parent=dlg)
+                return
+            dlg.grab_release()
+            dlg.destroy()
+            logger.info(f"Added missing parameters to {config_path}: {list(replacements)}")
+            # Reload so the new values take effect (no re-prompt).
+            self._load_config_from_file(config_path, prompt_missing=False)
+            messagebox.showinfo(
+                "Config Updated",
+                f"Added {len(replacements)} parameter(s) to:\n{config_path}",
+                parent=self.master
+            )
+
+        def on_skip():
+            dlg.grab_release()
+            dlg.destroy()
+
+        ctk.CTkButton(btns, text="Add to Config", width=scale_value(140),
+                      fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER,
+                      command=on_add).pack(side="left", padx=scale_value(6))
+        ctk.CTkButton(btns, text="Skip", width=scale_value(100),
+                      fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
+                      command=on_skip).pack(side="left", padx=scale_value(6))
+        dlg.protocol("WM_DELETE_WINDOW", on_skip)
+        dlg.wait_window()
 
     def _run_config_wizard(self):
         """Run the config wizard on the currently active config file."""

@@ -26,6 +26,8 @@ MAX_SPLIT = 5  # max number of splits for stacked series
 
 # Analyze mode settings
 ANALYZE_COVERAGE_THRESHOLD = 0.1  # clusters will only be considered if this proportion of exams contains a member
+# HDBSCAN cluster_selection_method: 'eom' (fewer, larger clusters) or 'leaf' (more, finer clusters)
+ANALYZE_HDBSCAN_CLUSTER_METHOD = 'leaf'
 
 # Classification UI options
 NUM_COLUMNS = 6  # max number of columns in classification/verification UI

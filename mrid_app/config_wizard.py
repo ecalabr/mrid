@@ -85,7 +85,8 @@ class ConfigWizard:
                      "ALLOW_DUPLICATE_LABELS", "NUM_PARALLEL_WORKERS", "RANDOMIZE_STUDY_ORDER",
                      "STUDY_ORDER_SEED", "IMAGE_SIZE", "NUM_EPOCHS", "BATCH_SIZE", "LR",
                      "CNN_NUM_SLICES", "N_ESTIMATORS", "DICOM_HEADER_FIELDS",
-                     "ANALYZE_COVERAGE_THRESHOLD", "LOG_LEVEL"]:
+                     "ANALYZE_COVERAGE_THRESHOLD", "ANALYZE_HDBSCAN_CLUSTER_METHOD",
+                     "LOG_LEVEL"]:
             values[name] = get(name)
         return values
 
@@ -352,12 +353,22 @@ class ConfigWizard:
         self.v_estimators = self._entry_row(grid, 5, "Random Forest trees:", self._initial["N_ESTIMATORS"], width=80)
         self.v_coverage = self._entry_row(grid, 6, "Analyze coverage threshold:",
                                           self._initial["ANALYZE_COVERAGE_THRESHOLD"], width=80)
-        ctk.CTkLabel(grid, text="Log level:", anchor="w").grid(
+        ctk.CTkLabel(grid, text="Analyze HDBSCAN method:", anchor="w").grid(
             row=7, column=0, sticky="w", padx=scale_value(6), pady=scale_value(5))
+        self.v_hdbscan_method = tk.StringVar(
+            value=(self._initial["ANALYZE_HDBSCAN_CLUSTER_METHOD"] or "leaf"))
+        ctk.CTkOptionMenu(grid, variable=self.v_hdbscan_method, width=120,
+                          values=["leaf", "eom"]).grid(
+            row=7, column=1, sticky="w", padx=scale_value(6))
+        ctk.CTkLabel(grid, text="leaf = more/finer clusters, eom = fewer/larger",
+                     text_color="#8a8a8a", anchor="w").grid(
+            row=7, column=2, sticky="w", padx=scale_value(6))
+        ctk.CTkLabel(grid, text="Log level:", anchor="w").grid(
+            row=8, column=0, sticky="w", padx=scale_value(6), pady=scale_value(5))
         self.v_log_level = tk.StringVar(value=self._initial["LOG_LEVEL"] or "INFO")
         ctk.CTkOptionMenu(grid, variable=self.v_log_level, width=120,
                           values=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]).grid(
-            row=7, column=1, sticky="w", padx=scale_value(6))
+            row=8, column=1, sticky="w", padx=scale_value(6))
 
         ctk.CTkLabel(frame, text="DICOM header fields for the header model "
                                  "(one per line: Display Name = DICOMAttribute):",
@@ -460,6 +471,7 @@ class ConfigWizard:
             "CNN_NUM_SLICES": repr(self._parse(self.v_cnn_slices, int, "CNN slices", 1)),
             "N_ESTIMATORS": repr(self._parse(self.v_estimators, int, "Random Forest trees", 1)),
             "ANALYZE_COVERAGE_THRESHOLD": repr(self._parse(self.v_coverage, float, "Coverage threshold", 0.0, 1.0)),
+            "ANALYZE_HDBSCAN_CLUSTER_METHOD": repr(self.v_hdbscan_method.get()),
             "LOG_LEVEL": repr(self.v_log_level.get()),
             "DICOM_HEADER_FIELDS": "[\n" + "".join(
                 f"    ({display!r}, {attr!r}),\n" for display, attr in fields) + "]",

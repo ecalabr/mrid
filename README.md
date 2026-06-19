@@ -354,8 +354,13 @@ MAX_SPLIT = 5                             # max splits per stacked series
 
 ```python
 ANALYZE_COVERAGE_THRESHOLD = 0.1
+ANALYZE_HDBSCAN_CLUSTER_METHOD = 'leaf'   # 'leaf' or 'eom'
 ```
-A cluster is valid in Analyze mode only if it covers at least this fraction of exams. Raise it (e.g. `0.5`) to keep only core series types; lower it (e.g. `0.05`) to surface rare sequences.
+`ANALYZE_COVERAGE_THRESHOLD`: a cluster is valid in Analyze mode only if it covers at least this fraction of exams. Raise it (e.g. `0.5`) to keep only core series types; lower it (e.g. `0.05`) to surface rare sequences.
+
+`ANALYZE_HDBSCAN_CLUSTER_METHOD`: HDBSCAN's `cluster_selection_method`. `'leaf'` (default) produces more, finer-grained clusters; `'eom'` produces fewer, larger clusters.
+
+> **New parameters in an existing project?** When MRID loads a `config.py` that predates parameters added in a newer version, it offers to add the missing ones with editable suggested defaults and writes them into the file. You can also trigger this anytime via **Configuration → Add Missing Parameters**.
 
 #### Classification UI
 

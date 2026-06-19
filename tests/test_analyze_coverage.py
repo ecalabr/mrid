@@ -75,3 +75,21 @@ def test_all_dropped_falls_back_to_single_cluster():
     labels, _, k = _apply_coverage_gate(raw_labels, probs, feats, exam_ids, min_exams=5)
     assert k == 1
     assert set(labels.tolist()) == {0}
+
+
+def test_hdbscan_cluster_method_from_config():
+    """ANALYZE_HDBSCAN_CLUSTER_METHOD drives the HDBSCAN selection method, with
+    validation and a safe fallback."""
+    from mrid_app import config, analyze
+
+    original = getattr(config, "ANALYZE_HDBSCAN_CLUSTER_METHOD", "leaf")
+    try:
+        config.ANALYZE_HDBSCAN_CLUSTER_METHOD = "eom"
+        assert analyze._hdbscan_cluster_selection_method() == "eom"
+        config.ANALYZE_HDBSCAN_CLUSTER_METHOD = "leaf"
+        assert analyze._hdbscan_cluster_selection_method() == "leaf"
+        # invalid value falls back to 'leaf'
+        config.ANALYZE_HDBSCAN_CLUSTER_METHOD = "bogus"
+        assert analyze._hdbscan_cluster_selection_method() == "leaf"
+    finally:
+        config.ANALYZE_HDBSCAN_CLUSTER_METHOD = original
