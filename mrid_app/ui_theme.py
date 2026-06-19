@@ -246,6 +246,13 @@ def _apply_linux_corner_rendering(window):
         else:
             global _LIMITED_FONTS
             _LIMITED_FONTS = True
+            # Draw widget decorations (dropdown arrows, checkmarks, corners) as
+            # vector graphics instead of glyphs from the unavailable shapes font.
+            # font_shapes would otherwise render the dropdown arrow as a literal
+            # "Y" (the shapes-font code point for the arrow). Corners are kept
+            # square via _force_square_corners so the un-antialiased polygon
+            # corners are never visible.
+            DrawEngine.preferred_drawing_method = "polygon_shapes"
             _force_square_corners()
             _use_proportional_fallback_font(window)
             logger.info(
