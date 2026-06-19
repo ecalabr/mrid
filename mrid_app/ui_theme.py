@@ -212,10 +212,26 @@ def _apply_linux_corner_rendering(window):
             logger.debug("Linux: anti-aliased (font_shapes) widget corners enabled")
         else:
             _force_square_corners()
-            logger.info(
-                "CustomTkinter shapes font not loadable by this Tk build; "
-                "using square widget corners (avoids blocky rendering)."
-            )
+            msg = ("CustomTkinter shapes font not loadable by this Tk build; "
+                   "using square widget corners (avoids blocky rendering).")
+            # Distinguish "font missing" from "this Tk has no Xft at all". A Tk
+            # built without Xft can't render ANY fontconfig font, so even a
+            # common font fails and it lists only the few X core fonts.
+            try:
+                import tkinter.font as tkfont
+                n_families = len(tkfont.families(window))
+                common = tkfont.Font(root=window, family="DejaVu Sans",
+                                     size=-12).actual("family")
+                if n_families < 60 or common == "fixed":
+                    msg += (f" This Tk has no Xft/fontconfig support (it lists "
+                            f"only {n_families} font families), so no "
+                            f"anti-aliased fonts can load — common on the "
+                            f"Anaconda 'defaults' Tk. For rounded corners, "
+                            f"install a Tk built with Xft: "
+                            f"`conda install -c conda-forge --override-channels tk`.")
+            except Exception:
+                pass
+            logger.info(msg)
     except Exception as exc:
         logger.debug(f"Could not configure Linux corner rendering: {exc}")
 

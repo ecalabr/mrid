@@ -537,18 +537,28 @@ Install a GPU-enabled PyTorch build (see [PyTorch GPU Setup](#pytorch-gpu-setup)
 #### Blocky button corners on Linux
 Smooth (anti-aliased) rounded corners on Tk/X11 are only possible via text rendering, which CustomTkinter does with a bundled "shapes" font. MRID already installs and registers that font (into `~/.local/share/fonts`, with an `fc-cache` refresh) at startup — so font *availability* is handled automatically and nothing needs to be added to `requirements.txt` (a pip dependency cannot register an OS font, and whether Tk can render one is a property of the Tk/Xft build, not of any Python package).
 
-Some **conda** Tk builds, however, cannot rasterize the shapes font even when fontconfig lists it (a quick check — `python -c "import tkinter,tkinter.font as f; r=tkinter.Tk(); print(f.Font(root=r,family='CustomTkinter_shapes_font').actual('family'))"` — prints `fixed` instead of `CustomTkinter_shapes_font`). When MRID detects this it automatically falls back to clean **square** corners (no blockiness). To get the rounded look on such a setup, use a Tk built with working Xft:
+The common cause is the **Anaconda `defaults`-channel Tk on Linux, which is built without Xft** and therefore cannot render *any* fontconfig font (not just the shapes font). Diagnose it:
 
 ```bash
-# Option A: pull Tk from conda-forge (built against Xft/fontconfig)
-conda install -c conda-forge tk fontconfig
-# then restart the app
-
-# Option B: use the system Tk instead of conda's
-sudo apt-get install python3-tk fonts-dejavu   # Debian/Ubuntu
+python -c "import tkinter, tkinter.font as f; r=tkinter.Tk(); r.withdraw(); \
+print('families:', len(f.families(r)), '| DejaVu ->', f.Font(root=r, family='DejaVu Sans').actual('family'))"
 ```
+A healthy Xft Tk lists **hundreds** of families and resolves `DejaVu -> DejaVu Sans`. If you see only ~30 families and `DejaVu -> fixed`, your Tk has no Xft. (`conda list tk` will typically show it came from `defaults`, not `conda-forge`.)
 
-If `python -c "...DejaVu Sans..."` also resolves to `fixed`, that Tk has no usable Xft at all and only square corners are possible until Tk is rebuilt/replaced.
+**Fix — install a Tk built with Xft from conda-forge** (a plain `conda install -c conda-forge tk` often keeps the already-installed defaults build, so force the channel):
+```bash
+conda install -c conda-forge --override-channels tk
+conda deactivate && conda activate mrid     # restart the app afterward
+```
+If the solver objects, set conda-forge priority for the env first:
+```bash
+conda config --env --add channels conda-forge
+conda config --env --set channel_priority flexible
+conda install -c conda-forge --force-reinstall tk
+```
+Alternatively, use the system Tk (`sudo apt-get install python3-tk fonts-dejavu` on Debian/Ubuntu).
+
+MRID detects an Xft-less Tk and falls back to clean **square** corners automatically (never blocky), and logs the exact `conda install` command to fix it.
 
 #### Getting help
 - Run `python tests.py` to verify the installation
