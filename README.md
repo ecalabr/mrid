@@ -534,6 +534,22 @@ Informational, not an error — files are being organized with symlinks (see [Au
 #### Slow CNN training
 Install a GPU-enabled PyTorch build (see [PyTorch GPU Setup](#pytorch-gpu-setup)), or reduce `IMAGE_SIZE` / `NUM_EPOCHS`.
 
+#### Blocky button corners on Linux
+Smooth (anti-aliased) rounded corners on Tk/X11 are only possible via text rendering, which CustomTkinter does with a bundled "shapes" font. MRID already installs and registers that font (into `~/.local/share/fonts`, with an `fc-cache` refresh) at startup — so font *availability* is handled automatically and nothing needs to be added to `requirements.txt` (a pip dependency cannot register an OS font, and whether Tk can render one is a property of the Tk/Xft build, not of any Python package).
+
+Some **conda** Tk builds, however, cannot rasterize the shapes font even when fontconfig lists it (a quick check — `python -c "import tkinter,tkinter.font as f; r=tkinter.Tk(); print(f.Font(root=r,family='CustomTkinter_shapes_font').actual('family'))"` — prints `fixed` instead of `CustomTkinter_shapes_font`). When MRID detects this it automatically falls back to clean **square** corners (no blockiness). To get the rounded look on such a setup, use a Tk built with working Xft:
+
+```bash
+# Option A: pull Tk from conda-forge (built against Xft/fontconfig)
+conda install -c conda-forge tk fontconfig
+# then restart the app
+
+# Option B: use the system Tk instead of conda's
+sudo apt-get install python3-tk fonts-dejavu   # Debian/Ubuntu
+```
+
+If `python -c "...DejaVu Sans..."` also resolves to `fixed`, that Tk has no usable Xft at all and only square corners are possible until Tk is rebuilt/replaced.
+
 #### Getting help
 - Run `python tests.py` to verify the installation
 - Check the terminal and the log file in the output directory for detailed errors (set `LOG_LEVEL = "DEBUG"` for more)
