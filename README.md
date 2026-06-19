@@ -163,7 +163,7 @@ python -c "import torch; print(torch.backends.mps.is_available())"
 Notes:
 - NVIDIA: install a recent NVIDIA driver first; the pip wheels bundle the CUDA runtime, so a separate CUDA Toolkit install is not required.
 - AMD: ROCm wheels are Linux-only and report availability through `torch.cuda.is_available()`. Check the [ROCm compatibility list](https://rocm.docs.amd.com/) for supported GPUs.
-- Apple Silicon: MRID's CNN training currently selects CUDA or CPU; MPS acceleration is used by PyTorch where applicable, but training on Apple Silicon may run on CPU.
+- Apple Silicon: MRID selects the best available device automatically — CUDA (NVIDIA/AMD ROCm) → Apple MPS → CPU — so CNN training and inference use the MPS GPU when available.
 
 ### dcm2niix
 
@@ -225,7 +225,7 @@ python tests.py
 1. Select directories, set Mode to **Analyze**, click **▶ Start Analysis**
 2. MRID scans the DICOMs and generates series thumbnails (skipped if already done)
 3. Series are clustered into visually similar groups; `ANALYZE_COVERAGE_THRESHOLD` controls how common a series type must be to form a cluster
-4. A naming window shows the 4 most representative thumbnails per cluster with a suggested name. For each cluster: edit the name, optionally tick **Prefer 3D**, or untick **Include** to drop it
+4. A naming window shows the 4 most representative thumbnails per cluster with a suggested name. For each cluster: edit the name, optionally tick **Prefer 3D**, or untick **Include** to drop it. **Tip:** give two or more clusters the exact same name to **combine** them into a single series type (their members are merged for training, and Prefer 3D is OR-merged).
 5. Click **Apply** — `TARGET_SERIES`/`PREFER_3D` are written to the project `config.py`, and high-confidence cluster members are written to `model_files/selfsupervised_classification_data.csv`
 6. *(Optional)* Click **Train Model(s)** (it activates after analysis) to train the header and/or image model from that CSV — no manual labels needed
 7. Switch to **Semi-Auto** or **Full-Auto**, load the models, and classify the dataset
@@ -298,10 +298,10 @@ Each project keeps its own `config.py` in the output directory. The repository d
 
 The wizard walks you through generating or editing a project config without touching Python code:
 
-- **New projects**: when the output directory has no `config.py`, starting a workflow offers **Run Config Wizard / Copy Default Config / Keep Defaults**
+- **New projects**: a project `config.py` is required, so when the output directory has none, starting a workflow offers **Run Config Wizard / Copy Default Config** (or Cancel to abort)
 - **Existing projects**: **Configuration → Run Config Wizard** re-runs the wizard pre-filled with the active config's values
 
-Pages: **1. Output naming** (study name template, thumbnail format/quality) → **2. Classification & DICOM filtering** (target series with per-series 3D preference, ImageType include/exclude filters, stacked-series handling) → **3. Classification UI** (grid size, thresholds, ordering). An **Advanced Settings** page covers model hyperparameters, the DICOM header field list, the Analyze coverage threshold, and the log level. Saving rewrites the config file while preserving its comments.
+Pages: **1. Output naming** (study name template, thumbnail format/quality) → **2. Classification & DICOM filtering** (target series with per-series 3D preference, ImageType include/exclude filters, stacked-series handling) → **3. Classification UI** (grid size, thresholds, ordering). An **Advanced Settings** page covers model hyperparameters, the DICOM header field list, the Analyze coverage threshold and HDBSCAN method, and the log level. Saving rewrites the config file while preserving its comments. In Analyze mode the target-series section is locked, since Analyze determines the series itself.
 
 ### Configuration Menu
 
@@ -312,6 +312,7 @@ Pages: **1. Output naming** (study name template, thumbnail format/quality) → 
 | **Load Config File** | Load a config from anywhere via a file browser |
 | **Edit Config File** | Open the active config in your system text editor |
 | **Reload Config File** | Re-read the active config after manual edits |
+| **Add Missing Parameters** | Add parameters newer MRID versions introduced to an older config, with editable suggested defaults |
 
 When a workflow starts, a `config.py` already in the output directory is loaded automatically. Configs from older MRID versions that lack newer settings load with a warning; missing settings use defaults.
 
@@ -370,12 +371,13 @@ NUM_ROWS = 4                  # grid rows (verify mode batches)
 THUMBNAIL_SCALE_FACTOR = 1.0  # extra multiplier for thumbnail size only
 OVERRIDE_THRESHOLD = 0.5      # min probability for auto-selection (0-1)
 ALLOW_DUPLICATE_LABELS = False
-NUM_PARALLEL_WORKERS = 8      # threads/processes for image loading
+NUM_PARALLEL_WORKERS = 8      # workers for scanning, loading & CNN preprocessing
 RANDOMIZE_STUDY_ORDER = True  # shuffle study order (Manual/Semi-Auto)
 STUDY_ORDER_SEED = 42         # seed for reproducible shuffling
 ```
 
 - The whole UI scales automatically with screen size; `THUMBNAIL_SCALE_FACTOR` adjusts thumbnails only (e.g. `0.75` smaller, `1.5` larger).
+- `NUM_PARALLEL_WORKERS` is honored exactly (not capped to the CPU count) across every parallel stage — DICOM scanning, thumbnail generation, thumbnail loading, and CNN preprocessing.
 - With `ALLOW_DUPLICATE_LABELS = False` (default), assigning a label to one series clears it from any other series in the study; set `True` to allow several series per label (useful for building training data).
 - Randomized study order reduces labeling bias; Full-Auto always processes in original order.
 
