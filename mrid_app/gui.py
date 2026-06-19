@@ -2495,6 +2495,8 @@ class MainApp:
                 "For each cluster, review the example thumbnails and enter a name.\n"
                 "Tick 'Prefer 3D' if this series type should prefer 3D acquisitions. "
                 "Uncheck 'Include' to exclude a cluster from TARGET_SERIES.\n"
+                "Tip: give two or more clusters the exact same name to merge them "
+                "into a single series type.\n"
                 "Click Apply to save the names to TARGET_SERIES / PREFER_3D in config.py."
             ),
             wraplength=scale_value(1100),
