@@ -1047,6 +1047,11 @@ class MainApp:
             self.classification_finished(aborted=self.stop_requested.is_set())
 
     def classification_finished(self, aborted):
+        # Idempotent: the worker thread calls this when it finishes, and the
+        # status poller also calls it when it sees the thread end. Run the
+        # teardown (and log) only once per workflow.
+        if not self.is_running:
+            return
         self.is_running = False
         self.stop_requested.clear()
         self.start_button.configure(state="normal")
