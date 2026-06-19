@@ -51,7 +51,11 @@ MENU_DISABLED_FG = "#777777"
 
 
 def style_menu(menu):
-    """Apply the dark theme to a classic tk.Menu (menubar or popup)."""
+    """Apply the dark theme to a classic tk.Menu (menubar or popup).
+
+    Also scales the menu font by the screen-proportional factor: CustomTkinter's
+    widget scaling does not touch native tk.Menu widgets, so without this the
+    menubar text stays small on HiDPI displays while the rest of the UI scales."""
     try:
         menu.configure(
             bg=MENU_BG, fg=MENU_FG,
@@ -59,6 +63,21 @@ def style_menu(menu):
             disabledforeground=MENU_DISABLED_FG,
             activeborderwidth=0, borderwidth=0, relief="flat",
         )
+    except Exception:
+        pass
+    # Scale the menu font to match the rest of the UI on HiDPI displays.
+    try:
+        scale = get_scale_factor()
+        if abs(scale - 1.0) > 0.01:
+            import tkinter.font as tkfont
+            base_font = tkfont.nametofont("TkMenuFont")
+            base_size = base_font.cget("size") or 9
+            family = base_font.cget("family")
+            # Tk font sizes: positive = points, negative = pixels. Preserve the
+            # unit (sign) and scale the magnitude.
+            sign = -1 if base_size < 0 else 1
+            scaled = sign * max(8, int(round(abs(base_size) * scale)))
+            menu.configure(font=(family, scaled))
     except Exception:
         pass
 
