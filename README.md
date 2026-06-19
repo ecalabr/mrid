@@ -534,24 +534,8 @@ Informational, not an error — files are being organized with symlinks (see [Au
 #### Slow CNN training
 Install a GPU-enabled PyTorch build (see [PyTorch GPU Setup](#pytorch-gpu-setup)), or reduce `IMAGE_SIZE` / `NUM_EPOCHS`.
 
-#### Blocky button corners on Linux
-Smooth (anti-aliased) rounded corners on Tk/X11 are only possible via text rendering, which CustomTkinter does with a bundled "shapes" font. MRID already installs and registers that font (into `~/.local/share/fonts`, with an `fc-cache` refresh) at startup — so font *availability* is handled automatically and nothing needs to be added to `requirements.txt` (a pip dependency cannot register an OS font, and whether Tk can render one is a property of the Tk/Xft build, not of any Python package).
-
-The common cause is the **Anaconda `defaults`-channel Tk on Linux, which is built without Xft** and therefore cannot render *any* fontconfig font (not just the shapes font). Diagnose it:
-
-```bash
-python -c "import tkinter, tkinter.font as f; r=tkinter.Tk(); r.withdraw(); \
-print('families:', len(f.families(r)), '| DejaVu ->', f.Font(root=r, family='DejaVu Sans').actual('family'))"
-```
-A healthy Xft Tk lists **hundreds** of families and resolves `DejaVu -> DejaVu Sans`. If you see only ~30 families and `DejaVu -> fixed`, your Tk has no Xft and cannot render *any* anti-aliased font.
-
-**Important:** conda's `tk` package on Linux is frequently built **without Xft on both the `defaults` and `conda-forge` channels** (Xft is compiled into `libtk` at build time, so switching channels or installing `libxft` afterward does not help). In that case anti-aliased rounded corners are not achievable in the conda environment. The only reliable way to get them is a Tk built with Xft — i.e. running MRID under the **system** Python with the system Tk:
-```bash
-sudo apt-get install python3-tk fonts-dejavu      # Debian/Ubuntu
-```
-(This requires MRID's dependencies to be available to the system Python, so it's only worth it if you specifically want the rounded look.)
-
-MRID detects an Xft-less Tk and falls back to clean **square** corners automatically — they are crisp and intentional (never blocky), so this is a perfectly good outcome and most users can simply leave it. The app logs the reason when this fallback is used.
+#### Square corners / limited fonts on Linux
+Some conda Linux Tk builds ship without the font support needed for anti-aliased rounded corners. On those, MRID automatically uses clean **square** corners and the available system fonts — a normal, fully functional outcome (nothing to fix).
 
 #### Getting help
 - Run `python tests.py` to verify the installation

@@ -116,6 +116,11 @@ def _register_linux_shape_font():
         if not os.path.isfile(font_src):
             return
 
+        # Track whether we actually install anything new; fc-cache (the slow
+        # part, ~1-2 s) only needs to run when something changed, so steady-state
+        # launches stay fast.
+        did_change = False
+
         xdg = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
         font_dirs = [os.path.join(xdg, "fonts"), os.path.expanduser("~/.fonts")]
         for d in font_dirs:
@@ -124,6 +129,7 @@ def _register_linux_shape_font():
                 dest = os.path.join(d, f"{SHAPE_FONT_NAME}.otf")
                 if not os.path.isfile(dest):
                     shutil.copy(font_src, dest)
+                    did_change = True
             except Exception:
                 pass
 
@@ -132,35 +138,32 @@ def _register_linux_shape_font():
         try:
             cfg_home = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
             cfg_dir = os.path.join(cfg_home, "fontconfig")
-            os.makedirs(cfg_dir, exist_ok=True)
             cfg_path = os.path.join(cfg_dir, "fonts.conf")
-            scan_dirs = font_dirs + [ctk_fonts_dir]
-            marker = "<!-- mrid: CustomTkinter shapes font -->"
-            existing = ""
-            if os.path.isfile(cfg_path):
-                with open(cfg_path) as fh:
-                    existing = fh.read()
             # Only create our own config if none exists; never clobber a
-            # user-authored one (just log so we don't fight it).
-            if not existing.strip():
+            # user-authored one.
+            if not os.path.isfile(cfg_path):
+                os.makedirs(cfg_dir, exist_ok=True)
+                scan_dirs = font_dirs + [ctk_fonts_dir]
                 dir_lines = "\n".join(f"  <dir>{d}</dir>" for d in scan_dirs)
                 with open(cfg_path, "w") as fh:
                     fh.write(
                         '<?xml version="1.0"?>\n'
                         '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n'
-                        f'<fontconfig>\n{marker}\n{dir_lines}\n</fontconfig>\n'
+                        "<!-- mrid: CustomTkinter shapes font -->\n"
+                        f'<fontconfig>\n{dir_lines}\n</fontconfig>\n'
                     )
-            elif marker not in existing:
-                logger.debug("Existing ~/.config/fontconfig/fonts.conf left untouched")
+                did_change = True
         except Exception:
             pass
 
-        # Refresh the fontconfig cache so a freshly-started Tk/Xft finds it.
-        try:
-            subprocess.run(["fc-cache", "-f"], check=False,
-                           capture_output=True, timeout=60)
-        except Exception:
-            pass
+        # Refresh the fontconfig cache only when we installed something new, so
+        # the expensive fc-cache call doesn't run on every launch.
+        if did_change:
+            try:
+                subprocess.run(["fc-cache", "-f"], check=False,
+                               capture_output=True, timeout=60)
+            except Exception:
+                pass
     except Exception as exc:
         logger.debug(f"Could not register Linux shape font: {exc}")
 
@@ -212,27 +215,10 @@ def _apply_linux_corner_rendering(window):
             logger.debug("Linux: anti-aliased (font_shapes) widget corners enabled")
         else:
             _force_square_corners()
-            msg = ("CustomTkinter shapes font not loadable by this Tk build; "
-                   "using square widget corners (avoids blocky rendering).")
-            # Distinguish "font missing" from "this Tk has no Xft at all". A Tk
-            # built without Xft can't render ANY fontconfig font, so even a
-            # common font fails and it lists only the few X core fonts.
-            try:
-                import tkinter.font as tkfont
-                n_families = len(tkfont.families(window))
-                common = tkfont.Font(root=window, family="DejaVu Sans",
-                                     size=-12).actual("family")
-                if n_families < 60 or common == "fixed":
-                    msg += (f" This Tk has no Xft support (it lists only "
-                            f"{n_families} font families and cannot load common "
-                            f"fonts), so no anti-aliased fonts can render. Conda's "
-                            f"Tk on Linux is frequently built without Xft on both "
-                            f"the defaults and conda-forge channels, so square "
-                            f"corners are expected here. Rounded corners require a "
-                            f"Tk built with Xft, e.g. the system python3-tk.")
-            except Exception:
-                pass
-            logger.info(msg)
+            logger.info(
+                "Some fonts are not available in this Tk build; "
+                "using square corners and limited fonts."
+            )
     except Exception as exc:
         logger.debug(f"Could not configure Linux corner rendering: {exc}")
 
