@@ -223,12 +223,13 @@ def _apply_linux_corner_rendering(window):
                 common = tkfont.Font(root=window, family="DejaVu Sans",
                                      size=-12).actual("family")
                 if n_families < 60 or common == "fixed":
-                    msg += (f" This Tk has no Xft/fontconfig support (it lists "
-                            f"only {n_families} font families), so no "
-                            f"anti-aliased fonts can load — common on the "
-                            f"Anaconda 'defaults' Tk. For rounded corners, "
-                            f"install a Tk built with Xft: "
-                            f"`conda install -c conda-forge --override-channels tk`.")
+                    msg += (f" This Tk has no Xft support (it lists only "
+                            f"{n_families} font families and cannot load common "
+                            f"fonts), so no anti-aliased fonts can render. Conda's "
+                            f"Tk on Linux is frequently built without Xft on both "
+                            f"the defaults and conda-forge channels, so square "
+                            f"corners are expected here. Rounded corners require a "
+                            f"Tk built with Xft, e.g. the system python3-tk.")
             except Exception:
                 pass
             logger.info(msg)

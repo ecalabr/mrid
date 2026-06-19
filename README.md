@@ -543,22 +543,15 @@ The common cause is the **Anaconda `defaults`-channel Tk on Linux, which is buil
 python -c "import tkinter, tkinter.font as f; r=tkinter.Tk(); r.withdraw(); \
 print('families:', len(f.families(r)), '| DejaVu ->', f.Font(root=r, family='DejaVu Sans').actual('family'))"
 ```
-A healthy Xft Tk lists **hundreds** of families and resolves `DejaVu -> DejaVu Sans`. If you see only ~30 families and `DejaVu -> fixed`, your Tk has no Xft. (`conda list tk` will typically show it came from `defaults`, not `conda-forge`.)
+A healthy Xft Tk lists **hundreds** of families and resolves `DejaVu -> DejaVu Sans`. If you see only ~30 families and `DejaVu -> fixed`, your Tk has no Xft and cannot render *any* anti-aliased font.
 
-**Fix — install a Tk built with Xft from conda-forge** (a plain `conda install -c conda-forge tk` often keeps the already-installed defaults build, so force the channel):
+**Important:** conda's `tk` package on Linux is frequently built **without Xft on both the `defaults` and `conda-forge` channels** (Xft is compiled into `libtk` at build time, so switching channels or installing `libxft` afterward does not help). In that case anti-aliased rounded corners are not achievable in the conda environment. The only reliable way to get them is a Tk built with Xft — i.e. running MRID under the **system** Python with the system Tk:
 ```bash
-conda install -c conda-forge --override-channels tk
-conda deactivate && conda activate mrid     # restart the app afterward
+sudo apt-get install python3-tk fonts-dejavu      # Debian/Ubuntu
 ```
-If the solver objects, set conda-forge priority for the env first:
-```bash
-conda config --env --add channels conda-forge
-conda config --env --set channel_priority flexible
-conda install -c conda-forge --force-reinstall tk
-```
-Alternatively, use the system Tk (`sudo apt-get install python3-tk fonts-dejavu` on Debian/Ubuntu).
+(This requires MRID's dependencies to be available to the system Python, so it's only worth it if you specifically want the rounded look.)
 
-MRID detects an Xft-less Tk and falls back to clean **square** corners automatically (never blocky), and logs the exact `conda install` command to fix it.
+MRID detects an Xft-less Tk and falls back to clean **square** corners automatically — they are crisp and intentional (never blocky), so this is a perfectly good outcome and most users can simply leave it. The app logs the reason when this fallback is used.
 
 #### Getting help
 - Run `python tests.py` to verify the installation
