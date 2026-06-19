@@ -10,11 +10,12 @@ Pipeline
 4. UMAP — further non-linear reduction to preserve global cluster structure;
    uses n_neighbors=30 and min_dist=0.1 so global topology is kept intact
    (as opposed to min_dist=0.0 which optimises for tight micro-clusters).
-5. HDBSCAN clustering — min_cluster_size is derived directly from the
-   user-specified coverage_threshold:
-       min_cluster_size = max(2, ceil(coverage_threshold × n_unique_exams))
-   Noise points (label -1) are reassigned to the nearest cluster centroid
-   by Euclidean distance in UMAP space so that every thumbnail is labelled.
+5. HDBSCAN clustering — followed by a coverage gate that enforces the
+   user-specified coverage_threshold: a cluster is kept only if it appears in
+   at least ceil(coverage_threshold × n_unique_exams) *distinct exams*.
+   Clusters failing the gate, and HDBSCAN noise points, are reassigned to the
+   nearest surviving cluster centroid (Euclidean distance in UMAP space) so
+   every thumbnail is labelled.
 6. Return the 4 thumbnails per cluster closest to the cluster centroid
    (distances measured in PCA space).
 """
@@ -228,23 +229,29 @@ def _hdbscan_cluster(
     coverage_threshold: float,
 ) -> tuple:
     """
-    Cluster with HDBSCAN.  min_cluster_size = ceil(coverage_threshold × n_exams)
-    so that every returned cluster is present in at least *coverage_threshold*
-    fraction of exams.
+    Cluster with HDBSCAN, then enforce ANALYZE_COVERAGE_THRESHOLD as a coverage
+    gate: a cluster is kept only if it appears in at least
+    ``ceil(coverage_threshold × n_exams)`` *distinct exams*. This prevents small
+    series types — including ones where a single exam contributes many similar
+    series — from forming their own cluster.
 
-    Noise points (label -1) are reassigned to the nearest cluster centroid
-    in UMAP space so no thumbnail is left unlabelled.  Reassigned noise points
-    keep the 0.0 membership probability HDBSCAN gave them.
+    Clusters that fail the coverage gate, along with HDBSCAN noise points, are
+    reassigned to the nearest *surviving* cluster centroid in UMAP space (with
+    membership probability 0.0) so no thumbnail is left unlabelled.
 
     Returns (labels, probabilities, n_clusters).
     """
     import hdbscan as _hdbscan
 
     n_exams = len(set(exam_ids))
-    min_cluster_size = max(2, math.ceil(coverage_threshold * n_exams))
+    # A cluster covering K distinct exams necessarily has >= K points, so this
+    # min_cluster_size is a safe lower bound that never drops a cluster that
+    # would pass the coverage gate; the distinct-exam gate below is authoritative.
+    min_exams = max(1, math.ceil(coverage_threshold * n_exams))
+    min_cluster_size = max(2, min_exams)
     logger.info(
         f"HDBSCAN: coverage_threshold={coverage_threshold:.2f}, "
-        f"n_exams={n_exams}, min_cluster_size={min_cluster_size}"
+        f"n_exams={n_exams}, min_exams={min_exams}, min_cluster_size={min_cluster_size}"
     )
 
     clusterer = _hdbscan.HDBSCAN(
@@ -256,41 +263,68 @@ def _hdbscan_cluster(
     labels = clusterer.fit_predict(features_umap)
     probabilities = np.array(clusterer.probabilities_, dtype=np.float32)
 
-    unique_clusters = sorted(set(labels) - {-1})
-    n_clusters = len(unique_clusters)
+    return _apply_coverage_gate(labels, probabilities, features_umap, exam_ids, min_exams)
+
+
+def _apply_coverage_gate(labels, probabilities, features_umap, exam_ids, min_exams):
+    """
+    Enforce the distinct-exam coverage gate on raw HDBSCAN output.
+
+    Keeps only clusters present in >= ``min_exams`` distinct exams. Clusters
+    failing the gate, and HDBSCAN noise points (label -1), are reassigned to the
+    nearest surviving cluster centroid (Euclidean distance in UMAP space) with
+    membership probability 0.0. Returns (labels, probabilities, n_clusters).
+    """
+    labels = np.asarray(labels)
+    probabilities = np.array(probabilities, dtype=np.float32)
+    exam_arr = np.asarray(exam_ids)
+    n_exams = len(set(exam_ids))
+
+    valid_clusters = []
+    for c in sorted(set(labels.tolist()) - {-1}):
+        n_cov = len(set(exam_arr[labels == c]))
+        if n_cov >= min_exams:
+            valid_clusters.append(c)
+        else:
+            logger.info(
+                f"HDBSCAN: dropping cluster {c} — covers {n_cov}/{n_exams} exams "
+                f"(< required {min_exams})"
+            )
+
     noise_count = int(np.sum(labels == -1))
-    logger.info(f"HDBSCAN: {n_clusters} clusters, {noise_count} noise points")
+    logger.info(
+        f"HDBSCAN: {len(valid_clusters)} clusters meet coverage, "
+        f"{noise_count} noise points"
+    )
 
-    if n_clusters == 0:
-        # Entire dataset is noise — treat all as one cluster
-        logger.warning("HDBSCAN produced no clusters; assigning all to cluster 0")
-        labels = np.zeros(len(labels), dtype=int)
-        probabilities = np.zeros(len(labels), dtype=np.float32)
-        return labels, probabilities, 1
+    if not valid_clusters:
+        # No cluster meets the coverage threshold — treat all as one cluster
+        logger.warning("No cluster meets the coverage threshold; assigning all to cluster 0")
+        return (np.zeros(len(labels), dtype=int),
+                np.zeros(len(labels), dtype=np.float32), 1)
 
-    # Reassign noise points to the nearest cluster centroid (UMAP space)
-    if noise_count > 0:
-        # Remap cluster ids to 0…n_clusters-1
-        id_map = {old: new for new, old in enumerate(unique_clusters)}
-        remapped = np.array([id_map.get(l, -1) for l in labels], dtype=int)
+    # Remap surviving clusters to 0…n_clusters-1; everything else (noise +
+    # dropped clusters) becomes -1 and is reassigned below.
+    id_map = {old: new for new, old in enumerate(valid_clusters)}
+    remapped = np.array([id_map.get(l, -1) for l in labels], dtype=int)
+    n_clusters = len(valid_clusters)
 
+    unassigned_mask = remapped == -1
+    if unassigned_mask.any():
+        # Centroids from surviving-cluster members only
         centroids = np.array([
             features_umap[remapped == c].mean(axis=0)
             for c in range(n_clusters)
         ])
-        noise_mask = remapped == -1
-        noise_feats = features_umap[noise_mask]
+        feats = features_umap[unassigned_mask]
         dists = np.linalg.norm(
-            noise_feats[:, np.newaxis, :] - centroids[np.newaxis, :, :], axis=2
-        )  # (n_noise, n_clusters)
-        remapped[noise_mask] = np.argmin(dists, axis=1)
-        # Noise points keep probability 0.0 (already set by HDBSCAN)
-        labels = remapped
-    else:
-        id_map = {old: new for new, old in enumerate(unique_clusters)}
-        labels = np.array([id_map[l] for l in labels], dtype=int)
+            feats[:, np.newaxis, :] - centroids[np.newaxis, :, :], axis=2
+        )  # (n_unassigned, n_clusters)
+        remapped[unassigned_mask] = np.argmin(dists, axis=1)
+        # Reassigned points are not confident members of their new cluster.
+        probabilities[unassigned_mask] = 0.0
 
-    return labels, probabilities, n_clusters
+    return remapped, probabilities, n_clusters
 
 
 # ── Cluster representative name helpers ──────────────────────────────────────

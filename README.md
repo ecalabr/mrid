@@ -230,7 +230,7 @@ python tests.py
 6. *(Optional)* Click **Train Model(s)** (it activates after analysis) to train the header and/or image model from that CSV — no manual labels needed
 7. Switch to **Semi-Auto** or **Full-Auto**, load the models, and classify the dataset
 
-**Technical pipeline:** frozen ResNet50 features (2048-D) → L2 normalization → PCA (≥90% variance, capped at 150 dims) → UMAP → HDBSCAN with `min_cluster_size = ceil(ANALYZE_COVERAGE_THRESHOLD × n_exams)`. Suggested names are the medoid `SeriesDescription` (Levenshtein distance) among high-confidence members.
+**Technical pipeline:** frozen ResNet50 features (2048-D) → L2 normalization → PCA (≥90% variance, capped at 150 dims) → UMAP → HDBSCAN, followed by a coverage gate that keeps a cluster only if it appears in at least `ceil(ANALYZE_COVERAGE_THRESHOLD × n_exams)` **distinct exams** (clusters failing the gate and noise points are merged into the nearest surviving cluster). Suggested names are the medoid `SeriesDescription` (Levenshtein distance) among high-confidence members.
 
 **Notes:**
 - Requires `torch`, `torchvision`, `umap-learn`, and `hdbscan`
