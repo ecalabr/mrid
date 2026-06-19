@@ -535,7 +535,7 @@ Informational, not an error — files are being organized with symlinks (see [Au
 Install a GPU-enabled PyTorch build (see [PyTorch GPU Setup](#pytorch-gpu-setup)), or reduce `IMAGE_SIZE` / `NUM_EPOCHS`.
 
 #### Square corners / limited fonts on Linux
-Some conda Linux Tk builds ship without the font support needed for anti-aliased rounded corners. On those, MRID automatically uses clean **square** corners and the available system fonts — a normal, fully functional outcome (nothing to fix).
+Some conda Linux Tk builds ship without the font support needed for anti-aliased rounded corners. On those, MRID automatically uses clean **square** corners, picks a readable proportional system font instead of the default monospaced one, and substitutes plain-text labels for icon glyphs (e.g. `▶`) that those fonts can't render — a normal, fully functional outcome (nothing to fix).
 
 #### Getting help
 - Run `python tests.py` to verify the installation

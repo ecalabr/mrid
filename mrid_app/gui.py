@@ -197,7 +197,7 @@ class TrainClassifierGUI:
     def _on_cancel(self):
         """Called when the Cancel button is pressed."""
         self._cancelled = True
-        self.cancel_button.configure(state="disabled", text="Cancelling…")
+        self.cancel_button.configure(state="disabled", text=ui_theme.t("Cancelling…"))
         self.label.set("Cancelling – please wait…")
 
     def is_cancelled(self):
@@ -451,7 +451,7 @@ class MainApp:
         button_font = ctk.CTkFont(size=13, weight="bold")
         # Fixed width sized for the longest text ("▶ Start Classification") so
         # mode changes never resize the window
-        self.start_button = ctk.CTkButton(control_frame, text="▶ Start Classification", font=button_font,
+        self.start_button = ctk.CTkButton(control_frame, text=ui_theme.t("▶ Start Classification"), font=button_font,
                                           width=190, command=self.start_classification, state="normal")
         self.start_button.pack(side="left", padx=scale_value(5))
         self.stop_button = ctk.CTkButton(control_frame, text="Stop", width=70,
@@ -699,13 +699,13 @@ class MainApp:
         # Update start button
         if can_start:
             if mode_is_analyze:
-                self.start_button.configure(text="▶ Start Analysis", state="normal", fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER)
+                self.start_button.configure(text=ui_theme.t("▶ Start Analysis"), state="normal", fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER)
             elif mode_is_verify:
-                self.start_button.configure(text="▶ Start Verification", state="normal", fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER)
+                self.start_button.configure(text=ui_theme.t("▶ Start Verification"), state="normal", fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER)
             else:
-                self.start_button.configure(text="▶ Start Classification", state="normal", fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER)
+                self.start_button.configure(text=ui_theme.t("▶ Start Classification"), state="normal", fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER)
         else:
-            self.start_button.configure(text="▶ Start Classification", state="disabled", fg_color=ui_theme.DISABLED)
+            self.start_button.configure(text=ui_theme.t("▶ Start Classification"), state="disabled", fg_color=ui_theme.DISABLED)
 
         # Update load button
         _MIN_CASES = 10

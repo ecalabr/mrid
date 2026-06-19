@@ -49,6 +49,36 @@ MENU_ACTIVE_BG = "#1f6aa5"
 MENU_ACTIVE_FG = "#ffffff"
 MENU_DISABLED_FG = "#777777"
 
+# Set True when the Tk build can't load advanced fonts (no Xft) and falls back
+# to the limited X core fonts, which are monospaced and lack non-Latin-1 glyphs.
+_LIMITED_FONTS = False
+
+# ASCII stand-ins for UI glyphs the limited core fonts can't render. Used only
+# in limited-font mode so the normal glyphs still show on macOS/Windows/Xft Tk.
+_GLYPH_FALLBACKS = {
+    "▶ ": "", "▶": ">",   # play icon -> drop the icon+space (or '>')
+    "←": "<-", "→": "->",  # nav arrows
+    "✕": "X",              # close
+    "—": "-", "–": "-",    # dashes
+    "…": "...",            # ellipsis
+}
+
+
+def is_limited_fonts():
+    return _LIMITED_FONTS
+
+
+def t(text):
+    """Downgrade non-ASCII UI glyphs to ASCII when the Tk build can't render
+    them (limited-font fallback). Returns *text* unchanged otherwise, so the
+    nice glyphs are kept on platforms whose Tk renders them."""
+    if not _LIMITED_FONTS or not isinstance(text, str):
+        return text
+    for glyph, ascii_ in _GLYPH_FALLBACKS.items():
+        if glyph in text:
+            text = text.replace(glyph, ascii_)
+    return text
+
 
 def style_menu(menu):
     """Apply the dark theme to a classic tk.Menu (menubar or popup).
@@ -214,13 +244,33 @@ def _apply_linux_corner_rendering(window):
             DrawEngine.preferred_drawing_method = "font_shapes"
             logger.debug("Linux: anti-aliased (font_shapes) widget corners enabled")
         else:
+            global _LIMITED_FONTS
+            _LIMITED_FONTS = True
             _force_square_corners()
+            _use_proportional_fallback_font(window)
             logger.info(
                 "Some fonts are not available in this Tk build; "
                 "using square corners and limited fonts."
             )
     except Exception as exc:
         logger.debug(f"Could not configure Linux corner rendering: {exc}")
+
+
+def _use_proportional_fallback_font(window):
+    """Pick a proportional font this Tk can actually use, so the UI isn't stuck
+    with the monospaced X core 'fixed' font. Must run before widgets are built."""
+    try:
+        import tkinter.font as tkfont
+        available = {f.lower(): f for f in tkfont.families(window)}
+        # Prefer a proportional sans-serif; fall back through common X core names.
+        for candidate in ("helvetica", "nimbus sans", "luxi sans",
+                           "lucida", "times", "new century schoolbook"):
+            if candidate in available:
+                ctk.ThemeManager.theme["CTkFont"]["family"] = available[candidate]
+                logger.debug(f"Limited-font fallback UI font: {available[candidate]}")
+                return
+    except Exception:
+        pass
 
 
 def init_appearance():

@@ -110,7 +110,7 @@ class ConfigWizard:
 
         nav = ctk.CTkFrame(self.win, fg_color="transparent")
         nav.pack(fill="x", pady=scale_value(12), padx=scale_value(16))
-        self.back_btn = ctk.CTkButton(nav, text="← Back", width=100,
+        self.back_btn = ctk.CTkButton(nav, text=ui_theme.t("← Back"), width=100,
                                       fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
                                       command=self._on_back)
         self.back_btn.pack(side="left")
@@ -118,9 +118,9 @@ class ConfigWizard:
                                         fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
                                         command=self._on_cancel)
         self.cancel_btn.pack(side="left", padx=scale_value(8))
-        self.next_btn = ctk.CTkButton(nav, text="Next →", width=120, command=self._on_next)
+        self.next_btn = ctk.CTkButton(nav, text=ui_theme.t("Next →"), width=120, command=self._on_next)
         self.next_btn.pack(side="right")
-        self.advanced_btn = ctk.CTkButton(nav, text="Advanced Settings…", width=160,
+        self.advanced_btn = ctk.CTkButton(nav, text=ui_theme.t("Advanced Settings…"), width=160,
                                           fg_color=ui_theme.YELLOW, hover_color=ui_theme.YELLOW_HOVER,
                                           command=self._on_advanced)
         # advanced_btn is only packed on the last standard page
@@ -153,7 +153,7 @@ class ConfigWizard:
                                         fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER)
                 self.advanced_btn.pack(side="right", padx=scale_value(8))
             else:
-                self.next_btn.configure(text="Next →",
+                self.next_btn.configure(text=ui_theme.t("Next →"),
                                         fg_color=ctk.ThemeManager.theme["CTkButton"]["fg_color"],
                                         hover_color=ctk.ThemeManager.theme["CTkButton"]["hover_color"])
             self.back_btn.configure(state="normal" if index > 0 else "disabled")
@@ -305,7 +305,7 @@ class ConfigWizard:
                 pass
             row.destroy()
 
-        remove_btn = ctk.CTkButton(row, text="✕", width=30, fg_color=ui_theme.RED,
+        remove_btn = ctk.CTkButton(row, text=ui_theme.t("✕"), width=30, fg_color=ui_theme.RED,
                                    hover_color=ui_theme.RED_HOVER, command=remove)
         remove_btn.pack(side="left")
         if self.analyze_mode:
