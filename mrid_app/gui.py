@@ -2764,13 +2764,16 @@ class MainApp:
             prefer3d_var = tk.BooleanVar(value=False)
             include_var = tk.BooleanVar(value=True)
 
-            # Include checkbox – toggling dims/restores the row visually
-            def _make_toggle(rf, nv, p3v, iv, ne):
+            # Include checkbox – toggling dims/restores the row visually.
+            # cf (this row's control frame) is passed in explicitly so the
+            # closure operates on the correct row rather than capturing the
+            # loop's final ctrl_frame.
+            def _make_toggle(rf, cf, iv, ne):
                 def _toggle(*_):
                     included = iv.get()
                     state = "normal" if included else "disabled"
                     rf.set_title_color("#e0e0e0" if included else "#777777")
-                    for child in ctrl_frame.winfo_children():
+                    for child in cf.winfo_children():
                         if getattr(child, '_is_include_cb', False):
                             continue  # keep the Include checkbox itself enabled
                         try:
@@ -2799,7 +2802,7 @@ class MainApp:
             name_entry = ctk.CTkEntry(ctrl_frame, textvariable=name_var, width=170)
             name_entry.grid(row=1, column=1, sticky="w", padx=PAD, pady=2)
 
-            include_var.trace_add("write", _make_toggle(row_frame, name_var, prefer3d_var, include_var, name_entry))
+            include_var.trace_add("write", _make_toggle(row_frame, ctrl_frame, include_var, name_entry))
 
             prefer3d_cb = ctk.CTkCheckBox(
                 ctrl_frame,
