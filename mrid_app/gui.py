@@ -2695,8 +2695,22 @@ class MainApp:
         except Exception:
             pass
 
+        # Member count per cluster (number of series assigned to it)
+        member_counts = {}
+        try:
+            import numpy as _np
+            _labels = _np.asarray(analysis_result.get("labels"))
+            for c in range(k):
+                member_counts[c] = int(_np.sum(_labels == c))
+        except Exception:
+            pass
+
         for c in range(k):
-            row_frame = TitledFrame(scroll_frame, title="Name your series")
+            count = member_counts.get(c)
+            title = "Name your series"
+            if count is not None:
+                title += f"  ({count} member{'s' if count != 1 else ''})"
+            row_frame = TitledFrame(scroll_frame, title=title)
             row_frame.pack(fill="x", padx=PAD, pady=PAD)
             row_frames.append(row_frame)
 
