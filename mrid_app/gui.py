@@ -3995,8 +3995,12 @@ def _fit_window_to_screen(root, content_frame, button_frame, pad_x=0, pad_y=0):
         canvas = content_frame.master                 # content_frame → canvas
         content_h = content_frame.winfo_reqheight()
         btn_h = button_frame.winfo_reqheight()
+        btn_w = button_frame.winfo_reqwidth()
 
-        desired_w = content_w + scrollbar_w + 2 * pad_x
+        # Window must be wide enough for both the thumbnail grid and the bottom
+        # button row — otherwise an exam with only 1–2 series produces a window
+        # too narrow to show all the buttons (Stop/Skip/Approve).
+        desired_w = max(content_w + scrollbar_w, btn_w) + 2 * pad_x
 
         # Best-effort content-fit height: scrollable content + the outer canvas
         # padding + the button row and its grid padding.  Reconstructing this
