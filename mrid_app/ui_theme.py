@@ -63,7 +63,7 @@ _GLYPH_FALLBACKS = {
     "▶ ": "", "▶": ">",   # play icon -> drop the icon+space (or '>')
     "←": "<-", "→": "->",  # nav arrows
     "✕": "X",              # close
-    "—": "-", "–": "-",    # dashes
+    "—": "-", "–": "-", "−": "-",   # dashes / minus sign
     "…": "...",            # ellipsis
 }
 

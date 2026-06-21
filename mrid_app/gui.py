@@ -1663,7 +1663,29 @@ class MainApp:
             place_main_window(self.master)
         except Exception:
             pass
+        # CTk only sets the dropdown-arrow line width when the arrow is first
+        # created, so it renders wrong after a live scale change — recreate it.
+        self._refresh_dropdown_arrows()
         _save_ui_scale(ui_theme.get_user_scale())
+
+    def _refresh_dropdown_arrows(self):
+        """Force CTkOptionMenu/CTkComboBox dropdown arrows to be redrawn at the
+        current scale. Works around a CustomTkinter bug where the arrow's line
+        width (polygon_shapes) is fixed at creation and not updated on a live
+        scaling change — the arrow only renders correctly after a restart."""
+        def walk(widget):
+            for child in widget.winfo_children():
+                if isinstance(child, (ctk.CTkOptionMenu, ctk.CTkComboBox)):
+                    try:
+                        child._canvas.delete("dropdown_arrow")
+                        child._draw(no_color_updates=False)
+                    except Exception:
+                        pass
+                walk(child)
+        try:
+            walk(self.master)
+        except Exception:
+            pass
 
     def _open_ui_scale_dialog(self):
         """View > UI Scale: adjust the UI scale multiplier. Applies live and is
@@ -1693,10 +1715,18 @@ class MainApp:
         slider_row = ctk.CTkFrame(body, fg_color="transparent")
         slider_row.pack(fill="x")
         val_label = ctk.CTkLabel(slider_row, text=f"{initial:.2f}×", width=scale_value(56))
+        minus_btn = ctk.CTkButton(slider_row, text=ui_theme.t("−"), width=scale_value(30),
+                                  fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
+                                  command=lambda: _step(-0.05))
+        minus_btn.pack(side="left", padx=(0, scale_value(6)))
         slider = ctk.CTkSlider(slider_row, from_=lo, to=hi,
                                number_of_steps=int(round((hi - lo) / 0.05)),
-                               variable=var, width=scale_value(240))
-        slider.pack(side="left", padx=(0, scale_value(10)))
+                               variable=var, width=scale_value(200))
+        slider.pack(side="left")
+        plus_btn = ctk.CTkButton(slider_row, text=ui_theme.t("+"), width=scale_value(30),
+                                 fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
+                                 command=lambda: _step(0.05))
+        plus_btn.pack(side="left", padx=(scale_value(6), scale_value(10)))
         val_label.pack(side="left")
 
         entry_row = ctk.CTkFrame(body, fg_color="transparent")
@@ -1739,6 +1769,14 @@ class MainApp:
             self._apply_ui_scale(v)
             _sync_widgets(v)
         entry.bind("<Return>", _on_entry)
+
+        def _step(delta):
+            # Clickable −/+ arrows: snap to the nearest 0.05 grid and apply.
+            v = round((var.get() + delta) * 20) / 20
+            v = max(lo, min(v, hi))
+            var.set(v)
+            self._apply_ui_scale(v)
+            _sync_widgets(v)
 
         def _reset():
             var.set(1.0)
