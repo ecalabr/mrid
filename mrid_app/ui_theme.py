@@ -350,6 +350,20 @@ def set_user_scale(factor):
     return get_scale_factor()
 
 
+def exempt_window_from_scaling(window):
+    """Stop CustomTkinter from rescaling *window* (and its widgets) when the
+    global scale changes later. Used by the UI-scale dialog so it keeps a fixed
+    size while live-previewing scale changes on the rest of the app.
+
+    Only the live-update registry is touched (not the DPI table), so CTk's other
+    lookups keep working."""
+    try:
+        from customtkinter.windows.widgets.scaling.scaling_tracker import ScalingTracker
+        ScalingTracker.window_widgets_dict.pop(window, None)
+    except Exception:
+        logger.debug("Could not exempt window from CustomTkinter scaling")
+
+
 def scale_value(value):
     """Scale a raw pixel value (pad, offset, image size) by the screen factor.
 

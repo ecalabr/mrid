@@ -1750,11 +1750,14 @@ class MainApp:
         ctk.CTkButton(btn_row, text="Reset (1.0×)", width=scale_value(110),
                       fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
                       command=_reset).pack(side="left")
-        ctk.CTkButton(btn_row, text="Close", width=scale_value(100),
+        ctk.CTkButton(btn_row, text="Save", width=scale_value(100),
                       command=lambda: (_on_entry(), win.destroy())).pack(side="right")
 
         win.protocol("WM_DELETE_WINDOW", lambda: (_on_entry(), win.destroy()))
         win.update_idletasks()
+        # Exempt this dialog from the live rescaling it triggers, so its own size
+        # and button positions stay fixed while previewing changes on the app.
+        ui_theme.exempt_window_from_scaling(win)
         cascade(win, self.master)
         _safe_grab(win)
 
