@@ -3582,14 +3582,17 @@ def _series_desc_font():
 
 def _fit_window_to_screen(root, content_frame, button_frame, pad_x=0, pad_y=0):
     """
-    Resize *root* so it is as large as its scrollable content requires, but
-    never larger than the screen.  Also repositions the window so it stays
-    fully on-screen.
+    Size and place a study-review window so it fills the available screen space.
+
+    The window is cascaded a small gap below-right of the main window, then sized
+    to its content but capped to the space from that top gap down to a small
+    bottom margin — so tall content fills the full available vertical height
+    (the canvas scrolls for any overflow) and the bottom button row is always
+    visible.
 
     Because the content lives inside a Canvas (for scrolling), querying
-    root.winfo_reqwidth/height returns only the canvas minimum, not the
-    actual content size.  We therefore measure content_frame and button_frame
-    directly and reconstruct the desired window size from those values.
+    root.winfo_reqwidth/height returns only the canvas minimum, so we measure
+    content_frame and button_frame directly.
 
     Parameters
     ----------
@@ -3605,11 +3608,8 @@ def _fit_window_to_screen(root, content_frame, button_frame, pad_x=0, pad_y=0):
         screen_w = root.winfo_screenwidth()
         screen_h = root.winfo_screenheight()
 
-        # Content (thumbnail grid) required size
         content_w = content_frame.winfo_reqwidth()
         content_h = content_frame.winfo_reqheight()
-
-        # Button row required size
         btn_h = button_frame.winfo_reqheight()
 
         # Scrollbar width — read from the actual scrollbar widget if possible,
@@ -3626,24 +3626,32 @@ def _fit_window_to_screen(root, content_frame, button_frame, pad_x=0, pad_y=0):
         except Exception:
             pass
 
-        # Total desired window size:
-        #   width  = content width + scrollbar + horizontal padding on both sides
-        #   height = content height + button row + vertical padding on both sides
         desired_w = content_w + scrollbar_w + 2 * pad_x
         desired_h = content_h + btn_h + 2 * pad_y
 
-        win_w = min(desired_w, screen_w)
-        win_h = min(desired_h, screen_h)
-
-        # Try to keep the current top-left position; clamp so the window fits
+        # Cascade a small gap below-right of the main window (computed from the
+        # parent directly, not the window's own drifting coordinates).
+        gap = scale_value(ui_theme.CASCADE_STEP)
+        parent = getattr(root, "master", None)
         try:
-            cur_x = root.winfo_x()
-            cur_y = root.winfo_y()
+            if parent is not None and parent.winfo_exists():
+                x = parent.winfo_rootx() + gap
+                y = parent.winfo_rooty() + gap
+            else:
+                x, y = gap, gap
         except Exception:
-            cur_x, cur_y = 0, 0
+            x, y = gap, gap
+        x = max(0, x)
+        y = max(0, y)
 
-        x = max(0, min(cur_x, screen_w - win_w))
-        y = max(0, min(cur_y, screen_h - win_h))
+        # Fill the available vertical space from the top gap to a small bottom
+        # margin, so tall content uses the whole screen height (scrolling for
+        # any overflow) and never pushes the buttons off-screen.
+        bottom_margin = scale_value(48)
+        avail_h = max(scale_value(300), screen_h - y - bottom_margin)
+        avail_w = max(scale_value(400), screen_w - x - scale_value(20))
+        win_h = min(desired_h, avail_h)
+        win_w = min(desired_w, avail_w)
 
         # wm_geometry: sizes are measured real pixels, bypass CTk scaling
         root.wm_geometry(f"{win_w}x{win_h}+{x}+{y}")
