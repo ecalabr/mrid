@@ -3609,8 +3609,6 @@ def _fit_window_to_screen(root, content_frame, button_frame, pad_x=0, pad_y=0):
         screen_h = root.winfo_screenheight()
 
         content_w = content_frame.winfo_reqwidth()
-        content_h = content_frame.winfo_reqheight()
-        btn_h = button_frame.winfo_reqheight()
 
         # Scrollbar width — read from the actual scrollbar widget if possible,
         # otherwise fall back to a safe default
@@ -3627,7 +3625,6 @@ def _fit_window_to_screen(root, content_frame, button_frame, pad_x=0, pad_y=0):
             pass
 
         desired_w = content_w + scrollbar_w + 2 * pad_x
-        desired_h = content_h + btn_h + 2 * pad_y
 
         # Cascade a small gap below-right of the main window (computed from the
         # parent directly, not the window's own drifting coordinates).
@@ -3644,13 +3641,16 @@ def _fit_window_to_screen(root, content_frame, button_frame, pad_x=0, pad_y=0):
         x = max(0, x)
         y = max(0, y)
 
-        # Fill the available vertical space from the top gap to a small bottom
-        # margin, so tall content uses the whole screen height (scrolling for
-        # any overflow) and never pushes the buttons off-screen.
+        # Always fill the available vertical space from the top gap down to a
+        # small bottom margin. Sizing to measured content under-counted padding
+        # (button row, per-row chrome) — an error that grew with DPI and clipped
+        # the bottom dropdown row; filling the height shows every row (the
+        # canvas simply scrolls if content exceeds the height) and keeps the
+        # button row on-screen.
         bottom_margin = scale_value(48)
         avail_h = max(scale_value(300), screen_h - y - bottom_margin)
         avail_w = max(scale_value(400), screen_w - x - scale_value(20))
-        win_h = min(desired_h, avail_h)
+        win_h = avail_h
         win_w = min(desired_w, avail_w)
 
         # wm_geometry: sizes are measured real pixels, bypass CTk scaling
