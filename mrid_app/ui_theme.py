@@ -28,6 +28,12 @@ CASCADE_STEP = 48
 USER_SCALE_MIN = 0.5
 USER_SCALE_MAX = 2.5
 
+# Base font sizes (points; scaled by the UI factor). BASE_FONT_SIZE applies to
+# general CTk widgets (labels, entries, buttons, menubar); MENU_FONT_SIZE is the
+# slightly smaller size used for the per-series label dropdowns (button + popup).
+BASE_FONT_SIZE = 14
+MENU_FONT_SIZE = 12
+
 # ── Dark palette accents ──────────────────────────────────────────────────────
 # (base, hover) pairs for state-colored buttons
 GREEN = "#2e8b46"
@@ -87,12 +93,16 @@ def t(text):
     return text
 
 
-def style_menu(menu):
+def style_menu(menu, font_size=None):
     """Apply the dark theme to a classic tk.Menu (menubar or popup).
 
     Also scales the menu font by the screen-proportional factor: CustomTkinter's
     widget scaling does not touch native tk.Menu widgets, so without this the
-    menubar text stays small on HiDPI displays while the rest of the UI scales."""
+    menubar text stays small on HiDPI displays while the rest of the UI scales.
+
+    *font_size* overrides the base point size (defaults to the CTk widget font);
+    the per-series dropdown popups pass MENU_FONT_SIZE for a slightly smaller
+    list that matches their dropdown buttons."""
     try:
         menu.configure(
             bg=MENU_BG, fg=MENU_FG,
@@ -111,10 +121,10 @@ def style_menu(menu):
         scale = get_scale_factor()
         try:
             theme_font = ctk.ThemeManager.theme["CTkFont"]
-            base_size = theme_font.get("size", 13) or 13
+            base_size = font_size if font_size is not None else (theme_font.get("size", BASE_FONT_SIZE) or BASE_FONT_SIZE)
             family = theme_font.get("family")
         except Exception:
-            base_size, family = 13, None
+            base_size, family = (font_size if font_size is not None else BASE_FONT_SIZE), None
         sign = -1 if base_size < 0 else 1
         scaled = sign * max(8, int(round(abs(base_size) * scale)))
         menu.configure(font=(family, scaled))
@@ -295,6 +305,13 @@ def init_appearance():
     """Apply the global dark theme. Call once before creating any window."""
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("dark-blue")
+    # Nudge the default widget font up a touch so the main UI (paths, buttons,
+    # labels) reads comfortably; per-series dropdowns use the smaller
+    # MENU_FONT_SIZE explicitly.
+    try:
+        ctk.ThemeManager.theme["CTkFont"]["size"] = BASE_FONT_SIZE
+    except Exception:
+        pass
     _register_linux_shape_font()
 
 

@@ -494,7 +494,7 @@ class MainApp:
                                              command=_convert_button_toggle)
         self._convert_button.pack(side="left")
 
-        button_font = ctk.CTkFont(size=13, weight="bold")
+        button_font = ctk.CTkFont(size=ui_theme.BASE_FONT_SIZE, weight="bold")
         # Fixed width sized for the longest text ("▶ Start Classification") so
         # mode changes never resize the window
         self.start_button = ctk.CTkButton(control_frame, text=ui_theme.t("▶ Start Classification"), font=button_font,
@@ -4600,9 +4600,10 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 self.mode = mode
                 self.btn = ctk.CTkButton(parent, text=self.var.get(), width=170,
                                          fg_color=default_bg, hover_color=ui_theme.NEUTRAL_HOVER,
-                                         text_color=default_fg)
+                                         text_color=default_fg,
+                                         font=ctk.CTkFont(size=ui_theme.MENU_FONT_SIZE))
                 self.menu = tk.Menu(parent, tearoff=0)
-                ui_theme.style_menu(self.menu)
+                ui_theme.style_menu(self.menu, font_size=ui_theme.MENU_FONT_SIZE)
 
                 for opt in self.options:
                     def _mk(v=opt):
