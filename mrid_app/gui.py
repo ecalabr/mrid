@@ -907,7 +907,7 @@ class MainApp:
             daemon=True
         )
         training_thread.start()
-        self.master.after(100, self._poll_training_status, training_thread, training_gui)
+        self.master.after(100, self._poll_training_status, training_thread, training_gui, "rf")
 
     def train_classifier_cnn(self, preloaded_csv=None):
         if self.is_running: return
@@ -941,7 +941,7 @@ class MainApp:
             daemon=True
         )
         training_thread.start()
-        self.master.after(100, self._poll_training_status, training_thread, training_gui)
+        self.master.after(100, self._poll_training_status, training_thread, training_gui, "cnn")
 
     def _train_cnn_background(self, output_dir, training_gui, preloaded_df=None):
         # Delegate the full image-model training flow to the cnn module's TrainImageClassifierLogic
@@ -955,9 +955,9 @@ class MainApp:
             except Exception:
                 pass
 
-    def _poll_training_status(self, thread, training_gui=None):
+    def _poll_training_status(self, thread, training_gui=None, trained=None):
         if thread.is_alive():
-            self.master.after(100, self._poll_training_status, thread, training_gui)
+            self.master.after(100, self._poll_training_status, thread, training_gui, trained)
         else:
             # Training completed (or was cancelled)
             self.start_button.configure(state="normal")
@@ -968,21 +968,27 @@ class MainApp:
                 self._check_model_status()
                 return
 
-            # Automatically load the freshly trained model(s)
-            model_type = self.model_type.get()
-            rf_needed = model_type in ["DICOM Header Model", "Header + Image Model"]
-            cnn_needed = model_type in ["Image-Based Model", "Header + Image Model"]
-
             output_dir = self.output_dir.get()
             model_files_dir = os.path.join(output_dir, "model_files")
             rf_model_path = os.path.join(model_files_dir, "rf_classifier_model.joblib")
             cnn_model_path = os.path.join(model_files_dir, "cnn_classifier_model.pth")
 
-            if rf_needed and os.path.exists(rf_model_path):
-                self._load_classifier_and_encoder()
-
-            if cnn_needed and os.path.exists(cnn_model_path):
-                self._load_image_classifier()
+            # Auto-load ONLY the model that just finished training. When both the
+            # header and image models are trained together each has its own
+            # poller, so loading by overall model type would double-load both.
+            if trained == "rf":
+                if os.path.exists(rf_model_path):
+                    self._load_classifier_and_encoder()
+            elif trained == "cnn":
+                if os.path.exists(cnn_model_path):
+                    self._load_image_classifier()
+            else:
+                # Fallback (no model specified): load whatever the type needs.
+                model_type = self.model_type.get()
+                if model_type in ["DICOM Header Model", "Header + Image Model"] and os.path.exists(rf_model_path):
+                    self._load_classifier_and_encoder()
+                if model_type in ["Image-Based Model", "Header + Image Model"] and os.path.exists(cnn_model_path):
+                    self._load_image_classifier()
 
             self._check_model_status()
 
@@ -2223,9 +2229,19 @@ class MainApp:
     def _reload_config(self, parent_dialog=None):
         """Reload the currently active config to apply any changes."""
         try:
-            if self.active_config_path and os.path.exists(self.active_config_path):
-                # Reload custom config file
+            # Prefer the study-specific config in the output directory, then any
+            # active custom config, then the repository default.
+            output_dir = self.output_dir.get()
+            output_config = os.path.join(output_dir, "config.py") if output_dir else None
+            if output_config and os.path.exists(output_config):
+                config_path = output_config
+            elif self.active_config_path and os.path.exists(self.active_config_path):
                 config_path = self.active_config_path
+            else:
+                config_path = None
+
+            if config_path:
+                # Load study/custom config file (also sets active_config_path)
                 if not self._load_config_from_file(config_path):
                     messagebox.showerror(
                         "Error",
@@ -2233,7 +2249,7 @@ class MainApp:
                         parent=parent_dialog if parent_dialog else self.master
                     )
                     return
-                logger.info(f"Reloaded custom config from {config_path}")
+                logger.info(f"Reloaded config from {config_path}")
             else:
                 # Reload repository config module
                 importlib.reload(config)
