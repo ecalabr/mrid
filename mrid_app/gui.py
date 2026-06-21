@@ -1254,15 +1254,20 @@ class MainApp:
                 else:
                     study_done_event = threading.Event()
 
-                    # Call the per-study GUI (defined below in this module)
-                    classify_study_gui(
-                        series_dict, mrn, study_uid, output_dir, self.stop_requested,
-                        study_done_event, mode,
-                        model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model, cnn_target_encoder,
-                        self.rf_field_types,
-                        convert=self.convert_to_nifti.get(),
-                        accn=accn
-                    )
+                    # Build the per-study GUI on the main thread (Tkinter is not
+                    # thread-safe); this worker runs in a background thread.
+                    def _show_classify(series_dict=series_dict, mrn=mrn,
+                                       study_uid=study_uid, accn=accn):
+                        classify_study_gui(
+                            series_dict, mrn, study_uid, output_dir, self.stop_requested,
+                            study_done_event, mode,
+                            model_type, rf_model, rf_target_encoder, rf_feature_encoder,
+                            cnn_model, cnn_target_encoder,
+                            self.rf_field_types,
+                            convert=self.convert_to_nifti.get(),
+                            accn=accn
+                        )
+                    self.master.after(0, _show_classify)
 
                     while not study_done_event.is_set():
                         time.sleep(0.1)
@@ -3530,6 +3535,39 @@ def _derive_thumbnail_path_from_dicom(dicom_path, output_dir):
         return None
 
 
+def _safe_grab(win):
+    """Make *win* modal once it is actually viewable.
+
+    Calling grab_set() before the window is mapped raises
+    'grab failed: window not viewable' (notably with CustomTkinter's deferred
+    deiconify on Linux). Wait for visibility first, and retry on the event loop
+    if needed."""
+    def _grab(attempt=0):
+        try:
+            if win.winfo_viewable():
+                win.grab_set()
+                return
+        except Exception:
+            return
+        if attempt < 50:
+            win.after(20, lambda: _grab(attempt + 1))
+    try:
+        win.update_idletasks()
+    except Exception:
+        pass
+    _grab()
+
+
+def _series_desc_font():
+    """A scaled font for series-description labels (plain tk.Labels aren't
+    scaled by CustomTkinter, so they look tiny on HiDPI without this)."""
+    try:
+        family = ctk.ThemeManager.theme["CTkFont"]["family"]
+    except Exception:
+        family = None
+    return (family, max(9, scale_value(12)))
+
+
 def _fit_window_to_screen(root, content_frame, button_frame, pad_x=0, pad_y=0):
     """
     Resize *root* so it is as large as its scrollable content requires, but
@@ -3689,7 +3727,7 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
     batch_end = batch_start + len(batch_df)
     root.title(f"Verify {target_series} - Showing {batch_start+1}-{batch_end} of {total_series}")
     root.protocol("WM_DELETE_WINDOW", lambda: None)
-    root.grab_set()
+    # grab_set is deferred to _safe_grab (after the window is sized and viewable)
 
     # Cap window height to screen height so the bottom buttons are always reachable
     screen_h = root.winfo_screenheight()
@@ -3740,7 +3778,7 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         attach_series_scrolling(panel, series_path, thumb_px)
 
         tk.Label(series_frame, text=series_desc, wraplength=scale_thumbnail(250), justify="center",
-                 bg=ui_theme.PANEL_BG, fg="#e0e0e0").grid(
+                 bg=ui_theme.PANEL_BG, fg="#e0e0e0", font=_series_desc_font()).grid(
             row=1, column=0, pady=scale_value(5))
 
         # Toggle button for Correct/Incorrect
@@ -3918,6 +3956,7 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
 
     _fit_window_to_screen(root, content_frame, button_frame,
                           pad_x=scale_value(20), pad_y=scale_value(20))
+    _safe_grab(root)
 
 
 def load_image_worker(dicom_paths, panel_label_ref, root):
@@ -3980,7 +4019,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     cascade(root, root.master)
 
     root.protocol("WM_DELETE_WINDOW", lambda: None)
-    root.grab_set()
+    # grab_set is deferred to _safe_grab (after the window is sized and viewable)
 
     # Cap window height to screen height so the bottom buttons are always reachable
     screen_h = root.winfo_screenheight()
@@ -4050,7 +4089,8 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         panel.image = tk_placeholder
         panel.grid(row=0, column=0, pady=(0, scale_value(5)))
         tk.Label(series_frame, text=series_desc, wraplength=scale_thumbnail(250), justify="center",
-                 bg=ui_theme.PANEL_BG, fg="#e0e0e0").grid(row=1, column=0, pady=scale_value(5))
+                 bg=ui_theme.PANEL_BG, fg="#e0e0e0", font=_series_desc_font()).grid(
+            row=1, column=0, pady=scale_value(5))
 
         # Extract DICOM and thumbnail paths from hierarchy entry
         first_entry = dicom_paths[0]
@@ -4431,3 +4471,4 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
 
     _fit_window_to_screen(root, content_frame, button_frame,
                           pad_x=scale_value(20), pad_y=scale_value(20))
+    _safe_grab(root)
