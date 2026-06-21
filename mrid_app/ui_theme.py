@@ -102,19 +102,22 @@ def style_menu(menu):
         )
     except Exception:
         pass
-    # Scale the menu font to match the rest of the UI on HiDPI displays.
+    # Size the menu font to match the CustomTkinter widget font so native
+    # tk.Menu widgets (which CTk does not scale) are the same size as the rest of
+    # the UI. Basing it on the CTk widget font — rather than the default menu
+    # font — matters on Linux/HiDPI, where the default menu font is smaller than
+    # the CTk widget font, leaving popup menus too small relative to the UI.
     try:
         scale = get_scale_factor()
-        if abs(scale - 1.0) > 0.01:
-            import tkinter.font as tkfont
-            base_font = tkfont.nametofont("TkMenuFont")
-            base_size = base_font.cget("size") or 9
-            family = base_font.cget("family")
-            # Tk font sizes: positive = points, negative = pixels. Preserve the
-            # unit (sign) and scale the magnitude.
-            sign = -1 if base_size < 0 else 1
-            scaled = sign * max(8, int(round(abs(base_size) * scale)))
-            menu.configure(font=(family, scaled))
+        try:
+            theme_font = ctk.ThemeManager.theme["CTkFont"]
+            base_size = theme_font.get("size", 13) or 13
+            family = theme_font.get("family")
+        except Exception:
+            base_size, family = 13, None
+        sign = -1 if base_size < 0 else 1
+        scaled = sign * max(8, int(round(abs(base_size) * scale)))
+        menu.configure(font=(family, scaled))
     except Exception:
         pass
 
