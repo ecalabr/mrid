@@ -243,10 +243,10 @@ python tests.py
 - "Other" is always appended to `TARGET_SERIES` as the catch-all label for not target series
 
 #### Manual Mode
-Review and annotate every series manually. Each study opens in a window of thumbnails with a label dropdown per series; click **Approve (d)** to save or **Skip (s)** to move on to the next exam.
+Review and annotate every series manually. Each study opens in a window of thumbnails with a label dropdown per series; click **Approve (d)** to save or **Skip (s)** to move on to the next exam. **Tip:** double-click a series' label dropdown to quickly reset it to **Other** (a fast way to clear an incorrect label).
 
 #### Semi-Auto Mode
-Models pre-select the best series per target label (respecting `OVERRIDE_THRESHOLD` and `PREFER_3D`, see config parameters below); you review and adjust before saving. Predicted probabilities are logged, and selections are color-coded.
+Models pre-select the best series per target label (respecting `OVERRIDE_THRESHOLD` and `PREFER_3D`, see config parameters below); you review and adjust before saving. Predicted probabilities are logged, and selections are color-coded. **Tip:** double-click a series' label dropdown to quickly reset it to **Other**.
 
 #### Full-Auto Mode
 Classifies and saves every study without review. Best for large datasets with consistent protocols and well-validated models.
@@ -254,7 +254,7 @@ Classifies and saves every study without review. Best for large datasets with co
 #### Verify Mode
 Quality control for already-classified studies. Thumbnails are shown in batches grouped by label; toggle any wrong ones to **Incorrect** and approve. At the end you can delete the output folders of incorrect studies for re-classification. Works without models.
 
-**Keyboard shortcuts** (classification and verification windows): `a` = Stop All, `s` = Skip, `d` = Approve.
+**Keyboard shortcuts** (classification and verification windows): `a` = Stop All, `s` = Skip, `d` = Approve. In Manual/Semi-Auto, **double-click a label dropdown** to reset it to **Other**.
 
 ### Model Types
 

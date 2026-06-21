@@ -4635,7 +4635,10 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                             except Exception:
                                 pass
 
-                def _on_click(event=None, menu=self.menu, btn=self.btn):
+                self._open_after_id = None
+
+                def _open_menu(menu=self.menu, btn=self.btn):
+                    self._open_after_id = None
                     try:
                         menu.tk_popup(btn.winfo_rootx(), btn.winfo_rooty() + btn.winfo_height())
                     except Exception:
@@ -4644,7 +4647,41 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                         except Exception:
                             pass
 
-                self.btn.configure(command=_on_click)
+                def _on_press(event=None):
+                    # Defer opening the menu briefly so a double-click (which
+                    # resets the label to 'Other') can cancel it. The menu's
+                    # popup grabs input, so the second click of a double-click
+                    # would otherwise never reach this button.
+                    if self._open_after_id is not None:
+                        try:
+                            self.btn.after_cancel(self._open_after_id)
+                        except Exception:
+                            pass
+                    self._open_after_id = self.btn.after(250, _open_menu)
+
+                def _on_double(event=None):
+                    # Double-click is a shortcut to clear an incorrect label.
+                    if self._open_after_id is not None:
+                        try:
+                            self.btn.after_cancel(self._open_after_id)
+                        except Exception:
+                            pass
+                        self._open_after_id = None
+                    try:
+                        self.var.set('Other')
+                    except Exception:
+                        pass
+                    self._update_display('Other')
+                    return "break"
+
+                # Single click opens the menu (deferred); double click resets to
+                # 'Other'. Bind presses rather than using `command` so the second
+                # click of a double-click is recognized as <Double-Button-1>.
+                try:
+                    self.btn.bind("<Button-1>", _on_press, add="+")
+                    self.btn.bind("<Double-Button-1>", _on_double, add="+")
+                except Exception:
+                    self.btn.configure(command=_open_menu)
 
                 try:
                     if hasattr(self.var, 'trace_add'):
