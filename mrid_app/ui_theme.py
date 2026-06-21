@@ -22,6 +22,10 @@ BASE_SCREEN_H = 1080
 # Pixel offset between a child window and its parent in the cascade
 CASCADE_STEP = 48
 
+# Bounds for the user-adjustable UI scale multiplier (View > UI Scale)
+USER_SCALE_MIN = 0.5
+USER_SCALE_MAX = 2.5
+
 # ── Dark palette accents ──────────────────────────────────────────────────────
 # (base, hover) pairs for state-colored buttons
 GREEN = "#2e8b46"
@@ -111,7 +115,8 @@ def style_menu(menu):
     except Exception:
         pass
 
-_SCALE_FACTOR = None
+_SCALE_FACTOR = None      # screen-derived base scale (set once)
+_USER_SCALE = 1.0         # user-configurable multiplier (View > UI Scale)
 
 
 SHAPE_FONT_NAME = "CustomTkinter_shapes_font"
@@ -289,34 +294,60 @@ def init_appearance():
 
 def init_scaling(window):
     """
-    Compute the screen-proportional scale factor from the screen size and
-    apply it to all CustomTkinter widgets, fonts, and window geometry.
-    Call once on the root window.
+    Compute the screen-proportional base scale factor from the screen size and
+    apply the effective scale (base x user multiplier) to all CustomTkinter
+    widgets, fonts, and window geometry. Call once on the root window.
     """
     global _SCALE_FACTOR
     # Choose the corner draw method now that a Tk window exists (before any
     # widget is built) so it can check whether the shapes font is loadable.
     _apply_linux_corner_rendering(window)
-    if _SCALE_FACTOR is not None:
-        return _SCALE_FACTOR
+    if _SCALE_FACTOR is None:
+        try:
+            screen_w = window.winfo_screenwidth()
+            screen_h = window.winfo_screenheight()
+            scale = min(screen_w / BASE_SCREEN_W, screen_h / BASE_SCREEN_H)
+            scale = max(0.6, min(scale, 3.0))
+        except Exception:
+            scale = 1.0
+        _SCALE_FACTOR = scale
+    _apply_ctk_scaling()
+    return get_scale_factor()
+
+
+def _apply_ctk_scaling():
+    """Push the current effective scale into CustomTkinter. Calling this at
+    runtime rescales all existing CTk widgets and windows live."""
     try:
-        screen_w = window.winfo_screenwidth()
-        screen_h = window.winfo_screenheight()
-        scale = min(screen_w / BASE_SCREEN_W, screen_h / BASE_SCREEN_H)
-        scale = max(0.6, min(scale, 3.0))
-    except Exception:
-        scale = 1.0
-    _SCALE_FACTOR = scale
-    try:
-        ctk.set_widget_scaling(scale)
-        ctk.set_window_scaling(scale)
+        eff = get_scale_factor()
+        ctk.set_widget_scaling(eff)
+        ctk.set_window_scaling(eff)
     except Exception:
         logger.debug("Could not apply CustomTkinter scaling")
-    return scale
 
 
 def get_scale_factor():
-    return _SCALE_FACTOR if _SCALE_FACTOR is not None else 1.0
+    """Effective UI scale = screen-derived base x user multiplier (clamped)."""
+    base = _SCALE_FACTOR if _SCALE_FACTOR is not None else 1.0
+    return max(0.4, min(base * _USER_SCALE, 4.0))
+
+
+def get_user_scale():
+    """The user-configurable scale multiplier (1.0 = screen default)."""
+    return _USER_SCALE
+
+
+def set_user_scale(factor):
+    """Set the user scale multiplier, apply it live to all CTk widgets, and
+    return the resulting effective scale factor."""
+    global _USER_SCALE
+    try:
+        factor = float(factor)
+    except (TypeError, ValueError):
+        factor = 1.0
+    _USER_SCALE = max(USER_SCALE_MIN, min(factor, USER_SCALE_MAX))
+    _apply_ctk_scaling()
+    return get_scale_factor()
 
 
 def scale_value(value):

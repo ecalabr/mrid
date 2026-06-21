@@ -110,6 +110,35 @@ def _save_last_dirs(input_dir: str, output_dir: str):
         logger.debug(f"Could not save last-used directories to {_PREFS_FILE}: {exc}")
 
 
+def _load_ui_scale():
+    """Return the saved user UI-scale multiplier (1.0 if unset/invalid)."""
+    try:
+        if os.path.isfile(_PREFS_FILE):
+            with open(_PREFS_FILE, "r") as fh:
+                prefs = json.load(fh)
+            return float(prefs.get("ui_scale", 1.0))
+    except Exception:
+        pass
+    return 1.0
+
+
+def _save_ui_scale(scale: float):
+    """Persist the user UI-scale multiplier to the prefs file."""
+    try:
+        prefs = {}
+        if os.path.isfile(_PREFS_FILE):
+            try:
+                with open(_PREFS_FILE, "r") as fh:
+                    prefs = json.load(fh)
+            except Exception:
+                prefs = {}
+        prefs["ui_scale"] = round(float(scale), 3)
+        with open(_PREFS_FILE, "w") as fh:
+            json.dump(prefs, fh, indent=2)
+    except Exception as exc:
+        logger.debug(f"Could not save ui_scale to {_PREFS_FILE}: {exc}")
+
+
 class _ToolTip:
     """Simple hover tooltip for a tkinter widget."""
 
@@ -353,6 +382,9 @@ class MainApp:
     def __init__(self, master):
         self.master = master
         master.title("MRID — DICOM Classification Tool")
+        # Apply the saved user UI-scale before any widgets are built so they are
+        # all created at the chosen scale.
+        ui_theme.set_user_scale(_load_ui_scale())
         _default_input, _default_output = _load_last_dirs()
         self.input_dir = tk.StringVar(value=_default_input)
         self.output_dir = tk.StringVar(value=_default_output)
@@ -393,6 +425,16 @@ class MainApp:
         config_menu.add_command(label="Edit Config File", command=self._edit_config_file)
         config_menu.add_command(label="Reload Config File", command=self._reload_config_menu)
         config_menu.add_command(label="Add Missing Parameters", command=self._add_missing_params_menu)
+
+        view_menu = tk.Menu(menubar, tearoff=0)
+        ui_theme.style_menu(view_menu)
+        menubar.add_cascade(label="View", menu=view_menu)
+        view_menu.add_command(label="UI Scale", command=self._open_ui_scale_dialog)
+
+        # Menus carry plain-tk fonts that CustomTkinter does not auto-scale, so
+        # keep references to restyle them when the UI scale changes at runtime.
+        self._scalable_menus = [menubar, other_menu, config_menu, view_menu]
+        self._ui_scale_after_id = None
 
         # UI layout
         dir_frame = TitledFrame(master, title="Directories")
@@ -1606,6 +1648,115 @@ class MainApp:
 
         thread = threading.Thread(target=export_worker, daemon=True)
         thread.start()
+
+    def _apply_ui_scale(self, factor):
+        """Apply a user UI-scale multiplier live across the app and persist it."""
+        ui_theme.set_user_scale(factor)
+        # Plain-tk menu fonts don't auto-scale with CustomTkinter — restyle them.
+        for menu in getattr(self, "_scalable_menus", []):
+            try:
+                ui_theme.style_menu(menu)
+            except Exception:
+                pass
+        # Resize the main window to fit its rescaled content.
+        try:
+            place_main_window(self.master)
+        except Exception:
+            pass
+        _save_ui_scale(ui_theme.get_user_scale())
+
+    def _open_ui_scale_dialog(self):
+        """View > UI Scale: adjust the UI scale multiplier. Applies live and is
+        saved to .mrid_prefs.json for the next launch."""
+        win = ctk.CTkToplevel(self.master)
+        win.title("UI Scale")
+        win.resizable(False, False)
+        try:
+            win.transient(self.master)
+        except Exception:
+            pass
+
+        body = ctk.CTkFrame(win, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=scale_value(20), pady=scale_value(16))
+
+        ctk.CTkLabel(body, text="UI Scale Factor",
+                     font=ctk.CTkFont(size=14, weight="bold"),
+                     anchor="w", justify="left").pack(fill="x", pady=(0, scale_value(4)))
+        ctk.CTkLabel(body, text="Adjust the overall size of text and controls.\n"
+                                "Changes apply immediately and are saved for next launch.",
+                     anchor="w", justify="left").pack(fill="x", pady=(0, scale_value(14)))
+
+        lo, hi = ui_theme.USER_SCALE_MIN, ui_theme.USER_SCALE_MAX
+        initial = max(lo, min(ui_theme.get_user_scale(), hi))
+        var = tk.DoubleVar(value=initial)
+
+        slider_row = ctk.CTkFrame(body, fg_color="transparent")
+        slider_row.pack(fill="x")
+        val_label = ctk.CTkLabel(slider_row, text=f"{initial:.2f}×", width=scale_value(56))
+        slider = ctk.CTkSlider(slider_row, from_=lo, to=hi,
+                               number_of_steps=int(round((hi - lo) / 0.05)),
+                               variable=var, width=scale_value(240))
+        slider.pack(side="left", padx=(0, scale_value(10)))
+        val_label.pack(side="left")
+
+        entry_row = ctk.CTkFrame(body, fg_color="transparent")
+        entry_row.pack(fill="x", pady=(scale_value(12), 0))
+        ctk.CTkLabel(entry_row, text="Exact value:").pack(side="left", padx=(0, scale_value(8)))
+        entry = ctk.CTkEntry(entry_row, width=scale_value(80))
+        entry.insert(0, f"{initial:.2f}")
+        entry.pack(side="left")
+
+        def _sync_widgets(v):
+            val_label.configure(text=f"{v:.2f}×")
+            try:
+                if abs(float(entry.get()) - v) > 1e-6:
+                    entry.delete(0, "end")
+                    entry.insert(0, f"{v:.2f}")
+            except Exception:
+                entry.delete(0, "end")
+                entry.insert(0, f"{v:.2f}")
+
+        def _on_slider(_=None):
+            # Debounce live application so dragging the slider isn't choppy.
+            v = max(lo, min(var.get(), hi))
+            val_label.configure(text=f"{v:.2f}×")
+            if self._ui_scale_after_id is not None:
+                try:
+                    win.after_cancel(self._ui_scale_after_id)
+                except Exception:
+                    pass
+            self._ui_scale_after_id = win.after(
+                120, lambda: (self._apply_ui_scale(v), _sync_widgets(v)))
+        slider.configure(command=_on_slider)
+
+        def _on_entry(_=None):
+            try:
+                v = float(entry.get())
+            except (TypeError, ValueError):
+                return
+            v = max(lo, min(v, hi))
+            var.set(v)
+            self._apply_ui_scale(v)
+            _sync_widgets(v)
+        entry.bind("<Return>", _on_entry)
+
+        def _reset():
+            var.set(1.0)
+            self._apply_ui_scale(1.0)
+            _sync_widgets(1.0)
+
+        btn_row = ctk.CTkFrame(body, fg_color="transparent")
+        btn_row.pack(fill="x", pady=(scale_value(18), 0))
+        ctk.CTkButton(btn_row, text="Reset (1.0×)", width=scale_value(110),
+                      fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
+                      command=_reset).pack(side="left")
+        ctk.CTkButton(btn_row, text="Close", width=scale_value(100),
+                      command=lambda: (_on_entry(), win.destroy())).pack(side="right")
+
+        win.protocol("WM_DELETE_WINDOW", lambda: (_on_entry(), win.destroy()))
+        win.update_idletasks()
+        cascade(win, self.master)
+        _safe_grab(win)
 
     def _erase_data_utility(self):
         """Utility to erase selected data from output directory."""
