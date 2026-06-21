@@ -435,7 +435,6 @@ class MainApp:
         # keep references to restyle them when the UI scale changes at runtime.
         self._scalable_menus = [menubar, other_menu, config_menu, view_menu]
         self._ui_scale_after_id = None
-        self._ui_settle_after_id = None
 
         # UI layout
         dir_frame = TitledFrame(master, title="Directories")
@@ -1664,37 +1663,7 @@ class MainApp:
             place_main_window(self.master)
         except Exception:
             pass
-        # CTkOptionMenu's incremental redraw on a scaling change mis-draws the
-        # dropdown arrow (wrong size / covered by the button rectangle) — a fresh
-        # build is always correct, so force a clean redraw now and again after
-        # CTk's deferred (~1s) geometry pass, which can otherwise re-break it.
-        self._redraw_optionmenus()
-        if self._ui_settle_after_id is not None:
-            try:
-                self.master.after_cancel(self._ui_settle_after_id)
-            except Exception:
-                pass
-        self._ui_settle_after_id = self.master.after(1150, self._redraw_optionmenus)
         _save_ui_scale(ui_theme.get_user_scale())
-
-    def _redraw_optionmenus(self):
-        """Force every CTkOptionMenu/CTkComboBox to redraw from a clean canvas so
-        it matches a fresh build (which always renders the dropdown arrow
-        correctly). CTk's incremental redraw on a live scaling change otherwise
-        leaves the arrow the wrong size or stacked under the button rectangle."""
-        def walk(widget):
-            for child in widget.winfo_children():
-                if isinstance(child, (ctk.CTkOptionMenu, ctk.CTkComboBox)):
-                    try:
-                        child._canvas.delete("all")
-                        child._draw(no_color_updates=False)
-                    except Exception:
-                        pass
-                walk(child)
-        try:
-            walk(self.master)
-        except Exception:
-            pass
 
     def _open_ui_scale_dialog(self):
         """View > UI Scale: adjust the UI scale multiplier. Applies live and is
