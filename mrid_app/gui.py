@@ -1289,6 +1289,28 @@ class MainApp:
             logger.error(f"Failed to write STUDY_NAME_TEMPLATE to config: {e}")
             return False
 
+    def _load_study_labels(self, output_dir, mrn, study_uid, accn):
+        """Return {dicom_path: label} from a study's saved classification CSV, or
+        None if it doesn't exist / can't be read. Used to restore a user's
+        previously-approved labels when revisiting a study via Previous."""
+        try:
+            study_dir_name = get_study_dir_name(mrn, study_uid, accn)
+            csv_path = os.path.join(get_classified_outputs_dir(output_dir),
+                                    study_dir_name, get_study_csv_name(study_dir_name))
+            if not os.path.exists(csv_path):
+                return None
+            import csv as _csv
+            labels = {}
+            with open(csv_path, newline="") as fh:
+                for row in _csv.DictReader(fh):
+                    path = row.get("Path")
+                    if path:
+                        labels[path] = row.get("Classification") or "Other"
+            return labels or None
+        except Exception as e:
+            logger.debug(f"Could not load saved labels for {mrn}/{study_uid}: {e}")
+            return None
+
     def run_classification_main(self, input_dir, output_dir, mode, existing_hierarchy=None):
         """
         Main classification workflow, controlling execution based on the selected mode.
@@ -1447,15 +1469,20 @@ class MainApp:
             rf_model, rf_target_encoder, rf_feature_encoder = self.rf_model, self.rf_target_encoder, self.rf_feature_encoder
             cnn_model, cnn_target_encoder = self.cnn_model, self.cnn_target_encoder
 
-            for i, (mrn, study_uid, accn, series_dict) in enumerate(all_studies):
+            # Index-based loop so Manual/Semi-Auto can navigate backward with the
+            # Previous button. force_show makes the next iteration display a study
+            # even if it was already classified (so revisits load saved labels).
+            idx = 0
+            force_show = False
+            while 0 <= idx < total_studies:
                 if self.stop_requested.is_set():
                     logger.info("Classification loop aborted by user.")
                     self.classification_finished(aborted=True)
                     return
 
-
+                mrn, study_uid, accn, series_dict = all_studies[idx]
                 self.progress_label.set(
-                    f"Classifying Study {i + 1} of {total_studies} ({mode}/{model_type}): {mrn} / {study_uid}")
+                    f"Classifying Study {idx + 1} of {total_studies} ({mode}/{model_type}): {mrn} / {study_uid}")
 
                 study_dir_name = get_study_dir_name(mrn, study_uid, accn)
                 classification_csv = os.path.join(
@@ -1463,60 +1490,91 @@ class MainApp:
                     study_dir_name,
                     get_study_csv_name(study_dir_name)
                 )
-                if os.path.exists(classification_csv):
+                csv_exists = os.path.exists(classification_csv)
+
+                if mode == "Full-Auto":
+                    if not csv_exists:
+                        processing.full_auto_classify_study(
+                            series_dict, mrn, study_uid, output_dir,
+                            model_type, rf_model, rf_target_encoder, rf_feature_encoder,
+                            cnn_model, cnn_target_encoder, self.rf_field_types,
+                            convert=self.convert_to_nifti.get(), accn=accn
+                        )
+                    idx += 1
                     try:
-                        self.progress_bar.config(value=i + 1)
+                        self.progress_bar.config(value=idx)
                         self.master.update_idletasks()
                     except Exception:
                         pass
                     continue
 
-                if mode == "Full-Auto":
-                    processing.full_auto_classify_study(
-                        series_dict, mrn, study_uid, output_dir,
-                        model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model, cnn_target_encoder,
+                # Manual / Semi-Auto. Skip already-classified studies on the
+                # forward pass (resume), but always show them when revisiting.
+                if csv_exists and not force_show:
+                    idx += 1
+                    try:
+                        self.progress_bar.config(value=idx)
+                        self.master.update_idletasks()
+                    except Exception:
+                        pass
+                    continue
+                force_show = False
+
+                study_done_event = threading.Event()
+                nav_result = {}
+
+                # Prefer the user's previously-approved labels when revisiting;
+                # otherwise fall back to mode-specific behavior (Semi-Auto runs
+                # model inference on this background thread, Manual defaults).
+                preset_labels = self._load_study_labels(output_dir, mrn, study_uid, accn) if csv_exists else None
+                optimized_result = None
+                if mode == "Semi-Auto" and not preset_labels:
+                    optimized_result = processing.optimize_study_selections(
+                        series_dict, model_type,
+                        rf_model, rf_target_encoder, rf_feature_encoder,
+                        cnn_model, cnn_target_encoder, self.rf_field_types
+                    )
+
+                is_first = (idx == 0)
+
+                # Build the per-study GUI on the main thread (Tkinter is not
+                # thread-safe); this worker runs in a background thread.
+                def _show_classify(series_dict=series_dict, mrn=mrn,
+                                   study_uid=study_uid, accn=accn,
+                                   optimized_result=optimized_result,
+                                   preset_labels=preset_labels, is_first=is_first,
+                                   nav_result=nav_result, study_done_event=study_done_event):
+                    classify_study_gui(
+                        series_dict, mrn, study_uid, output_dir, self.stop_requested,
+                        study_done_event, mode,
+                        model_type, rf_model, rf_target_encoder, rf_feature_encoder,
+                        cnn_model, cnn_target_encoder,
                         self.rf_field_types,
                         convert=self.convert_to_nifti.get(),
-                        accn=accn
+                        accn=accn,
+                        optimized_result=optimized_result,
+                        is_first=is_first, nav_result=nav_result, preset_labels=preset_labels,
                     )
-                else:
-                    study_done_event = threading.Event()
+                self.master.after(0, _show_classify)
 
-                    # Run Semi-Auto model inference here on the background thread
-                    # so it never blocks the GUI; Manual mode needs no inference.
-                    optimized_result = None
-                    if mode == "Semi-Auto":
-                        optimized_result = processing.optimize_study_selections(
-                            series_dict, model_type,
-                            rf_model, rf_target_encoder, rf_feature_encoder,
-                            cnn_model, cnn_target_encoder, self.rf_field_types
-                        )
+                while not study_done_event.is_set():
+                    time.sleep(0.1)
+                    if self.stop_requested.is_set():
+                        self.classification_finished(aborted=True)
+                        return
 
-                    # Build the per-study GUI on the main thread (Tkinter is not
-                    # thread-safe); this worker runs in a background thread.
-                    def _show_classify(series_dict=series_dict, mrn=mrn,
-                                       study_uid=study_uid, accn=accn,
-                                       optimized_result=optimized_result):
-                        classify_study_gui(
-                            series_dict, mrn, study_uid, output_dir, self.stop_requested,
-                            study_done_event, mode,
-                            model_type, rf_model, rf_target_encoder, rf_feature_encoder,
-                            cnn_model, cnn_target_encoder,
-                            self.rf_field_types,
-                            convert=self.convert_to_nifti.get(),
-                            accn=accn,
-                            optimized_result=optimized_result,
-                        )
-                    self.master.after(0, _show_classify)
-
-                    while not study_done_event.is_set():
-                        time.sleep(0.1)
-                        if self.stop_requested.is_set():
-                            self.classification_finished(aborted=True)
-                            return
+                action = nav_result.get('action')
+                if action == 'stop':
+                    self.classification_finished(aborted=True)
+                    return
+                elif action == 'previous':
+                    idx = max(0, idx - 1)
+                    force_show = True
+                else:  # approve or skip
+                    idx += 1
 
                 try:
-                    self.progress_bar.config(value=i + 1)
+                    self.progress_bar.config(value=idx)
                     self.master.update_idletasks()
                 except Exception:
                     pass
@@ -4422,7 +4480,7 @@ def load_image_worker(dicom_paths, panel_label_ref, root):
 def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, study_done_event, mode="Manual",
                        model_type=None, rf_model=None, rf_target_encoder=None, rf_feature_encoder=None, cnn_model=None,
                        cnn_target_encoder=None, rf_field_types=None, convert=True, accn="",
-                       optimized_result=None):
+                       optimized_result=None, is_first=True, nav_result=None, preset_labels=None):
     """
     Per-study classification GUI. Creates a grid of series thumbnails and dropdowns.
     Signals completion via study_done_event.
@@ -4430,7 +4488,16 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     This runs on the main (GUI) thread. For Semi-Auto, pass the precomputed
     *optimized_result* (from processing.optimize_study_selections) so the model
     inference happens on the background thread and never blocks the UI.
+
+    Navigation: the user's action is reported in nav_result['action'] as one of
+    'approve', 'skip', 'previous', or 'stop'. *is_first* disables the Previous
+    button on the first study. *preset_labels* (dict of dicom-path -> label, e.g.
+    from a previously-approved study's CSV) overrides the per-series default
+    selection when revisiting a study.
     """
+    if nav_result is None:
+        nav_result = {}
+    preset_labels = preset_labels or {}
     if stop_event.is_set():
         return
 
@@ -4581,6 +4648,13 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
             logger.info(f"  -> Series '{series_desc}' semi-auto pre-selected as: {initial_value}{prob_str}")
         elif mode == "Manual":
             initial_value = "Other"
+
+        # When revisiting a study (Previous), prefer the previously-approved
+        # label for this series over the mode default / model pre-selection.
+        if first_path in preset_labels:
+            sanitized = sanitize_target_series([preset_labels[first_path]])
+            preset_label = sanitized[0] if sanitized else "Other"
+            initial_value = preset_label if preset_label in dropdown_values else "Other"
 
         variable = tk.StringVar(value=initial_value)
 
@@ -4875,13 +4949,25 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
 
     button_frame = ctk.CTkFrame(root, fg_color="transparent")
     button_frame.grid(row=1, column=0, sticky="ew", pady=scale_value(10))
-    button_frame.grid_columnconfigure(0, weight=1)
-    button_frame.grid_columnconfigure(1, weight=0)
-    button_frame.grid_columnconfigure(2, weight=0)
-    button_frame.grid_columnconfigure(3, weight=0)
-    button_frame.grid_columnconfigure(4, weight=1)
+    button_frame.grid_columnconfigure(0, weight=1)   # left spacer
+    button_frame.grid_columnconfigure(1, weight=0)   # Stop All
+    button_frame.grid_columnconfigure(2, weight=0)   # Skip
+    button_frame.grid_columnconfigure(3, weight=0)   # Approve
+    button_frame.grid_columnconfigure(4, weight=0)   # Previous
+    button_frame.grid_columnconfigure(5, weight=1)   # right spacer
+
+    def _close():
+        try:
+            root.grab_release()
+        except Exception:
+            pass
+        try:
+            root.destroy()
+        except Exception:
+            pass
 
     def on_done():
+        nav_result['action'] = 'approve'
         worker_args = (mrn, study_uid, output_root, dropdown_vars, study_dict, accn)
 
         conversion_thread = threading.Thread(
@@ -4891,30 +4977,28 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         )
         conversion_thread.start()
 
-        root.grab_release()
-        root.destroy()
+        _close()
         study_done_event.set()
 
     def on_stop():
+        nav_result['action'] = 'stop'
         stop_event.set()
-        root.grab_release()
-        root.destroy()
+        _close()
         study_done_event.set()
 
     def on_skip():
         # Skip this study without saving or conversion; just advance to next study
-        try:
-            root.grab_release()
-        except Exception:
-            pass
-        try:
-            root.destroy()
-        except Exception:
-            pass
-        try:
-            study_done_event.set()
-        except Exception:
-            pass
+        nav_result['action'] = 'skip'
+        _close()
+        study_done_event.set()
+
+    def on_previous(event=None):
+        # Go back to the previous study without saving this one.
+        if is_first:
+            return
+        nav_result['action'] = 'previous'
+        _close()
+        study_done_event.set()
 
     action_font = ctk.CTkFont(size=15, weight="bold")
     btn_stop = ctk.CTkButton(button_frame, fg_color=ui_theme.RED, hover_color=ui_theme.RED_HOVER,
@@ -4923,14 +5007,20 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                              text="Skip (s)", font=action_font, command=on_skip)
     btn_done = ctk.CTkButton(button_frame, fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER,
                              text="Approve (d)", font=action_font, command=on_done)
+    btn_prev = ctk.CTkButton(button_frame, fg_color=ui_theme.ORANGE, hover_color=ui_theme.ORANGE_HOVER,
+                             text="Previous (w)", font=action_font, command=on_previous,
+                             state=("disabled" if is_first else "normal"))
 
     btn_stop.grid(row=0, column=1, padx=scale_value(10))
     btn_skip.grid(row=0, column=2, padx=scale_value(10))
     btn_done.grid(row=0, column=3, padx=scale_value(10))
+    btn_prev.grid(row=0, column=4, padx=scale_value(10))
 
     root.bind("<a>", lambda event: on_stop())
     root.bind("<s>", lambda event: on_skip())
     root.bind("<d>", lambda event: on_done())
+    if not is_first:
+        root.bind("<w>", on_previous)
 
     _fit_window_to_screen(root, content_frame, button_frame,
                           pad_x=scale_value(20), pad_y=scale_value(20))
