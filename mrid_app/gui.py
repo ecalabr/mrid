@@ -3624,7 +3624,18 @@ def _fit_window_to_screen(root, content_frame, button_frame, pad_x=0, pad_y=0):
         except Exception:
             pass
 
+        canvas = content_frame.master                 # content_frame → canvas
+        content_h = content_frame.winfo_reqheight()
+        btn_h = button_frame.winfo_reqheight()
+
         desired_w = content_w + scrollbar_w + 2 * pad_x
+
+        # Best-effort content-fit height: scrollable content + the outer canvas
+        # padding + the button row and its grid padding.  Reconstructing this
+        # from parts under-counts some padding (and the error grows with DPI),
+        # so the empirical correction below grows the window if content is still
+        # clipped — without overshooting into empty space when it already fits.
+        desired_h = content_h + 2 * pad_y + btn_h + 2 * scale_value(10)
 
         # Cascade a small gap below-right of the main window (computed from the
         # parent directly, not the window's own drifting coordinates).
@@ -3641,21 +3652,35 @@ def _fit_window_to_screen(root, content_frame, button_frame, pad_x=0, pad_y=0):
         x = max(0, x)
         y = max(0, y)
 
-        # Always fill the available vertical space from the top gap down to a
-        # small bottom margin. Sizing to measured content under-counted padding
-        # (button row, per-row chrome) — an error that grew with DPI and clipped
-        # the bottom dropdown row; filling the height shows every row (the
-        # canvas simply scrolls if content exceeds the height) and keeps the
-        # button row on-screen.
+        # Available space from the top gap down to a small bottom margin.
         bottom_margin = scale_value(48)
         avail_h = max(scale_value(300), screen_h - y - bottom_margin)
         avail_w = max(scale_value(400), screen_w - x - scale_value(20))
-        win_h = avail_h
+
+        # Size to content, but never beyond the available height (then it scrolls).
+        win_h = min(desired_h, avail_h)
         win_w = min(desired_w, avail_w)
 
         # wm_geometry: sizes are measured real pixels, bypass CTk scaling
         root.wm_geometry(f"{win_w}x{win_h}+{x}+{y}")
         root.update_idletasks()
+
+        # Empirical correction: if the content still overflows the canvas
+        # viewport (padding under-counted), grow the window to absorb the
+        # overflow — capped at the available height, beyond which it scrolls.
+        try:
+            for _ in range(4):
+                if win_h >= avail_h:
+                    break
+                viewport_h = canvas.winfo_height()
+                overflow = content_frame.winfo_reqheight() - viewport_h
+                if overflow <= 0:
+                    break
+                win_h = min(avail_h, win_h + overflow + scale_value(4))
+                root.wm_geometry(f"{win_w}x{win_h}+{x}+{y}")
+                root.update_idletasks()
+        except Exception:
+            pass
     except Exception:
         pass
 
