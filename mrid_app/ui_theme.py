@@ -31,8 +31,8 @@ USER_SCALE_MAX = 2.5
 # Base font sizes (points; scaled by the UI factor). BASE_FONT_SIZE applies to
 # general CTk widgets (labels, entries, buttons, menubar); MENU_FONT_SIZE is the
 # slightly smaller size used for the per-series label dropdowns (button + popup).
-BASE_FONT_SIZE = 14
-MENU_FONT_SIZE = 12
+BASE_FONT_SIZE = 16
+MENU_FONT_SIZE = 16
 
 # ── Dark palette accents ──────────────────────────────────────────────────────
 # (base, hover) pairs for state-colored buttons
