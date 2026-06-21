@@ -435,6 +435,7 @@ class MainApp:
         # keep references to restyle them when the UI scale changes at runtime.
         self._scalable_menus = [menubar, other_menu, config_menu, view_menu]
         self._ui_scale_after_id = None
+        self._ui_settle_after_id = None
 
         # UI layout
         dir_frame = TitledFrame(master, title="Directories")
@@ -1658,23 +1659,34 @@ class MainApp:
                 ui_theme.style_menu(menu)
             except Exception:
                 pass
-        # Resize the main window to fit its rescaled content. (Dropdown arrows
-        # redraw correctly via the DrawEngine patch in ui_theme.)
+        # Resize the main window to fit its rescaled content.
         try:
             place_main_window(self.master)
         except Exception:
             pass
+        # CTkOptionMenu's incremental redraw on a scaling change mis-draws the
+        # dropdown arrow (wrong size / covered by the button rectangle) — a fresh
+        # build is always correct, so force a clean redraw now and again after
+        # CTk's deferred (~1s) geometry pass, which can otherwise re-break it.
+        self._redraw_optionmenus()
+        if self._ui_settle_after_id is not None:
+            try:
+                self.master.after_cancel(self._ui_settle_after_id)
+            except Exception:
+                pass
+        self._ui_settle_after_id = self.master.after(1150, self._redraw_optionmenus)
         _save_ui_scale(ui_theme.get_user_scale())
 
-    def _redraw_optionmenu_arrows(self):
-        """Recreate the dropdown arrow on every CTkOptionMenu/CTkComboBox so it
-        is freshly drawn on top at the current scale. Used after the UI-scale
-        dialog closes to undo CTk's late redraw covering the arrows on Linux."""
+    def _redraw_optionmenus(self):
+        """Force every CTkOptionMenu/CTkComboBox to redraw from a clean canvas so
+        it matches a fresh build (which always renders the dropdown arrow
+        correctly). CTk's incremental redraw on a live scaling change otherwise
+        leaves the arrow the wrong size or stacked under the button rectangle."""
         def walk(widget):
             for child in widget.winfo_children():
                 if isinstance(child, (ctk.CTkOptionMenu, ctk.CTkComboBox)):
                     try:
-                        child._canvas.delete("dropdown_arrow")
+                        child._canvas.delete("all")
                         child._draw(no_color_updates=False)
                     except Exception:
                         pass
@@ -1780,27 +1792,15 @@ class MainApp:
             self._apply_ui_scale(1.0)
             _sync_widgets(1.0)
 
-        def _close():
-            _on_entry()
-            win.destroy()
-            # CTk schedules a deferred (~1s) window-geometry pass after a scaling
-            # change that, on Linux, can re-cover the dropdown arrows once the
-            # dialog is gone. Force a clean arrow redraw after that settles.
-            for delay in (60, 1100):
-                try:
-                    self.master.after(delay, self._redraw_optionmenu_arrows)
-                except Exception:
-                    pass
-
         btn_row = ctk.CTkFrame(body, fg_color="transparent")
         btn_row.pack(fill="x", pady=(scale_value(18), 0))
         ctk.CTkButton(btn_row, text="Reset (1.0×)", width=scale_value(110),
                       fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
                       command=_reset).pack(side="left")
         ctk.CTkButton(btn_row, text="Save", width=scale_value(100),
-                      command=_close).pack(side="right")
+                      command=lambda: (_on_entry(), win.destroy())).pack(side="right")
 
-        win.protocol("WM_DELETE_WINDOW", _close)
+        win.protocol("WM_DELETE_WINDOW", lambda: (_on_entry(), win.destroy()))
         win.update_idletasks()
         # Exempt this dialog from the live rescaling it triggers, so its own size
         # and button positions stay fixed while previewing changes on the app.

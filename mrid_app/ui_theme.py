@@ -285,48 +285,11 @@ def _use_proportional_fallback_font(window):
         pass
 
 
-def _patch_dropdown_arrow_width():
-    """Work around two CustomTkinter dropdown-arrow bugs that surface after a
-    live UI-scale change (the arrow only renders correctly after a restart):
-
-    1. For the polygon/circle draw methods, the arrow's line width is set only
-       when the arrow is first created, so later redraws at a different scale
-       leave it the wrong width.
-    2. The arrow is raised above the button's inner rectangle only on creation.
-       A rescale recreates those rectangle items on top of the existing arrow,
-       partially covering it.
-
-    Patch the draw routine to refresh the width and re-raise the arrow on every
-    redraw."""
-    try:
-        from customtkinter.windows.widgets.core_rendering.draw_engine import DrawEngine
-        if getattr(DrawEngine, "_mrid_arrow_patched", False):
-            return
-        _orig_draw_arrow = DrawEngine.draw_dropdown_arrow
-
-        def draw_dropdown_arrow(self, x_position, y_position, size):
-            result = _orig_draw_arrow(self, x_position, y_position, size)
-            try:
-                if self.preferred_drawing_method in ("polygon_shapes", "circle_shapes"):
-                    self._canvas.itemconfigure("dropdown_arrow", width=round(round(size) / 3))
-                # Keep the arrow above the (possibly recreated) button rectangle.
-                self._canvas.tag_raise("dropdown_arrow")
-            except Exception:
-                pass
-            return result
-
-        DrawEngine.draw_dropdown_arrow = draw_dropdown_arrow
-        DrawEngine._mrid_arrow_patched = True
-    except Exception:
-        logger.debug("Could not patch CustomTkinter dropdown-arrow")
-
-
 def init_appearance():
     """Apply the global dark theme. Call once before creating any window."""
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("dark-blue")
     _register_linux_shape_font()
-    _patch_dropdown_arrow_width()
 
 
 def init_scaling(window):
