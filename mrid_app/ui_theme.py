@@ -285,11 +285,39 @@ def _use_proportional_fallback_font(window):
         pass
 
 
+def _patch_dropdown_arrow_width():
+    """Work around a CustomTkinter bug: for the polygon/circle draw methods, the
+    dropdown-arrow line width is set only when the arrow is first created, so it
+    is not updated on later redraws at a different scale. After a live UI-scale
+    change the arrow keeps its original width and renders wrong (until restart).
+    Patch the draw routine to refresh the line width on every redraw."""
+    try:
+        from customtkinter.windows.widgets.core_rendering.draw_engine import DrawEngine
+        if getattr(DrawEngine, "_mrid_arrow_patched", False):
+            return
+        _orig_draw_arrow = DrawEngine.draw_dropdown_arrow
+
+        def draw_dropdown_arrow(self, x_position, y_position, size):
+            result = _orig_draw_arrow(self, x_position, y_position, size)
+            try:
+                if self.preferred_drawing_method in ("polygon_shapes", "circle_shapes"):
+                    self._canvas.itemconfigure("dropdown_arrow", width=round(round(size) / 3))
+            except Exception:
+                pass
+            return result
+
+        DrawEngine.draw_dropdown_arrow = draw_dropdown_arrow
+        DrawEngine._mrid_arrow_patched = True
+    except Exception:
+        logger.debug("Could not patch CustomTkinter dropdown-arrow width")
+
+
 def init_appearance():
     """Apply the global dark theme. Call once before creating any window."""
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("dark-blue")
     _register_linux_shape_font()
+    _patch_dropdown_arrow_width()
 
 
 def init_scaling(window):

@@ -75,6 +75,7 @@ MRID automates the classification and organization of brain MRI DICOM series. It
 ### User Interface
 - **Modern dark-mode GUI** (CustomTkinter) with a uniform appearance on Windows, macOS, and Linux
 - **Screen-proportional scaling**: the UI occupies the same fraction of the screen on any monitor size or resolution
+- **Adjustable UI scale**: **View → UI Scale** fine-tunes the overall size of text and controls, applied live and remembered between sessions
 - **Consistent window placement**: child windows open in the same cascaded layout every time
 - **Scrollable series thumbnails**: mouse-wheel over any thumbnail to page through the full image series
 - **Config wizard**: guided, multi-page setup of project configuration files
@@ -506,6 +507,10 @@ mrid/
 - **Convert NIfTIs** — batch-convert all classified series (skips ones already converted; shows progress and a summary)
 - **Export DICOMS** — copy classified series to a chosen folder organized as `{mrn}/{study_uid}/{label}/{instance_uid}.dcm`
 - **Erase Data** — selectively delete classifications, models, hierarchy/thumbnails, and/or the project config, with user confirmation
+
+### View Menu
+
+- **UI Scale** — opens a dialog to set a UI scale multiplier on top of the automatic screen-based scaling. Adjust it with the slider, the **−/+** buttons (0.05 steps), or by typing an exact value; changes apply to the whole app in real time. **Save** stores the value in `.mrid_prefs.json` so it is reapplied on the next launch (**Reset** returns to 1.0×).
 
 ### Automatic Folder Organization
 

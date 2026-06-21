@@ -1658,34 +1658,13 @@ class MainApp:
                 ui_theme.style_menu(menu)
             except Exception:
                 pass
-        # Resize the main window to fit its rescaled content.
+        # Resize the main window to fit its rescaled content. (Dropdown arrows
+        # redraw correctly via the DrawEngine patch in ui_theme.)
         try:
             place_main_window(self.master)
         except Exception:
             pass
-        # CTk only sets the dropdown-arrow line width when the arrow is first
-        # created, so it renders wrong after a live scale change — recreate it.
-        self._refresh_dropdown_arrows()
         _save_ui_scale(ui_theme.get_user_scale())
-
-    def _refresh_dropdown_arrows(self):
-        """Force CTkOptionMenu/CTkComboBox dropdown arrows to be redrawn at the
-        current scale. Works around a CustomTkinter bug where the arrow's line
-        width (polygon_shapes) is fixed at creation and not updated on a live
-        scaling change — the arrow only renders correctly after a restart."""
-        def walk(widget):
-            for child in widget.winfo_children():
-                if isinstance(child, (ctk.CTkOptionMenu, ctk.CTkComboBox)):
-                    try:
-                        child._canvas.delete("dropdown_arrow")
-                        child._draw(no_color_updates=False)
-                    except Exception:
-                        pass
-                walk(child)
-        try:
-            walk(self.master)
-        except Exception:
-            pass
 
     def _open_ui_scale_dialog(self):
         """View > UI Scale: adjust the UI scale multiplier. Applies live and is
