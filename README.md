@@ -243,10 +243,17 @@ python tests.py
 - "Other" is always appended to `TARGET_SERIES` as the catch-all label for not target series
 
 #### Manual Mode
-Review and annotate every series manually. Each study opens in a window of thumbnails with a label dropdown per series; click **Approve (d)** to save or **Skip (s)** to move on to the next exam. Click **Previous (w)** to step back to the prior study (it reloads your previously-approved labels if that study was saved, otherwise the default selection); it is disabled on the first study. **Tip:** double-click a series' label dropdown to quickly reset it to **Other** (a fast way to clear an incorrect label).
+Review and annotate every series manually. Each study opens in a window of thumbnails with a label dropdown per series. Controls (and hotkeys) are as follows:
+- **Approve (d)** save current labels and advance to the next study.
+- **Skip (s)** move on to the next study without saving labels. Next time you start classification, this case will remain in the unclassified pool.
+- **Previous (w)** step back to the prior study (it reloads your previously-approved labels if present). You can do this as many times as you want (taking you back to the first study), but when you next advance you will go back to the next previously unclassified study.
+- **Tip:** double-click a series' label dropdown to quickly reset it to **Other** (a fast way to clear an incorrect label).
 
 #### Semi-Auto Mode
-Models pre-select the best series per target label (respecting `OVERRIDE_THRESHOLD` and `PREFER_3D`, see config parameters below); you review and adjust before saving. Predicted probabilities are logged, and selections are color-coded. **Previous (w)** steps back to the prior study, reloading your previously-approved labels if available, otherwise the model's pre-selection. **Tip:** double-click a series' label dropdown to quickly reset it to **Other**.
+Models pre-select the best series per target label (respecting `OVERRIDE_THRESHOLD` and `PREFER_3D`, see config parameters below); you review and adjust before saving. Predicted probabilities are logged, and selections are color-coded. Controls are the same as manual mode with the following exceptions:
+- **Approve (d)** and **Skip (s)** will advance to the next study and automatically pre-select series labels based on trained models.
+- **Previous (w)** steps back to the prior study, reloading your previously-approved labels if available, otherwise running the trained model-based pre-selection. Subsequent advances will take you to the next previously unclassified study.
+- **Tip:** double-click a series' label dropdown to quickly reset it to **Other** (a fast way to clear an incorrect label).
 
 #### Full-Auto Mode
 Classifies and saves every study without review. Best for large datasets with consistent protocols and well-validated models.
@@ -254,7 +261,12 @@ Classifies and saves every study without review. Best for large datasets with co
 #### Verify Mode
 Quality control for already-classified studies. Thumbnails are shown in batches grouped by label; toggle any wrong ones to **Incorrect** and approve. At the end you can delete the output folders of incorrect studies for re-classification. Works without models.
 
-**Keyboard shortcuts** (classification and verification windows): `a` = Stop All, `s` = Skip, `d` = Approve, `w` = Previous (Manual/Semi-Auto). In Manual/Semi-Auto, **double-click a label dropdown** to reset it to **Other**.
+**Keyboard shortcuts** (classification and verification windows):
+- `a` = Stop All
+- `s` = Skip
+- `d` = Approve
+- `w` = Previous (Manual/Semi-Auto)
+- In Manual/Semi-Auto, **double-click a label dropdown** to reset it to **Other**.
 
 ### Model Types
 
