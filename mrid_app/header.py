@@ -313,6 +313,16 @@ def get_series_probabilities(dicom_path, model, feature_encoder, field_types=Non
         else:
             X_final = pd.concat([X_final_num] + embedded_features_dfs, axis=1)
 
+        # Force single-threaded prediction: the model was trained with
+        # n_jobs=-1, so each predict_proba would otherwise spawn a joblib
+        # ThreadPool. For one-sample inference that is pure overhead and has
+        # been observed to hang/churn when called once per series.
+        try:
+            if getattr(model, "n_jobs", 1) not in (None, 1):
+                model.n_jobs = 1
+        except Exception:
+            pass
+
         y_pred_proba = model.predict_proba(X_final)[0]
         return y_pred_proba
     except Exception as e:

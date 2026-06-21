@@ -1254,10 +1254,21 @@ class MainApp:
                 else:
                     study_done_event = threading.Event()
 
+                    # Run Semi-Auto model inference here on the background thread
+                    # so it never blocks the GUI; Manual mode needs no inference.
+                    optimized_result = None
+                    if mode == "Semi-Auto":
+                        optimized_result = processing.optimize_study_selections(
+                            series_dict, model_type,
+                            rf_model, rf_target_encoder, rf_feature_encoder,
+                            cnn_model, cnn_target_encoder, self.rf_field_types
+                        )
+
                     # Build the per-study GUI on the main thread (Tkinter is not
                     # thread-safe); this worker runs in a background thread.
                     def _show_classify(series_dict=series_dict, mrn=mrn,
-                                       study_uid=study_uid, accn=accn):
+                                       study_uid=study_uid, accn=accn,
+                                       optimized_result=optimized_result):
                         classify_study_gui(
                             series_dict, mrn, study_uid, output_dir, self.stop_requested,
                             study_done_event, mode,
@@ -1265,7 +1276,8 @@ class MainApp:
                             cnn_model, cnn_target_encoder,
                             self.rf_field_types,
                             convert=self.convert_to_nifti.get(),
-                            accn=accn
+                            accn=accn,
+                            optimized_result=optimized_result,
                         )
                     self.master.after(0, _show_classify)
 
@@ -4004,10 +4016,15 @@ def load_image_worker(dicom_paths, panel_label_ref, root):
 
 def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, study_done_event, mode="Manual",
                        model_type=None, rf_model=None, rf_target_encoder=None, rf_feature_encoder=None, cnn_model=None,
-                       cnn_target_encoder=None, rf_field_types=None, convert=True, accn=""):
+                       cnn_target_encoder=None, rf_field_types=None, convert=True, accn="",
+                       optimized_result=None):
     """
     Per-study classification GUI. Creates a grid of series thumbnails and dropdowns.
     Signals completion via study_done_event.
+
+    This runs on the main (GUI) thread. For Semi-Auto, pass the precomputed
+    *optimized_result* (from processing.optimize_study_selections) so the model
+    inference happens on the background thread and never blocks the UI.
     """
     if stop_event.is_set():
         return
@@ -4050,13 +4067,16 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     optimized_assignments = {}
     predictions_by_path = {}
     if mode == "Semi-Auto":
-        optimized_result = processing.optimize_study_selections(
-            study_dict,
-            model_type,
-            rf_model, rf_target_encoder, rf_feature_encoder,
-            cnn_model, cnn_target_encoder,
-            rf_field_types  # Pass field types for consistent preprocessing
-        )
+        # Use predictions computed on the background thread when provided;
+        # only fall back to inline inference (which blocks the UI) if not.
+        if optimized_result is None:
+            optimized_result = processing.optimize_study_selections(
+                study_dict,
+                model_type,
+                rf_model, rf_target_encoder, rf_feature_encoder,
+                cnn_model, cnn_target_encoder,
+                rf_field_types  # Pass field types for consistent preprocessing
+            )
         # optimize_study_selections returns (final_assignments, predictions_by_path)
         try:
             optimized_assignments, predictions_by_path = optimized_result
