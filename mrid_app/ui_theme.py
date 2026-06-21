@@ -112,22 +112,28 @@ def style_menu(menu, font_size=None):
         )
     except Exception:
         pass
-    # Size the menu font to match the CustomTkinter widget font so native
-    # tk.Menu widgets (which CTk does not scale) are the same size as the rest of
-    # the UI. Basing it on the CTk widget font — rather than the default menu
-    # font — matters on Linux/HiDPI, where the default menu font is smaller than
-    # the CTk widget font, leaving popup menus too small relative to the UI.
+    # Size the menu font to match CustomTkinter widget text exactly. CTk renders
+    # widget fonts in PIXELS as -round(size * widget_scaling); a native tk.Menu
+    # given a POINT size instead renders via Tk's point->pixel DPI, which differs
+    # from CTk's on Linux/HiDPI (making menus look too big relative to the UI).
+    # Use the same pixel size and CTk's own widget-scaling factor so menubar and
+    # popup menus match the rest of the UI on every platform.
     try:
-        scale = get_scale_factor()
         try:
             theme_font = ctk.ThemeManager.theme["CTkFont"]
             base_size = font_size if font_size is not None else (theme_font.get("size", BASE_FONT_SIZE) or BASE_FONT_SIZE)
             family = theme_font.get("family")
         except Exception:
             base_size, family = (font_size if font_size is not None else BASE_FONT_SIZE), None
-        sign = -1 if base_size < 0 else 1
-        scaled = sign * max(8, int(round(abs(base_size) * scale)))
-        menu.configure(font=(family, scaled))
+        # CTk's effective per-widget scaling = window DPI scaling x widget scaling.
+        factor = get_scale_factor()
+        try:
+            from customtkinter.windows.widgets.scaling.scaling_tracker import ScalingTracker
+            factor = ScalingTracker.get_widget_scaling(menu)
+        except Exception:
+            pass
+        px = -max(6, int(round(abs(base_size) * factor)))   # negative => pixels
+        menu.configure(font=(family, px))
     except Exception:
         pass
 
