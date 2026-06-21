@@ -8,6 +8,8 @@ All MRID windows share:
 - Deterministic cascaded placement of child windows relative to their parent.
 """
 
+import sys
+
 import customtkinter as ctk
 
 from . import config
@@ -64,6 +66,7 @@ _GLYPH_FALLBACKS = {
     "←": "<-", "→": "->",  # nav arrows
     "✕": "X",              # close
     "—": "-", "–": "-", "−": "-",   # dashes / minus sign
+    "✓": "OK", "✗": "X",   # check / cross
     "…": "...",            # ellipsis
 }
 
@@ -381,6 +384,46 @@ def scale_thumbnail(value):
     except Exception:
         tsf = 1.0
     return int(round(value * get_scale_factor() * tsf))
+
+
+def run_scaled_file_dialog(dialog_func, **kwargs):
+    """Run a tkinter.filedialog function with HiDPI-friendly sizing on Linux.
+
+    macOS and Windows use native file choosers that already honor the display,
+    but on Linux tkinter falls back to a pure-Tk dialog that ignores
+    CustomTkinter's scaling and looks tiny on HiDPI screens. There, temporarily
+    enlarge Tk's named fonts by the scale factor so the dialog (which sizes
+    itself to its text) is legible, then restore them. Elsewhere, just call the
+    dialog unchanged."""
+    if not sys.platform.startswith("linux"):
+        return dialog_func(**kwargs)
+
+    scale = get_scale_factor()
+    if scale <= 1.05:
+        return dialog_func(**kwargs)
+
+    import tkinter.font as tkfont
+    font_names = ("TkDefaultFont", "TkTextFont", "TkHeadingFont", "TkIconFont",
+                  "TkSmallCaptionFont", "TkTooltipFont", "TkFixedFont")
+    saved = {}
+    try:
+        for name in font_names:
+            try:
+                f = tkfont.nametofont(name)
+                size = f.cget("size")
+                if size:
+                    saved[name] = size
+                    sign = -1 if size < 0 else 1
+                    f.configure(size=sign * max(8, int(round(abs(size) * scale))))
+            except Exception:
+                pass
+        return dialog_func(**kwargs)
+    finally:
+        for name, size in saved.items():
+            try:
+                tkfont.nametofont(name).configure(size=size)
+            except Exception:
+                pass
 
 
 def cascade(window, parent=None, step=CASCADE_STEP):

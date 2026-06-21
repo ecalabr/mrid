@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import threading
 import time
@@ -15,7 +16,9 @@ from .series_scroller import attach_series_scrolling
 from .config import NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LABELS, THUMBNAIL_SCALE_FACTOR
 from .utils import (extract_study_id_from_path, get_study_csv_name, get_study_dir_name,
                      get_nifti_name, get_nifti_prefix, sanitize_target_series,
-                     get_classified_outputs_dir, get_num_parallel_workers)
+                     get_classified_outputs_dir, get_num_parallel_workers,
+                     get_study_name_template, find_naming_collisions,
+                     suggest_collision_free_template, sanitize_template)
 from .logging_config import get_logger, setup_logging, update_log_file_location
 from PIL import Image, ImageTk
 import shutil
@@ -515,7 +518,8 @@ class MainApp:
         place_main_window(master)
 
     def browse_dir(self, var, title):
-        directory = filedialog.askdirectory(title=title, initialdir=var.get())
+        directory = ui_theme.run_scaled_file_dialog(
+            filedialog.askdirectory, title=title, initialdir=var.get())
         if directory:
             # If the output directory is changing, unload any loaded models so
             # they are not accidentally used against a different project/dataset.
@@ -1109,6 +1113,176 @@ class MainApp:
             self.progress_frame.destroy()
         self._check_model_status()  # handles train_button state including Analyze-mode rules
 
+    def _ensure_no_naming_collisions(self, all_studies, output_dir):
+        """Check the active study-name template against this dataset; if it would
+        produce output collisions, prompt the user (on the main thread) for a
+        corrected template, write it to the project config, and apply it.
+
+        Runs on the background classification thread. Returns True if it is safe
+        to proceed (no collisions, or the user resolved them), False if the user
+        cancelled or the collision could not be resolved.
+        """
+        studies = [(mrn, study_uid, accn) for (mrn, study_uid, accn, _s) in all_studies]
+        template = get_study_name_template()
+        collisions = find_naming_collisions(studies, template)
+        if not collisions:
+            return True
+
+        n_names = len(collisions)
+        n_studies = sum(len(v) for v in collisions.values())
+        logger.warning(
+            f"Study name template '{template}' would produce {n_studies} "
+            f"colliding outputs across {n_names} name(s).")
+        suggested = suggest_collision_free_template(studies, template)
+
+        done = threading.Event()
+        result = {"ok": False}
+        self.master.after(0, lambda: self._prompt_naming_collision(
+            studies, template, suggested, collisions, output_dir, result, done))
+        while not done.is_set():
+            if self.stop_requested.is_set():
+                self.classification_finished(aborted=True)
+                return False
+            time.sleep(0.05)
+
+        if not result.get("ok"):
+            logger.info("Classification aborted: study-naming collision unresolved.")
+            self.classification_finished(aborted=True)
+            return False
+        return True
+
+    def _prompt_naming_collision(self, studies, current_template, suggested,
+                                 collisions, output_dir, result, done_event):
+        """Main-thread dialog: show the naming collision and let the user edit
+        and approve a corrected template, which is written to the project config
+        and applied live. Sets result['ok'] and signals done_event."""
+        try:
+            win = ctk.CTkToplevel(self.master)
+            win.title("Study Naming Collision")
+            cascade(win, self.master)
+            win.protocol("WM_DELETE_WINDOW", lambda: None)
+
+            body = ctk.CTkFrame(win, fg_color="transparent")
+            body.pack(fill="both", expand=True, padx=scale_value(20), pady=scale_value(16))
+
+            n_names = len(collisions)
+            n_studies = sum(len(v) for v in collisions.values())
+            example = next(iter(collisions.items()))
+
+            ctk.CTkLabel(body, text="Output naming would overwrite studies",
+                         font=ctk.CTkFont(size=14, weight="bold"),
+                         text_color="#e0b020", anchor="w", justify="left").pack(fill="x", pady=(0, scale_value(6)))
+            ctk.CTkLabel(
+                body,
+                text=(f"The current template  {current_template}  produces the same output name "
+                      f"for different studies — {n_studies} studies across {n_names} name(s) "
+                      f"would collide and overwrite each other.\n\n"
+                      f"Example: \"{example[0]}\" is used by {len(example[1])} studies.\n\n"
+                      f"Choose a template that yields a unique name per study. Valid fields: "
+                      f"{{mrn}}, {{accn}}, {{study_uid}}."),
+                wraplength=scale_value(460), justify="left", anchor="w").pack(fill="x", pady=(0, scale_value(12)))
+
+            row = ctk.CTkFrame(body, fg_color="transparent")
+            row.pack(fill="x")
+            ctk.CTkLabel(row, text="Template:").pack(side="left", padx=(0, scale_value(8)))
+            entry = ctk.CTkEntry(row, width=scale_value(280))
+            entry.insert(0, suggested)
+            entry.pack(side="left", fill="x", expand=True)
+
+            status = ctk.CTkLabel(body, text="", anchor="w", justify="left",
+                                  wraplength=scale_value(460))
+            status.pack(fill="x", pady=(scale_value(8), 0))
+
+            def _validate(show_ok=True):
+                tmpl = sanitize_template(entry.get(), quiet=True)
+                cols = find_naming_collisions(studies, tmpl)
+                if cols:
+                    c_studies = sum(len(v) for v in cols.values())
+                    status.configure(text=ui_theme.t(f"✗ '{tmpl}' still collides ({c_studies} studies). Add {{accn}} or {{study_uid}}."),
+                                     text_color="#ff6b6b")
+                    return None
+                if show_ok:
+                    status.configure(text=ui_theme.t(f"✓ '{tmpl}' is unique for all studies."),
+                                     text_color="#4caf50")
+                return tmpl
+
+            entry.bind("<KeyRelease>", lambda e: _validate())
+
+            def _approve():
+                tmpl = _validate()
+                if tmpl is None:
+                    return
+                if not self._write_study_name_template_to_config(tmpl, output_dir):
+                    status.configure(text=ui_theme.t("✗ Could not write the template to the project config."),
+                                     text_color="#ff6b6b")
+                    return
+                result["ok"] = True
+                try:
+                    win.grab_release()
+                    win.destroy()
+                except Exception:
+                    pass
+                done_event.set()
+
+            def _cancel():
+                result["ok"] = False
+                try:
+                    win.grab_release()
+                    win.destroy()
+                except Exception:
+                    pass
+                done_event.set()
+
+            btns = ctk.CTkFrame(body, fg_color="transparent")
+            btns.pack(fill="x", pady=(scale_value(16), 0))
+            ctk.CTkButton(btns, text="Cancel Classification", width=scale_value(160),
+                          fg_color=ui_theme.RED, hover_color=ui_theme.RED_HOVER,
+                          command=_cancel).pack(side="left")
+            ctk.CTkButton(btns, text="Approve & Continue", width=scale_value(160),
+                          fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER,
+                          command=_approve).pack(side="right")
+
+            _validate()
+            win.update_idletasks()
+            _safe_grab(win)
+        except Exception as e:
+            logger.error(f"Failed to show naming-collision dialog: {e}")
+            result["ok"] = False
+            done_event.set()
+
+    def _write_study_name_template_to_config(self, template, output_dir):
+        """Write STUDY_NAME_TEMPLATE=*template* into the active project config
+        file and apply it to the running session. Returns True on success."""
+        template = sanitize_template(template, quiet=True)
+        # Prefer the active custom config, then the output-dir project config.
+        config_path = None
+        if self.active_config_path and os.path.exists(self.active_config_path):
+            config_path = self.active_config_path
+        else:
+            candidate = os.path.join(output_dir, "config.py")
+            if os.path.exists(candidate):
+                config_path = candidate
+        try:
+            if config_path:
+                with open(config_path, "r") as fh:
+                    text = fh.read()
+                line = f'STUDY_NAME_TEMPLATE = "{template}"'
+                new_text, n = re.subn(r'(?m)^\s*STUDY_NAME_TEMPLATE\s*=.*$', line, text)
+                if n == 0:
+                    sep = "" if text.endswith("\n") or text == "" else "\n"
+                    new_text = text + sep + line + "\n"
+                with open(config_path, "w") as fh:
+                    fh.write(new_text)
+                logger.info(f"Updated STUDY_NAME_TEMPLATE in {config_path} -> {template}")
+            else:
+                logger.warning("No project config file found; applying template for this run only.")
+            # Apply to the running session so output naming uses it immediately.
+            config.STUDY_NAME_TEMPLATE = template
+            return True
+        except Exception as e:
+            logger.error(f"Failed to write STUDY_NAME_TEMPLATE to config: {e}")
+            return False
+
     def run_classification_main(self, input_dir, output_dir, mode, existing_hierarchy=None):
         """
         Main classification workflow, controlling execution based on the selected mode.
@@ -1243,6 +1417,12 @@ class MainApp:
                     accn = study_data.get("accn", "")
                     series_dict = study_data.get("series", {})
                     all_studies.append((mrn, study_uid, accn, series_dict))
+
+            # Gate: ensure the output naming template won't collide for this
+            # dataset. If it would, ask the user to adjust it (default off the
+            # app flow — only appears when there is an actual collision).
+            if not self._ensure_no_naming_collisions(all_studies, output_dir):
+                return  # aborted by user or unresolved
 
             # Randomize study order for Manual/Semi-Auto modes if configured
             if mode in ["Manual", "Semi-Auto"] and getattr(config, 'RANDOMIZE_STUDY_ORDER', True):
@@ -1485,7 +1665,8 @@ class MainApp:
             messagebox.showerror("Error", "Please specify a valid output directory.", parent=self.master)
             return
 
-        export_dir = filedialog.askdirectory(
+        export_dir = ui_theme.run_scaled_file_dialog(
+            filedialog.askdirectory,
             title="Select Export Directory",
             parent=self.master
         )
@@ -2504,7 +2685,8 @@ class MainApp:
 
     def _load_config(self):
         """Load a config.py file from a user-selected location."""
-        config_path = filedialog.askopenfilename(
+        config_path = ui_theme.run_scaled_file_dialog(
+            filedialog.askopenfilename,
             title="Select Config File",
             initialdir=self.output_dir.get() if os.path.isdir(self.output_dir.get()) else None,
             filetypes=[("Python files", "*.py"), ("All files", "*.*")]

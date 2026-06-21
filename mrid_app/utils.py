@@ -35,7 +35,7 @@ def get_num_parallel_workers():
 # Output Naming Functions
 # ============================================================================
 
-def sanitize_template(template, replacement='-'):
+def sanitize_template(template, replacement='-', quiet=False):
     # First, protect valid fields by temporarily replacing them
     protected = template
     placeholders = {
@@ -55,15 +55,36 @@ def sanitize_template(template, replacement='-'):
     # Check for valid format fields
     valid_fields = ['{mrn}', '{study_uid}', '{accn}']
     if not any(item in sanitized for item in valid_fields):
-        logger.warning("STUDY_NAME_TEMPLATE does not contain any of the required fields. Reverting to default template.")
+        if not quiet:
+            logger.warning("STUDY_NAME_TEMPLATE does not contain any of the required fields. Reverting to default template.")
         return "{mrn}-{study_uid}"
-    if not any(item in sanitized for item in valid_fields[1:]):
-        logger.warning("STUDY_NAME_TEMPLATE has only MRN as an identifier. This could lead to non-unique study directory names and potential file collisions.")
     return sanitized
 
 
-# Sanitize the STUDY_NAME_TEMPLATE to ensure it's safe for file naming
+# Default template (sanitized) used as a fallback when config is unavailable.
 STUDY_NAME_TEMPLATE = sanitize_template(STUDY_NAME_TEMPLATE)
+
+# Cache of raw-template -> sanitized-template so the live getter doesn't
+# re-sanitize (and re-log) on every call.
+_TEMPLATE_CACHE = {}
+
+
+def get_study_name_template():
+    """Return the active, sanitized study-name template, read live from config.
+
+    Reading it live (instead of caching the value at import) means a config
+    load/reload — or a programmatic change to config.STUDY_NAME_TEMPLATE — takes
+    effect immediately for output naming."""
+    try:
+        from . import config
+        raw = config.STUDY_NAME_TEMPLATE
+    except Exception:
+        raw = None
+    if not raw:
+        return STUDY_NAME_TEMPLATE
+    if raw not in _TEMPLATE_CACHE:
+        _TEMPLATE_CACHE[raw] = sanitize_template(raw)
+    return _TEMPLATE_CACHE[raw]
 
 
 def _generate_deterministic_placeholder(field_name, *context_values):
@@ -154,32 +175,82 @@ def sanitize_target_series(target_series):
     return sanitized
 
 
-def get_study_dir_name(mrn, study_uid, accn=None):
+def format_study_name(mrn, study_uid, accn, template):
     """
-    Generate study directory name from MRN, Study UID, and optional Accession Number.
-    Missing values are replaced with deterministic placeholders.
-
-    Args:
-        mrn: Patient MRN/PatientID (can be None or empty)
-        study_uid: Study UID (can be None or empty)
-        accn: Optional Accession Number (can be None or empty)
-
-    Returns:
-        str: Study directory name based on STUDY_NAME_TEMPLATE
+    Build a study name from a *given* template, filling missing MRN/Study UID/
+    Accession with deterministic placeholders. This is the core used by both
+    get_study_dir_name (with the active template) and the collision checks
+    (which test candidate templates).
     """
-    # Handle missing values with deterministic placeholders
-    # Use available values as context for hash generation
-    
     if not mrn or mrn == "":
         mrn = _generate_deterministic_placeholder('mrn', study_uid, accn)
-    
+
     if not study_uid or study_uid == "":
         study_uid = _generate_deterministic_placeholder('study_uid', mrn, accn)
-    
+
     if accn is None or accn == "":
         accn = _generate_deterministic_placeholder('accn', mrn, study_uid)
-    
-    return STUDY_NAME_TEMPLATE.format(mrn=mrn, study_uid=study_uid, accn=accn)
+
+    try:
+        return template.format(mrn=mrn, study_uid=study_uid, accn=accn)
+    except Exception:
+        return STUDY_NAME_TEMPLATE.format(mrn=mrn, study_uid=study_uid, accn=accn)
+
+
+def get_study_dir_name(mrn, study_uid, accn=None):
+    """
+    Generate study directory name from MRN, Study UID, and optional Accession
+    Number, using the active (live) STUDY_NAME_TEMPLATE. Missing values are
+    replaced with deterministic placeholders.
+    """
+    return format_study_name(mrn, study_uid, accn, get_study_name_template())
+
+
+def find_naming_collisions(studies, template):
+    """
+    Detect study-name collisions for *template* over *studies*.
+
+    Args:
+        studies: iterable of (mrn, study_uid, accn) tuples
+        template: study-name template to test
+
+    Returns:
+        dict {name: [(mrn, study_uid), ...]} for every generated name that maps
+        to more than one distinct study (i.e. would overwrite outputs). Empty
+        dict means the template is collision-free for this dataset.
+    """
+    tmpl = sanitize_template(template, quiet=True)
+    names = defaultdict(list)
+    for mrn, study_uid, accn in studies:
+        name = format_study_name(mrn, study_uid, accn, tmpl)
+        key = (mrn, study_uid)
+        if key not in names[name]:
+            names[name].append(key)
+    return {name: keys for name, keys in names.items() if len(keys) > 1}
+
+
+def suggest_collision_free_template(studies, current_template):
+    """
+    Return a study-name template that produces no collisions for *studies*,
+    preferring small additions to *current_template*. Study UID is globally
+    unique, so a study_uid-based template is always a safe fallback.
+    """
+    cur = sanitize_template(current_template, quiet=True)
+    candidates = []
+    if '{accn}' not in cur:
+        candidates.append(cur + '-{accn}')
+    if '{study_uid}' not in cur:
+        candidates.append(cur + '-{study_uid}')
+    candidates += ['{mrn}-{accn}', '{accn}-{study_uid}',
+                   '{mrn}-{accn}-{study_uid}', '{mrn}-{study_uid}']
+    seen = set()
+    for cand in candidates:
+        if cand == cur or cand in seen:
+            continue
+        seen.add(cand)
+        if not find_naming_collisions(studies, cand):
+            return cand
+    return '{mrn}-{study_uid}'
 
 
 def get_study_csv_name(study_id):
@@ -252,7 +323,7 @@ def get_symlink_dir_name(mrn, study_uid, series_uid, accn="", split_index=None):
         accn = _generate_deterministic_placeholder('accn', mrn, study_uid, series_uid)
     
     # Use the same template as study directories for consistency
-    base_name = STUDY_NAME_TEMPLATE.format(mrn=mrn, study_uid=study_uid, accn=accn)
+    base_name = get_study_name_template().format(mrn=mrn, study_uid=study_uid, accn=accn)
 
     # Append series UID to make it unique per series
     dir_name = f"{base_name}-{series_uid}"
