@@ -1666,6 +1666,24 @@ class MainApp:
             pass
         _save_ui_scale(ui_theme.get_user_scale())
 
+    def _redraw_optionmenu_arrows(self):
+        """Recreate the dropdown arrow on every CTkOptionMenu/CTkComboBox so it
+        is freshly drawn on top at the current scale. Used after the UI-scale
+        dialog closes to undo CTk's late redraw covering the arrows on Linux."""
+        def walk(widget):
+            for child in widget.winfo_children():
+                if isinstance(child, (ctk.CTkOptionMenu, ctk.CTkComboBox)):
+                    try:
+                        child._canvas.delete("dropdown_arrow")
+                        child._draw(no_color_updates=False)
+                    except Exception:
+                        pass
+                walk(child)
+        try:
+            walk(self.master)
+        except Exception:
+            pass
+
     def _open_ui_scale_dialog(self):
         """View > UI Scale: adjust the UI scale multiplier. Applies live and is
         saved to .mrid_prefs.json for the next launch."""
@@ -1762,15 +1780,27 @@ class MainApp:
             self._apply_ui_scale(1.0)
             _sync_widgets(1.0)
 
+        def _close():
+            _on_entry()
+            win.destroy()
+            # CTk schedules a deferred (~1s) window-geometry pass after a scaling
+            # change that, on Linux, can re-cover the dropdown arrows once the
+            # dialog is gone. Force a clean arrow redraw after that settles.
+            for delay in (60, 1100):
+                try:
+                    self.master.after(delay, self._redraw_optionmenu_arrows)
+                except Exception:
+                    pass
+
         btn_row = ctk.CTkFrame(body, fg_color="transparent")
         btn_row.pack(fill="x", pady=(scale_value(18), 0))
         ctk.CTkButton(btn_row, text="Reset (1.0×)", width=scale_value(110),
                       fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
                       command=_reset).pack(side="left")
         ctk.CTkButton(btn_row, text="Save", width=scale_value(100),
-                      command=lambda: (_on_entry(), win.destroy())).pack(side="right")
+                      command=_close).pack(side="right")
 
-        win.protocol("WM_DELETE_WINDOW", lambda: (_on_entry(), win.destroy()))
+        win.protocol("WM_DELETE_WINDOW", _close)
         win.update_idletasks()
         # Exempt this dialog from the live rescaling it triggers, so its own size
         # and button positions stay fixed while previewing changes on the app.
