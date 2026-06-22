@@ -4483,6 +4483,24 @@ def _make_scrollable_frame(root, pad_x=0, pad_y=0):
     return canvas, content_frame
 
 
+# Single shared, bounded thread pool for loading review/verification thumbnails.
+# Using one shared pool (instead of creating a new ThreadPoolExecutor per
+# window) keeps the total worker-thread count bounded, so paging through many
+# windows on a large dataset can never exhaust the process's threads — which
+# previously hung the next window's Thread.start() indefinitely.
+_THUMBNAIL_EXECUTOR = None
+
+
+def _get_thumbnail_executor():
+    global _THUMBNAIL_EXECUTOR
+    if _THUMBNAIL_EXECUTOR is None:
+        import concurrent.futures
+        _THUMBNAIL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max(1, get_num_parallel_workers()),
+            thread_name_prefix="mrid-thumb")
+    return _THUMBNAIL_EXECUTOR
+
+
 def show_verification_gui(batch_df, target_series, batch_start, total_series,
                          stop_event, done_event, result, output_dir,
                          is_first=True, preset_incorrect=None):
@@ -4593,8 +4611,10 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         toggle_btn.grid(row=2, column=0, pady=(0, scale_value(5)))
         toggle_buttons[series_path] = toggle_btn
 
-    # Load all images in parallel using ThreadPoolExecutor
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    # Load thumbnails on the shared bounded pool. stop_loading lets the window
+    # abandon any outstanding loads the moment it closes.
+    stop_loading = threading.Event()
+    pending_futures = []
 
     def load_single_thumbnail(series_path, panel, output_dir):
         """Load a single thumbnail, preferring a pre-generated thumbnail (JPEG/PNG)."""
@@ -4641,26 +4661,32 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         except Exception as e:
             logger.debug(f"Error updating thumbnail: {e}")
 
-    def load_all_thumbnails():
-        """Load all thumbnails in parallel."""
-        with ThreadPoolExecutor(max_workers=get_num_parallel_workers()) as executor:
-            future_to_path = {
-                executor.submit(load_single_thumbnail, row_data['Path'], panel_widgets[row_data['Path']], output_dir): row_data['Path']
-                for idx, row_data in batch_df.iterrows()
-            }
+    def _on_thumbnail_loaded(future, series_path):
+        # Runs on a pool worker thread; bail out if the window has closed.
+        if stop_loading.is_set():
+            return
+        try:
+            pil_img = future.result()
+        except Exception as e:
+            logger.debug(f"Error loading thumbnail for {series_path}: {e}")
+            return
+        if pil_img is not None:
+            try:
+                root.after(0, lambda p=series_path, img=pil_img: update_thumbnail(p, img))
+            except Exception:
+                pass
 
-            # Update as each completes
-            for future in as_completed(future_to_path):
-                series_path = future_to_path[future]
-                try:
-                    pil_img = future.result()
-                    if pil_img is not None:
-                        # Schedule update on main thread
-                        root.after(0, lambda p=series_path, img=pil_img: update_thumbnail(p, img))
-                except Exception as e:
-                    logger.debug(f"Error in parallel loading for {series_path}: {e}")
-
-    threading.Thread(target=load_all_thumbnails, daemon=True).start()
+    # Submit each load to the shared pool (fast, non-blocking) — no per-window
+    # thread or pool, so windows can't accumulate threads.
+    _executor = _get_thumbnail_executor()
+    for idx, row_data in batch_df.iterrows():
+        sp = row_data['Path']
+        try:
+            fut = _executor.submit(load_single_thumbnail, sp, panel_widgets[sp], output_dir)
+            fut.add_done_callback(lambda f, p=sp: _on_thumbnail_loaded(f, p))
+            pending_futures.append(fut)
+        except Exception as e:
+            logger.debug(f"Could not submit thumbnail load for {sp}: {e}")
 
     button_frame = ctk.CTkFrame(root, fg_color="transparent")
     button_frame.grid(row=1, column=0, sticky="ew", pady=scale_value(10))
@@ -4672,6 +4698,14 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
     button_frame.grid_columnconfigure(5, weight=1)   # right spacer
 
     def _close():
+        # Abandon outstanding thumbnail loads so the shared pool is freed for the
+        # next window (and never backs up across the dataset).
+        stop_loading.set()
+        for f in pending_futures:
+            try:
+                f.cancel()
+            except Exception:
+                pass
         try:
             root.grab_release()
         except Exception:
@@ -5192,8 +5226,9 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         except Exception:
             pass
 
-    # Load all images in parallel using ThreadPoolExecutor (same as verification mode)
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    # Load thumbnails on the shared bounded pool (same as verification mode).
+    stop_loading = threading.Event()
+    pending_futures = []
 
     def load_single_thumbnail(first_path, panel, dicom_paths, thumbnail_path):
         """Load a single thumbnail, preferring a pre-generated thumbnail (JPEG/PNG)."""
@@ -5252,26 +5287,28 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         except Exception as e:
             logger.debug(f"Error updating thumbnail: {e}")
 
-    def load_all_thumbnails():
-        """Load all thumbnails in parallel."""
-        with ThreadPoolExecutor(max_workers=get_num_parallel_workers()) as executor:
-            future_to_path = {
-                executor.submit(load_single_thumbnail, path, panel_data[0], panel_data[1], panel_data[2]): path
-                for path, panel_data in panel_widgets.items()
-            }
+    def _on_thumbnail_loaded(future, series_path):
+        if stop_loading.is_set():
+            return
+        try:
+            pil_img = future.result()
+        except Exception as e:
+            logger.debug(f"Error loading thumbnail for {series_path}: {e}")
+            return
+        if pil_img is not None:
+            try:
+                root.after(0, lambda p=series_path, img=pil_img: update_thumbnail(p, img))
+            except Exception:
+                pass
 
-            # Update as each completes
-            for future in as_completed(future_to_path):
-                series_path = future_to_path[future]
-                try:
-                    pil_img = future.result()
-                    if pil_img is not None:
-                        # Schedule update on main thread
-                        root.after(0, lambda p=series_path, img=pil_img: update_thumbnail(p, img))
-                except Exception as e:
-                    logger.debug(f"Error in parallel loading for {series_path}: {e}")
-
-    threading.Thread(target=load_all_thumbnails, daemon=True).start()
+    _executor = _get_thumbnail_executor()
+    for path, panel_data in panel_widgets.items():
+        try:
+            fut = _executor.submit(load_single_thumbnail, path, panel_data[0], panel_data[1], panel_data[2])
+            fut.add_done_callback(lambda f, p=path: _on_thumbnail_loaded(f, p))
+            pending_futures.append(fut)
+        except Exception as e:
+            logger.debug(f"Could not submit thumbnail load for {path}: {e}")
 
     button_frame = ctk.CTkFrame(root, fg_color="transparent")
     button_frame.grid(row=1, column=0, sticky="ew", pady=scale_value(10))
@@ -5283,6 +5320,14 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     button_frame.grid_columnconfigure(5, weight=1)   # right spacer
 
     def _close():
+        # Abandon outstanding thumbnail loads so the shared pool is freed for the
+        # next study (and never backs up across the dataset).
+        stop_loading.set()
+        for f in pending_futures:
+            try:
+                f.cancel()
+            except Exception:
+                pass
         try:
             root.grab_release()
         except Exception:
