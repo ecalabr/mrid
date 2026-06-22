@@ -1100,6 +1100,12 @@ class MainApp:
             self.classification_finished(aborted=self.stop_requested.is_set())
 
     def classification_finished(self, aborted):
+        # This touches Tk widgets (button states, progress frame), so it must run
+        # on the main thread. Worker threads call it directly, so marshal when
+        # needed to avoid off-thread Tk access (causes intermittent TclErrors).
+        if threading.current_thread() is not threading.main_thread():
+            self.master.after(0, lambda: self.classification_finished(aborted))
+            return
         # Idempotent: the worker thread calls this when it finishes, and the
         # status poller also calls it when it sees the thread end. Run the
         # teardown (and log) only once per workflow.
@@ -3673,6 +3679,16 @@ class MainApp:
 
         logger.info("Starting verification workflow")
         logger.info(f"Output directory: {output_dir}")
+
+        # Load the project config (output_dir/config.py) so TARGET_SERIES matches
+        # the classified data. Without this, a fresh launch that goes straight to
+        # Verify uses the default TARGET_SERIES and finds no matching series.
+        config_path = os.path.join(output_dir, "config.py")
+        if os.path.exists(config_path):
+            try:
+                self._load_config_from_file(config_path)
+            except Exception as e:
+                logger.warning(f"Could not load project config for verification: {e}")
 
         # Persist the current directories so they are the default on next launch
         _save_last_dirs(self.input_dir.get(), output_dir)
