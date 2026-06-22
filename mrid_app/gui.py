@@ -2111,7 +2111,7 @@ class MainApp:
             parts.append(f"Still missing: {rep.get('missing_count', 0)} item(s)")
             return "\n".join(parts)
 
-        def _run(source_root=None, remove_missing=False):
+        def _run(source_root=None, remove_missing=False, entire_copy_root=None):
             inp, out = in_var.get(), out_var.get()
             if not os.path.isdir(out):
                 messagebox.showerror("Error", "Please choose a valid Output directory.", parent=win)
@@ -2121,12 +2121,18 @@ class MainApp:
                 return
             state["running"] = True
             _clear_buttons()
-            _set_status("Fixing filepaths…", color="#e0b020")
+            _set_status("Copying data…" if entire_copy_root else "Fixing filepaths…", color="#e0b020")
 
             def worker():
                 try:
-                    rep = path_fixer.fix_project_paths(out, inp, source_root=source_root,
-                                                       remove_missing=remove_missing)
+                    if entire_copy_root:
+                        # Copy the whole provided folder into the input dir, then
+                        # re-discover everything there (no per-file source needed).
+                        path_fixer.copy_tree_into(entire_copy_root, inp)
+                        rep = path_fixer.fix_project_paths(out, inp)
+                    else:
+                        rep = path_fixer.fix_project_paths(out, inp, source_root=source_root,
+                                                           remove_missing=remove_missing)
                 except Exception as e:
                     rep = {"error": str(e)}
                 self.master.after(0, lambda: _done(rep))
@@ -2163,13 +2169,11 @@ class MainApp:
                             "None of the missing files were found under:\n\n"
                             f"{src}\n\nTry a different (higher-level) folder.", parent=win)
                         return
-                    if not messagebox.askyesno(
-                        "Copy Missing Data",
-                        f"{found} of {missing} missing file(s) were found under:\n{src}\n\n"
-                        f"They will be COPIED into the input directory:\n{in_var.get()}\n\n"
-                        "Continue?", parent=win):
-                        return
-                    _run(source_root=src)
+                    choice = self._ask_copy_choice(win, found, missing, src, in_var.get())
+                    if choice == "referenced":
+                        _run(source_root=src)
+                    elif choice == "entire":
+                        _run(entire_copy_root=src)
 
                 def remove():
                     if messagebox.askyesno(
@@ -2242,6 +2246,56 @@ class MainApp:
                       command=win.destroy).pack(pady=(0, scale_value(12)))
         win.update_idletasks()
         _safe_grab(win)
+
+    def _ask_copy_choice(self, parent, found, total, src, dest):
+        """Modal choice for how to copy located data. Returns 'referenced'
+        (only the files referenced by the project), 'entire' (the whole provided
+        folder), or 'cancel'."""
+        dlg = ctk.CTkToplevel(parent)
+        dlg.title("Copy Missing Data")
+        cascade(dlg, parent)
+        try:
+            dlg.transient(parent)
+        except Exception:
+            pass
+        result = {"v": "cancel"}
+
+        body = ctk.CTkFrame(dlg, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=scale_value(20), pady=scale_value(16))
+        ctk.CTkLabel(body, text="Copy Missing Data",
+                     font=ctk.CTkFont(size=14, weight="bold"),
+                     anchor="w", justify="left").pack(fill="x", pady=(0, scale_value(6)))
+        ctk.CTkLabel(
+            body,
+            text=(f"{found} of {total} missing file(s) were found under:\n{src}\n\n"
+                  f"Data will be COPIED into the input directory:\n{dest}\n\n"
+                  "Choose what to copy:"),
+            anchor="w", justify="left", wraplength=scale_value(480)).pack(fill="x", pady=(0, scale_value(12)))
+
+        def choose(v):
+            result["v"] = v
+            try:
+                dlg.grab_release()
+                dlg.destroy()
+            except Exception:
+                pass
+
+        row = ctk.CTkFrame(body, fg_color="transparent")
+        row.pack(fill="x", pady=(scale_value(6), 0))
+        ctk.CTkButton(row, text="Referenced files only", width=scale_value(170),
+                      fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER,
+                      command=lambda: choose("referenced")).pack(side="left")
+        ctk.CTkButton(row, text="Entire folder", width=scale_value(130),
+                      fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
+                      command=lambda: choose("entire")).pack(side="left", padx=scale_value(8))
+        ctk.CTkButton(row, text="Cancel", width=scale_value(100),
+                      command=lambda: choose("cancel")).pack(side="right")
+
+        dlg.protocol("WM_DELETE_WINDOW", lambda: choose("cancel"))
+        dlg.update_idletasks()
+        _safe_grab(dlg)
+        dlg.wait_window()
+        return result["v"]
 
     def _erase_data_utility(self):
         """Utility to erase selected data from output directory."""

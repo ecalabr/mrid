@@ -70,6 +70,35 @@ def find_under_root(target, root):
     return None
 
 
+def copy_tree_into(source_root, dest_dir):
+    """Copy the entire contents of *source_root* into *dest_dir*, preserving the
+    relative structure and merging (never overwriting an existing file). This
+    mirrors where the per-file recovery would place referenced files, so the
+    project's missing files end up discoverable. Returns the number of files
+    copied."""
+    count = 0
+    if not source_root or not os.path.isdir(source_root):
+        return 0
+    for dirpath, _dirs, files in os.walk(source_root):
+        rel = os.path.relpath(dirpath, source_root)
+        target_dir = dest_dir if rel == "." else os.path.join(dest_dir, rel)
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+        except Exception as e:
+            logger.warning(f"Could not create {target_dir}: {e}")
+            continue
+        for name in files:
+            dst = os.path.join(target_dir, name)
+            if os.path.exists(dst):
+                continue
+            try:
+                shutil.copy2(os.path.join(dirpath, name), dst)
+                count += 1
+            except Exception as e:
+                logger.warning(f"Could not copy {name} into {target_dir}: {e}")
+    return count
+
+
 def count_recoverable(missing, source_root):
     """How many of the *missing* input files can be found under *source_root*
     (without copying). Lets the UI warn before any data is copied."""
