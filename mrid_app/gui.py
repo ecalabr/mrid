@@ -3759,73 +3759,92 @@ class MainApp:
                 self.classification_finished(aborted=False)
                 return
 
-            # 3. Calculate total verification windows
+            # 3. Flatten all target-series batches into an ordered window list so
+            # the user can navigate backward across series (e.g. from the first
+            # T2 window back to the last T1 window) with the Previous button.
             max_per_window = NUM_COLUMNS * NUM_ROWS
-            total_windows = sum((len(df) + max_per_window - 1) // max_per_window for df in series_groups.values())
-
-            self.progress_bar.config(maximum=total_windows)
-            current_window = 0
-
-            # 4. Loop through each TARGET_SERIES
-            studies_to_delete = set()
-
+            windows = []  # (target_series, batch_start, batch_end, total_series, batch_df)
+            path_to_folder = {}  # series path -> study folder (for deletion)
             for target_series in TARGET_SERIES:
                 if target_series == "Other" or target_series not in series_groups:
                     continue
+                target_df = series_groups[target_series]
+                total_series = len(target_df)
+                if total_series == 0:
+                    continue
+                for batch_start in range(0, total_series, max_per_window):
+                    batch_end = min(batch_start + max_per_window, total_series)
+                    batch_df = target_df.iloc[batch_start:batch_end]
+                    windows.append((target_series, batch_start, batch_end, total_series, batch_df))
+                    for _, row_data in batch_df.iterrows():
+                        path_to_folder[row_data['Path']] = row_data['study_folder']
 
+            total_windows = len(windows)
+            self.progress_bar.config(maximum=max(1, total_windows))
+
+            # 4. Navigate the windows. marks_by_window[idx] = set of series paths
+            # the user marked Incorrect; studies are deleted only after a single
+            # final confirmation, so Previous can freely revise these marks.
+            marks_by_window = {}
+            idx = 0
+            while 0 <= idx < total_windows:
                 if self.stop_requested.is_set():
                     self.classification_finished(aborted=True)
                     return
 
-                target_df = series_groups[target_series]
-                total_series = len(target_df)
+                target_series, batch_start, batch_end, total_series, batch_df = windows[idx]
+                self.progress_label.set(
+                    f"Verifying {target_series} ({batch_start + 1}-{batch_end} of {total_series}) "
+                    f"— window {idx + 1} of {total_windows}")
 
-                if total_series == 0:
-                    continue
+                verification_done = threading.Event()
+                result = {}
+                preset = marks_by_window.get(idx, set())
+                is_first = (idx == 0)
 
-                self.progress_label.set(f"Verifying {target_series} series ({total_series} total)...")
+                def show_verification(batch_df=batch_df, target_series=target_series,
+                                      batch_start=batch_start, total_series=total_series,
+                                      result=result, verification_done=verification_done,
+                                      is_first=is_first, preset=preset):
+                    show_verification_gui(
+                        batch_df, target_series, batch_start, total_series,
+                        self.stop_requested, verification_done, result, output_dir,
+                        is_first=is_first, preset_incorrect=preset
+                    )
 
-                # Split into batches
-                for batch_start in range(0, total_series, max_per_window):
+                self.master.after(0, show_verification)
+
+                while not verification_done.is_set():
+                    time.sleep(0.1)
                     if self.stop_requested.is_set():
                         self.classification_finished(aborted=True)
                         return
 
-                    batch_end = min(batch_start + max_per_window, total_series)
-                    batch_df = target_df.iloc[batch_start:batch_end]
+                action = result.get('action')
+                if action == 'stop':
+                    self.stop_requested.set()
+                    self.classification_finished(aborted=True)
+                    return
+                elif action == 'previous':
+                    idx = max(0, idx - 1)
+                else:  # approve or skip
+                    if action == 'approve':
+                        marks_by_window[idx] = result.get('marked_paths', set())
+                    idx += 1
 
-                    # Create verification window and wait for result
-                    verification_done = threading.Event()
-                    incorrect_studies = []
-                    stop_all = [False]
-
-                    # Show verification GUI on main thread
-                    def show_verification():
-                        show_verification_gui(
-                            batch_df, target_series, batch_start, total_series,
-                            self.stop_requested, verification_done, incorrect_studies, stop_all, output_dir
-                        )
-
-                    self.master.after(0, show_verification)
-
-                    # Wait for user to complete verification
-                    while not verification_done.is_set():
-                        time.sleep(0.1)
-                        if self.stop_requested.is_set():
-                            self.classification_finished(aborted=True)
-                            return
-
-                    # Check if user pressed Stop All
-                    if stop_all[0]:
-                        self.stop_requested.set()
-                        self.classification_finished(aborted=True)
-                        return
-
-                    studies_to_delete.update(incorrect_studies)
-
-                    current_window += 1
-                    self.progress_bar.config(value=current_window)
+                try:
+                    self.progress_bar.config(value=idx)
                     self.master.update_idletasks()
+                except Exception:
+                    pass
+
+            # Compute the final set of study folders to delete from all windows.
+            studies_to_delete = set()
+            for paths in marks_by_window.values():
+                for p in paths:
+                    folder = path_to_folder.get(p)
+                    if folder:
+                        studies_to_delete.add(folder)
 
             # 5. Handle deletion of incorrect studies
             if studies_to_delete:
@@ -4180,7 +4199,8 @@ def _make_scrollable_frame(root, pad_x=0, pad_y=0):
 
 
 def show_verification_gui(batch_df, target_series, batch_start, total_series,
-                         stop_event, done_event, incorrect_studies, stop_all, output_dir):
+                         stop_event, done_event, result, output_dir,
+                         is_first=True, preset_incorrect=None):
     """
     Display a verification GUI window for a batch of series.
     Shows middle slice thumbnails with Correct/Incorrect toggle buttons.
@@ -4192,10 +4212,15 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         total_series: Total number of series for this target
         stop_event: Event to signal stop requested
         done_event: Event to signal this window is complete
-        incorrect_studies: List to append study folders marked as incorrect
-        stop_all: List with single boolean element to signal Stop All
+        result: dict the GUI fills in — result['action'] is one of
+            'approve' / 'skip' / 'previous' / 'stop'; on 'approve' it also sets
+            result['marked_paths'] to the set of series paths marked Incorrect.
         output_dir: Output directory containing series_thumbnails folder
+        is_first: when True, the Previous button is disabled (first window)
+        preset_incorrect: set of series paths to pre-mark as Incorrect (restores
+            the user's earlier marks when revisiting this window via Previous)
     """
+    preset_incorrect = preset_incorrect or set()
     root = ctk.CTkToplevel()
     cascade(root, tk._default_root)
 
@@ -4256,8 +4281,9 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
                  bg=ui_theme.PANEL_BG, fg="#e0e0e0", font=_series_desc_font()).grid(
             row=1, column=0, pady=scale_value(5))
 
-        # Toggle button for Correct/Incorrect
-        toggle_var = tk.BooleanVar(value=False)  # False = Correct, True = Incorrect
+        # Toggle button for Correct/Incorrect (pre-marked when revisiting)
+        preset_state = series_path in preset_incorrect
+        toggle_var = tk.BooleanVar(value=preset_state)  # False = Correct, True = Incorrect
         toggle_states[series_path] = (toggle_var, study_folder)
 
         def make_toggle_callback(var, btn, study_path, study_dir):
@@ -4272,10 +4298,10 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
 
         toggle_btn = ctk.CTkButton(
             series_frame,
-            text="Correct",
+            text=("Incorrect" if preset_state else "Correct"),
             width=130,
-            fg_color=ui_theme.NEUTRAL,
-            hover_color=ui_theme.NEUTRAL_HOVER,
+            fg_color=(ui_theme.RED if preset_state else ui_theme.NEUTRAL),
+            hover_color=(ui_theme.RED_HOVER if preset_state else ui_theme.NEUTRAL_HOVER),
             command=None  # Will set below
         )
         toggle_btn.configure(command=make_toggle_callback(toggle_var, toggle_btn, series_path, study_folder))
@@ -4353,46 +4379,49 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
 
     button_frame = ctk.CTkFrame(root, fg_color="transparent")
     button_frame.grid(row=1, column=0, sticky="ew", pady=scale_value(10))
-    button_frame.grid_columnconfigure(0, weight=1)
-    button_frame.grid_columnconfigure(1, weight=0)
-    button_frame.grid_columnconfigure(2, weight=0)
-    button_frame.grid_columnconfigure(3, weight=0)
-    button_frame.grid_columnconfigure(4, weight=1)
+    button_frame.grid_columnconfigure(0, weight=1)   # left spacer
+    button_frame.grid_columnconfigure(1, weight=0)   # Stop All
+    button_frame.grid_columnconfigure(2, weight=0)   # Skip
+    button_frame.grid_columnconfigure(3, weight=0)   # Approve
+    button_frame.grid_columnconfigure(4, weight=0)   # Previous
+    button_frame.grid_columnconfigure(5, weight=1)   # right spacer
+
+    def _close():
+        try:
+            root.grab_release()
+        except Exception:
+            pass
+        try:
+            root.destroy()
+        except Exception:
+            pass
 
     def on_stop_all():
-        stop_all[0] = True
+        result['action'] = 'stop'
         stop_event.set()
-        root.grab_release()
-        root.destroy()
+        _close()
         done_event.set()
 
     def on_skip():
-        # Skip this batch without marking anything
-        root.grab_release()
-        root.destroy()
+        # Skip this batch without changing its saved marks.
+        result['action'] = 'skip'
+        _close()
         done_event.set()
 
     def on_approve():
-        # Collect all studies marked as incorrect
-        marked_incorrect = set()
-        for series_path, (toggle_var, study_folder) in toggle_states.items():
-            if toggle_var.get():  # True = Incorrect
-                marked_incorrect.add(study_folder)
+        # Save the current Incorrect marks for this window. No per-window delete
+        # confirmation — studies are only deleted after a single confirmation at
+        # the end of the workflow (revisit with Previous to revise marks).
+        result['action'] = 'approve'
+        result['marked_paths'] = {p for p, (var, _f) in toggle_states.items() if var.get()}
+        _close()
+        done_event.set()
 
-        if marked_incorrect:
-            response = messagebox.askyesno(
-                "Mark for Deletion",
-                f"{len(marked_incorrect)} series marked as incorrect.\n\n"
-                f"Delete the entire output directories for these studies?\n\nYou will be asked to confirm at the end of verification.",
-                parent=root
-            )
-            if response:
-                incorrect_studies.extend(marked_incorrect)
-            else:
-                return
-
-        root.grab_release()
-        root.destroy()
+    def on_previous(event=None):
+        if is_first:
+            return
+        result['action'] = 'previous'
+        _close()
         done_event.set()
 
     action_font = ctk.CTkFont(size=15, weight="bold")
@@ -4420,14 +4449,26 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         font=action_font,
         command=on_approve
     )
+    btn_prev = ctk.CTkButton(
+        button_frame,
+        fg_color=ui_theme.ORANGE,
+        hover_color=ui_theme.ORANGE_HOVER,
+        text="Previous (w)",
+        font=action_font,
+        command=on_previous,
+        state=("disabled" if is_first else "normal")
+    )
 
     btn_stop.grid(row=0, column=1, padx=scale_value(10))
     btn_skip.grid(row=0, column=2, padx=scale_value(10))
     btn_approve.grid(row=0, column=3, padx=scale_value(10))
+    btn_prev.grid(row=0, column=4, padx=scale_value(10))
 
     root.bind("<a>", lambda event: on_stop_all())
     root.bind("<s>", lambda event: on_skip())
     root.bind("<d>", lambda event: on_approve())
+    if not is_first:
+        root.bind("<w>", on_previous)
 
     _fit_window_to_screen(root, content_frame, button_frame,
                           pad_x=scale_value(20), pad_y=scale_value(20))

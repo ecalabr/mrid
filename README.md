@@ -259,13 +259,13 @@ Models pre-select the best series per target label (respecting `OVERRIDE_THRESHO
 Classifies and saves every study without review. Best for large datasets with consistent protocols and well-validated models.
 
 #### Verify Mode
-Quality control for already-classified studies. Thumbnails are shown in batches grouped by label; toggle any wrong ones to **Incorrect** and approve. At the end you can delete the output folders of incorrect studies for re-classification. Works without models.
+Quality control for already-classified studies. Thumbnails are shown in batches grouped by label; toggle any wrong ones to **Incorrect** and approve. **Previous (w)** steps back to the prior batch — including across labels (e.g. from the first T2 batch back to the last T1 batch) — and reloads the Incorrect marks you set earlier so you can revise them. Studies are deleted only after a single confirmation at the very end of the workflow (there is no per-batch confirmation). Works without models.
 
 **Keyboard shortcuts** (classification and verification windows):
 - `a` = Stop All
 - `s` = Skip
 - `d` = Approve
-- `w` = Previous (Manual/Semi-Auto)
+- `w` = Previous (Manual/Semi-Auto and Verify)
 - In Manual/Semi-Auto, **double-click a label dropdown** to reset it to **Other**.
 
 ### Model Types
