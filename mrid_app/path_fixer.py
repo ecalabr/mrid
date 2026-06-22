@@ -70,6 +70,14 @@ def find_under_root(target, root):
     return None
 
 
+def count_recoverable(missing, source_root):
+    """How many of the *missing* input files can be found under *source_root*
+    (without copying). Lets the UI warn before any data is copied."""
+    if not source_root or not os.path.isdir(source_root):
+        return 0
+    return sum(1 for m in missing if find_under_root(m, source_root))
+
+
 def _resolve_input_path(target, new_input_dir, source_root):
     """Resolve a (possibly broken) input DICOM path. Returns (resolved_path,
     copied_bool) or (None, False) if it cannot be found.

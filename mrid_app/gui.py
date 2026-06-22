@@ -2142,6 +2142,7 @@ class MainApp:
                               command=win.destroy).pack(side="right")
                 return
             missing = rep.get("missing_count", 0)
+            missing_list = rep.get("missing", [])
             _set_status(_summary(rep), color=("#4caf50" if missing == 0 else "#e0b020"))
             _clear_buttons()
             if missing > 0:
@@ -2153,8 +2154,22 @@ class MainApp:
                     src = ui_theme.run_scaled_file_dialog(
                         filedialog.askdirectory, title="Select folder containing the missing data",
                         initialdir=in_var.get(), parent=win)
-                    if src:
-                        _run(source_root=src)
+                    if not src:
+                        return
+                    found = path_fixer.count_recoverable(missing_list, src)
+                    if found == 0:
+                        messagebox.showinfo(
+                            "No Matching Data Found",
+                            "None of the missing files were found under:\n\n"
+                            f"{src}\n\nTry a different (higher-level) folder.", parent=win)
+                        return
+                    if not messagebox.askyesno(
+                        "Copy Missing Data",
+                        f"{found} of {missing} missing file(s) were found under:\n{src}\n\n"
+                        f"They will be COPIED into the input directory:\n{in_var.get()}\n\n"
+                        "Continue?", parent=win):
+                        return
+                    _run(source_root=src)
 
                 def remove():
                     if messagebox.askyesno(
@@ -2163,9 +2178,12 @@ class MainApp:
                         f"classification CSVs?\n\nThis cannot be undone.", parent=win):
                         _run(remove_missing=True)
 
+                ctk.CTkButton(btn_row, text="View Missing", width=scale_value(120),
+                              fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
+                              command=lambda: self._show_missing_files(win, missing_list)).pack(side="left")
                 ctk.CTkButton(btn_row, text="Locate Missing…", width=scale_value(130),
                               fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
-                              command=locate).pack(side="left")
+                              command=locate).pack(side="left", padx=scale_value(8))
                 ctk.CTkButton(btn_row, text="Remove Missing", width=scale_value(130),
                               fg_color=ui_theme.RED, hover_color=ui_theme.RED_HOVER,
                               command=remove).pack(side="left", padx=scale_value(8))
@@ -2194,6 +2212,36 @@ class MainApp:
             initialdir=var.get() if os.path.isdir(var.get()) else os.path.expanduser("~"))
         if directory:
             var.set(directory)
+
+    def _show_missing_files(self, parent, missing_list):
+        """Open a scrollable window listing the missing files (and the distinct
+        folders that contain them) so the user can go find them."""
+        win = ctk.CTkToplevel(parent)
+        win.title("Missing Files")
+        cascade(win, parent)
+        try:
+            win.transient(parent)
+        except Exception:
+            pass
+
+        folders = sorted({os.path.dirname(p) for p in missing_list if p})
+        lines = [f"{len(missing_list)} missing file(s) in {len(folders)} folder(s).",
+                 "", "Folders to locate:"]
+        lines += [f"  {d}" for d in folders]
+        lines += ["", "Files:"]
+        lines += [f"  {p}" for p in missing_list]
+        text = "\n".join(lines)
+
+        box = ctk.CTkTextbox(win, width=scale_value(640), height=scale_value(360),
+                             wrap="none", font=ctk.CTkFont(size=ui_theme.MENU_FONT_SIZE))
+        box.pack(fill="both", expand=True, padx=scale_value(16), pady=scale_value(16))
+        box.insert("1.0", text)
+        box.configure(state="disabled")
+
+        ctk.CTkButton(win, text="Close", width=scale_value(100),
+                      command=win.destroy).pack(pady=(0, scale_value(12)))
+        win.update_idletasks()
+        _safe_grab(win)
 
     def _erase_data_utility(self):
         """Utility to erase selected data from output directory."""
