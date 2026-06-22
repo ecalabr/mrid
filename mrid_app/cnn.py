@@ -641,12 +641,29 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
 
             master_df.to_csv(os.path.join(model_files_dir, "classification_data.csv"), index=False)
 
-        # Remove 'other' and 'none' labels
-        master_df = master_df[master_df['Classification'].str.lower() != 'other'].copy()
-        master_df = master_df[master_df['Classification'].str.lower() != 'none'].copy()
+        # Normally drop the negative 'other'/'none' labels so the model
+        # discriminates among target series. But with only ONE target series,
+        # dropping them leaves a single class and softmax returns 1.0 for every
+        # series (no discrimination). In that case keep the negatives as a single
+        # 'Other' class so the model can score target-vs-Other.
+        cls_lower = master_df['Classification'].str.lower()
+        non_neg = master_df[(cls_lower != 'none') & (cls_lower != 'other')]
+        if non_neg['Classification'].nunique() >= 2:
+            master_df = non_neg.copy()
+        else:
+            master_df = master_df.copy()
+            master_df.loc[cls_lower.isin(['none', 'other']), 'Classification'] = 'Other'
+            logger.info("Only one target series — training target-vs-'Other' so the "
+                        "model can discriminate (kept negative examples).")
         if master_df.empty:
             gui.update_status("❌ Error: Training data is empty after removing 'None'/'other' labels.")
             time.sleep(2)
+            gui.close()
+            return
+        if master_df['Classification'].nunique() < 2:
+            gui.update_status("❌ Error: Need at least two classes to train. With a single "
+                              "target series, also classify some series as 'Other'.")
+            time.sleep(3)
             gui.close()
             return
 
