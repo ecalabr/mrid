@@ -53,35 +53,74 @@ def rebase_output_path(path, new_output_dir):
     return path
 
 
-def find_under_root(target, root):
-    """Locate *target*'s file under *root* by matching the longest path suffix
-    that exists. Returns the found path, or None.
+# Per-root file index (basename -> [full paths]) cached for one fix/scan run so
+# the recursive fallback in find_under_root doesn't re-walk a root each call.
+_INDEX_CACHE = {}
 
-    e.g. target ``/old/data/sub/f.dcm`` with root ``/new/data`` tries
+
+def _clear_index_cache():
+    _INDEX_CACHE.clear()
+
+
+def _root_index(root):
+    idx = _INDEX_CACHE.get(root)
+    if idx is None:
+        idx = {}
+        for dirpath, _dirs, files in os.walk(root):
+            for name in files:
+                idx.setdefault(name, []).append(os.path.join(dirpath, name))
+        _INDEX_CACHE[root] = idx
+    return idx
+
+
+def find_under_root(target, root):
+    """Locate *target*'s file under *root*. Returns the found path, or None.
+
+    First tries the longest existing path suffix directly (fast, unambiguous):
+    target ``/old/data/sub/f.dcm`` with root ``/new/data`` tries
     ``/new/data/old/data/sub/f.dcm`` ... ``/new/data/sub/f.dcm`` ...
-    ``/new/data/f.dcm`` and returns the first (longest-tail) match."""
+    ``/new/data/f.dcm``. If none exist, falls back to a recursive search: among
+    files under *root* with the same basename, pick the one whose path shares the
+    most trailing components with *target* (so data copied a level deeper — e.g.
+    when the user copies an entire provided folder — is still found)."""
     if not target or not root or not os.path.isdir(root):
         return None
     parts = [p for p in os.path.normpath(target).replace("\\", "/").split("/") if p and p != ".."]
+    if not parts:
+        return None
     for start in range(len(parts)):
         cand = os.path.join(root, *parts[start:])
         if os.path.exists(cand):
             return cand
-    return None
+    # Recursive fallback: match by basename + longest trailing-path overlap.
+    best, best_overlap = None, 0
+    for cand in _root_index(root).get(parts[-1], []):
+        cparts = [p for p in cand.replace("\\", "/").split("/") if p]
+        overlap = 0
+        for a, b in zip(reversed(parts), reversed(cparts)):
+            if a == b:
+                overlap += 1
+            else:
+                break
+        if overlap > best_overlap:
+            best, best_overlap = cand, overlap
+    return best
 
 
 def copy_tree_into(source_root, dest_dir):
-    """Copy the entire contents of *source_root* into *dest_dir*, preserving the
-    relative structure and merging (never overwriting an existing file). This
-    mirrors where the per-file recovery would place referenced files, so the
-    project's missing files end up discoverable. Returns the number of files
-    copied."""
+    """Copy the provided folder *itself* into *dest_dir* (i.e. as
+    ``dest_dir/<foldername>/...``), preserving structure and merging without
+    overwriting existing files. The recursive search in find_under_root then
+    re-discovers the project's files at their new (deeper) location. Returns the
+    number of files copied."""
     count = 0
     if not source_root or not os.path.isdir(source_root):
         return 0
-    for dirpath, _dirs, files in os.walk(source_root):
-        rel = os.path.relpath(dirpath, source_root)
-        target_dir = dest_dir if rel == "." else os.path.join(dest_dir, rel)
+    src = source_root.rstrip("/\\")
+    target_root = os.path.join(dest_dir, os.path.basename(src) or "data")
+    for dirpath, _dirs, files in os.walk(src):
+        rel = os.path.relpath(dirpath, src)
+        target_dir = target_root if rel == "." else os.path.join(target_root, rel)
         try:
             os.makedirs(target_dir, exist_ok=True)
         except Exception as e:
@@ -104,6 +143,7 @@ def count_recoverable(missing, source_root):
     (without copying). Lets the UI warn before any data is copied."""
     if not source_root or not os.path.isdir(source_root):
         return 0
+    _clear_index_cache()
     return sum(1 for m in missing if find_under_root(m, source_root))
 
 
@@ -359,6 +399,8 @@ def fix_project_paths(output_dir, new_input_dir, source_root=None, remove_missin
         report["error"] = f"Output directory does not exist: {output_dir}"
         return report
 
+    # Fresh file index (input/source contents may have just changed).
+    _clear_index_cache()
     _fix_symlinks(output_dir, new_input_dir, source_root, remove_missing, report)
     _fix_hierarchy(output_dir, new_input_dir, source_root, remove_missing, report)
     _fix_csvs(output_dir, new_input_dir, source_root, remove_missing, report)
