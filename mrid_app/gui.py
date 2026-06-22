@@ -417,6 +417,7 @@ class MainApp:
         menubar.add_cascade(label="File Options", menu=other_menu)
         other_menu.add_command(label="Convert NIfTIs", command=self._convert_niftis_utility)
         other_menu.add_command(label="Export DICOMS", command=self._export_dicoms_utility)
+        other_menu.add_command(label="Fix broken filepaths", command=self._fix_filepaths_utility)
         other_menu.add_command(label="Erase Data", command=self._erase_data_utility)
 
         config_menu = tk.Menu(menubar, tearoff=0)
@@ -2027,6 +2028,172 @@ class MainApp:
         ui_theme.exempt_window_from_scaling(win)
         cascade(win, self.master)
         _safe_grab(win)
+
+    def _fix_filepaths_utility(self):
+        """File Options > Fix broken filepaths.
+
+        Repairs the absolute paths stored in the project (hierarchy.yaml, the
+        dicom_symlinks, and the classification CSVs) after the input and/or
+        output directory has been moved or renamed. Lets the user confirm the
+        (current) input/output directories, rebases everything onto them, and
+        offers to locate or drop any image data that is still missing."""
+        if self.is_running:
+            messagebox.showwarning("Busy", "Cannot fix filepaths while a workflow is running.", parent=self.master)
+            return
+
+        from . import path_fixer
+
+        win = ctk.CTkToplevel(self.master)
+        win.title("Fix Broken Filepaths")
+        cascade(win, self.master)
+        try:
+            win.transient(self.master)
+        except Exception:
+            pass
+
+        body = ctk.CTkFrame(win, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=scale_value(20), pady=scale_value(16))
+
+        ctk.CTkLabel(body, text="Fix Broken Filepaths",
+                     font=ctk.CTkFont(size=14, weight="bold"),
+                     anchor="w", justify="left").pack(fill="x", pady=(0, scale_value(4)))
+        ctk.CTkLabel(
+            body,
+            text=("Set the current Input and Output directories (they may have moved or been\n"
+                  "renamed). Fixing rebases the hierarchy, DICOM symlinks, and classification\n"
+                  "CSVs onto these locations. Missing image data can be located or removed."),
+            anchor="w", justify="left").pack(fill="x", pady=(0, scale_value(12)))
+
+        in_var = tk.StringVar(value=self.input_dir.get())
+        out_var = tk.StringVar(value=self.output_dir.get())
+
+        def _dir_row(label, var):
+            row = ctk.CTkFrame(body, fg_color="transparent")
+            row.pack(fill="x", pady=scale_value(4))
+            ctk.CTkLabel(row, text=label, width=scale_value(90), anchor="w").pack(side="left")
+            entry = ctk.CTkEntry(row, textvariable=var, width=scale_value(360))
+            entry.pack(side="left", fill="x", expand=True, padx=(0, scale_value(6)))
+            ctk.CTkButton(row, text="Browse", width=scale_value(80),
+                          command=lambda: self._browse_into(var, f"Select {label.strip(':')} directory")).pack(side="left")
+
+        _dir_row("Input DIR:", in_var)
+        _dir_row("Output DIR:", out_var)
+
+        status = ctk.CTkLabel(body, text="", anchor="w", justify="left",
+                              wraplength=scale_value(520))
+        status.pack(fill="x", pady=(scale_value(12), 0))
+
+        btn_row = ctk.CTkFrame(body, fg_color="transparent")
+        btn_row.pack(fill="x", pady=(scale_value(16), 0))
+
+        # Mutable holder for the last report so the resolution buttons can re-run.
+        state = {"running": False}
+
+        def _clear_buttons():
+            for w in btn_row.winfo_children():
+                w.destroy()
+
+        def _set_status(text, color=None):
+            status.configure(text=ui_theme.t(text))
+            if color:
+                status.configure(text_color=color)
+
+        def _summary(rep):
+            parts = [
+                f"Symlinks re-pointed: {rep.get('symlinks_fixed', 0)}",
+                f"Hierarchy updated: {'yes' if rep.get('hierarchy_updated') else 'no'}",
+                f"Classification CSVs updated: {rep.get('csvs_updated', 0)}",
+            ]
+            if rep.get("removed_series") or rep.get("removed_rows") or rep.get("removed_symlink_dirs"):
+                parts.append(f"Removed: {rep.get('removed_series',0)} series, "
+                             f"{rep.get('removed_rows',0)} rows, "
+                             f"{rep.get('removed_symlink_dirs',0)} symlink dirs")
+            parts.append(f"Still missing: {rep.get('missing_count', 0)} item(s)")
+            return "\n".join(parts)
+
+        def _run(source_root=None, remove_missing=False):
+            inp, out = in_var.get(), out_var.get()
+            if not os.path.isdir(out):
+                messagebox.showerror("Error", "Please choose a valid Output directory.", parent=win)
+                return
+            if not os.path.isdir(inp):
+                messagebox.showerror("Error", "Please choose a valid Input directory.", parent=win)
+                return
+            state["running"] = True
+            _clear_buttons()
+            _set_status("Fixing filepaths…", color="#e0b020")
+
+            def worker():
+                try:
+                    rep = path_fixer.fix_project_paths(out, inp, source_root=source_root,
+                                                       remove_missing=remove_missing)
+                except Exception as e:
+                    rep = {"error": str(e)}
+                self.master.after(0, lambda: _done(rep))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def _done(rep):
+            state["running"] = False
+            if rep.get("error"):
+                _set_status(f"Error: {rep['error']}", color="#ff6b6b")
+                _clear_buttons()
+                ctk.CTkButton(btn_row, text="Close", width=scale_value(100),
+                              command=win.destroy).pack(side="right")
+                return
+            missing = rep.get("missing_count", 0)
+            _set_status(_summary(rep), color=("#4caf50" if missing == 0 else "#e0b020"))
+            _clear_buttons()
+            if missing > 0:
+                # Update the main-app selectors so subsequent runs use them.
+                self.input_dir.set(in_var.get())
+                self.output_dir.set(out_var.get())
+
+                def locate():
+                    src = ui_theme.run_scaled_file_dialog(
+                        filedialog.askdirectory, title="Select folder containing the missing data",
+                        initialdir=in_var.get(), parent=win)
+                    if src:
+                        _run(source_root=src)
+
+                def remove():
+                    if messagebox.askyesno(
+                        "Remove Missing Data",
+                        f"Remove {missing} missing item(s) from the hierarchy, symlinks, and "
+                        f"classification CSVs?\n\nThis cannot be undone.", parent=win):
+                        _run(remove_missing=True)
+
+                ctk.CTkButton(btn_row, text="Locate Missing…", width=scale_value(130),
+                              fg_color=ui_theme.NEUTRAL, hover_color=ui_theme.NEUTRAL_HOVER,
+                              command=locate).pack(side="left")
+                ctk.CTkButton(btn_row, text="Remove Missing", width=scale_value(130),
+                              fg_color=ui_theme.RED, hover_color=ui_theme.RED_HOVER,
+                              command=remove).pack(side="left", padx=scale_value(8))
+                ctk.CTkButton(btn_row, text="Close", width=scale_value(100),
+                              command=win.destroy).pack(side="right")
+            else:
+                self.input_dir.set(in_var.get())
+                self.output_dir.set(out_var.get())
+                ctk.CTkButton(btn_row, text="Close", width=scale_value(100),
+                              fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER,
+                              command=win.destroy).pack(side="right")
+
+        ctk.CTkButton(btn_row, text="Fix filepaths", width=scale_value(130),
+                      fg_color=ui_theme.GREEN, hover_color=ui_theme.GREEN_HOVER,
+                      command=lambda: (None if state["running"] else _run())).pack(side="left")
+        ctk.CTkButton(btn_row, text="Cancel", width=scale_value(100),
+                      command=win.destroy).pack(side="right")
+
+        win.update_idletasks()
+        _safe_grab(win)
+
+    def _browse_into(self, var, title):
+        """Open a directory chooser and store the result in *var* (Tk variable)."""
+        directory = ui_theme.run_scaled_file_dialog(
+            filedialog.askdirectory, title=title,
+            initialdir=var.get() if os.path.isdir(var.get()) else os.path.expanduser("~"))
+        if directory:
+            var.set(directory)
 
     def _erase_data_utility(self):
         """Utility to erase selected data from output directory."""

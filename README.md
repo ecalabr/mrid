@@ -65,6 +65,7 @@ MRID automates the classification and organization of brain MRI DICOM series. It
 - **NIfTI conversion**: Integrated dcm2niix conversion with automatic file organization
 - **Compressed DICOM support**: JPEG, JPEG2000, JPEG-LS, and RLE transfer syntaxes via python-gdcm
 - **Automatic folder organization**: Unstructured DICOM folders are organized with symlinks (no file duplication)
+- **Broken-filepath repair**: relink a project after its input/output directories are moved or renamed, with the option to locate or drop missing image data
 - **User-friendly configuration**: Per-project `config.py` with a guided Config Wizard for non-coders
 
 ### Machine Learning
@@ -523,6 +524,7 @@ mrid/
 
 - **Convert NIfTIs** — batch-convert all classified series (skips ones already converted; shows progress and a summary)
 - **Export DICOMS** — copy classified series to a chosen folder organized as `{mrn}/{study_uid}/{label}/{instance_uid}.dcm`
+- **Fix broken filepaths** — repair a project after its input and/or output directory was moved or renamed. Confirm the current Input/Output directories (pre-filled from the main window), then **Fix filepaths** rebases the stored paths in `hierarchy.yaml`, the `dicom_symlinks`, and the classification CSVs onto the new locations (re-pointing symlinks by re-discovering each DICOM under the new input). Any image data still missing can be **located** — point to the highest-level folder that holds it and the rest is auto-discovered and copied into the input directory — or **removed** from the hierarchy, symlinks, and CSVs to proceed without it
 - **Erase Data** — selectively delete classifications, models, hierarchy/thumbnails, and/or the project config, with user confirmation
 
 ### View Menu
