@@ -272,6 +272,7 @@ Study classifications are deleted only after a single confirmation at the very e
 - `s` = Skip
 - `d` = Approve
 - `w` = Previous (Manual/Semi-Auto and Verify)
+- In Manual/Semi-Auto, **`space`** pages the window down through the series, then reverses to page up at the bottom (and back to down at the top) — quick keyboard navigation when more series are present than fit on screen.
 - In Manual/Semi-Auto, **double-click a label dropdown** to reset it to **Other**.
 - In Manual/Semi-Auto, hover a label dropdown and press a **number key `1`–`9`** to assign the corresponding label (1 = first label, in `TARGET_SERIES` order).
 - **Right-click any thumbnail** (Manual, Semi-Auto, Verify, Analyze) for **Auto window/level** (percentile-based contrast, re-read from the DICOM) or **Default window/level** (the DICOM's own window). The choice carries through while scrolling the series.

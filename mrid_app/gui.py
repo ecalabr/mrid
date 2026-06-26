@@ -5460,6 +5460,30 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     for _n in range(1, 10):
         root.bind(str(_n), _make_number_handler(_n), add="+")
 
+    # Spacebar pages the scroll area: down until the bottom is reached, then up
+    # until the top, reversing at each end — so the user can sweep through more
+    # series than fit on screen using one key.
+    _scroll_dir = [1]  # 1 = page down, -1 = page up
+    def _on_space(event=None):
+        try:
+            top, bottom = _canvas.yview()
+        except Exception:
+            return "break"
+        if _scroll_dir[0] == 1:
+            if bottom >= 0.999:          # at the bottom — reverse and page up
+                _scroll_dir[0] = -1
+                _canvas.yview_scroll(-1, "pages")
+            else:
+                _canvas.yview_scroll(1, "pages")
+        else:
+            if top <= 0.001:             # at the top — reverse and page down
+                _scroll_dir[0] = 1
+                _canvas.yview_scroll(1, "pages")
+            else:
+                _canvas.yview_scroll(-1, "pages")
+        return "break"
+    root.bind("<space>", _on_space, add="+")
+
     _fit_window_to_screen(root, content_frame, button_frame,
                           pad_x=scale_value(20), pad_y=scale_value(20))
     _safe_grab(root)
