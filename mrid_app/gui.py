@@ -4015,6 +4015,8 @@ class MainApp:
                             except Exception as e:
                                 logger.warning(f"Error reading {csv_path}: {e}")
 
+            from .utils import filter_nonempty_frames
+            all_classifications = filter_nonempty_frames(all_classifications)
             if not all_classifications:
                 self.master.after(0, lambda: messagebox.showinfo(
                     "No Classifications Found",

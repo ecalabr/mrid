@@ -5,7 +5,8 @@ import pickle
 import hashlib
 import multiprocessing as mp
 from .utils import (extract_study_id_from_path, get_study_csv_name,
-                    get_classified_outputs_dir, get_num_parallel_workers)
+                    get_classified_outputs_dir, get_num_parallel_workers,
+                    filter_nonempty_frames)
 from .logging_config import get_logger
 
 logger = get_logger()
@@ -643,6 +644,7 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
                         except Exception as e:
                             logger.warning(f"Error reading {csv_path}: {e}")
 
+            all_data = filter_nonempty_frames(all_data)
             if not all_data:
                 gui.update_status("❌ Error: No classification CSV files found to train on.")
                 time.sleep(2)

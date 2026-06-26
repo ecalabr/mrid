@@ -16,6 +16,25 @@ except ImportError:
 logger = logging.getLogger('mrid')
 
 
+def filter_nonempty_frames(frames):
+    """Return only the DataFrames safe to concatenate — dropping None, empty, and
+    all-NA frames.
+
+    pandas deprecates including empty or all-NA entries in concat (it changes how
+    the result's dtypes are inferred), which raised a FutureWarning when a study's
+    classification CSV was empty/all-NA. Such frames contribute nothing, so we
+    drop them before concatenating."""
+    out = []
+    for df in frames:
+        try:
+            if df is None or df.empty or df.isna().all().all():
+                continue
+        except Exception:
+            pass
+        out.append(df)
+    return out
+
+
 def get_num_parallel_workers():
     """Number of parallel workers (threads/processes) to use.
 

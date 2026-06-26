@@ -8,7 +8,7 @@ import pandas as pd
 import pydicom
 from .prep import _preprocess_df, encode_text_features
 from .config import N_ESTIMATORS, DICOM_HEADER_FIELDS
-from .utils import safe_get_dicom_attribute, extract_study_id_from_path, get_study_csv_name, get_classified_outputs_dir
+from .utils import safe_get_dicom_attribute, extract_study_id_from_path, get_study_csv_name, get_classified_outputs_dir, filter_nonempty_frames
 from .csv_field_updater import (
     scan_for_missing_fields,
     update_all_csvs_with_missing_fields
@@ -115,6 +115,7 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
                         except Exception as e:
                             logger.warning(f"Error reading {csv_path}: {e}")
 
+            all_data = filter_nonempty_frames(all_data)
             if not all_data:
                 gui.update_status("❌ Error: No classification CSV files found to train on.")
                 time.sleep(2)
