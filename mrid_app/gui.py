@@ -1296,6 +1296,23 @@ class MainApp:
             logger.error(f"Failed to write STUDY_NAME_TEMPLATE to config: {e}")
             return False
 
+    def _autocomplete_empty_study(self, output_dir, mrn, study_uid, accn):
+        """Write an empty results CSV for an exam that has no series to display,
+        so it counts as already-classified and is skipped by the resume logic.
+        No-op if the CSV already exists."""
+        try:
+            study_dir_name = get_study_dir_name(mrn, study_uid, accn)
+            study_dir = os.path.join(get_classified_outputs_dir(output_dir), study_dir_name)
+            csv_path = os.path.join(study_dir, get_study_csv_name(study_dir_name))
+            if os.path.exists(csv_path):
+                return
+            os.makedirs(study_dir, exist_ok=True)
+            with open(csv_path, "w", newline="") as fh:
+                fh.write("Classification,Path\n")
+            logger.info(f"Auto-completed empty exam {mrn}/{study_uid} (no series): wrote empty results CSV.")
+        except Exception as e:
+            logger.warning(f"Could not auto-complete empty exam {mrn}/{study_uid}: {e}")
+
     def _load_study_labels(self, output_dir, mrn, study_uid, accn):
         """Return {dicom_path: label} from a study's saved classification CSV, or
         None if it doesn't exist / can't be read. Used to restore a user's
@@ -1479,9 +1496,15 @@ class MainApp:
             # Index-based loop so Manual/Semi-Auto can navigate backward with the
             # Previous button. force_show makes the next iteration display a study
             # even if it was already classified (so revisits load saved labels).
+            # Auto-complete exams that have no series to display by writing an
+            # empty results CSV. They then count as already-classified and are
+            # skipped by the normal resume logic below — no per-study check.
+            for _mrn, _uid, _accn, _series in all_studies:
+                if not any((_series or {}).values()):
+                    self._autocomplete_empty_study(output_dir, _mrn, _uid, _accn)
+
             idx = 0
             force_show = False
-            direction = 1   # +1 forward (approve/skip), -1 backward (previous)
             while 0 <= idx < total_studies:
                 if self.stop_requested.is_set():
                     logger.info("Classification loop aborted by user.")
@@ -1489,22 +1512,6 @@ class MainApp:
                     return
 
                 mrn, study_uid, accn, series_dict = all_studies[idx]
-
-                # Auto-skip exams with no series to display (nothing to classify).
-                # Skip in the current navigation direction so paging back with
-                # Previous doesn't bounce forward over an empty exam.
-                if not any((series_dict or {}).values()):
-                    logger.info(f"Auto-skipping study {mrn}/{study_uid}: no series to display.")
-                    idx += direction
-                    if idx < 0:           # no earlier non-empty exam — resume forward
-                        idx, direction = 0, 1
-                    try:
-                        self.progress_bar.config(value=max(0, min(idx, total_studies)))
-                        self.master.update_idletasks()
-                    except Exception:
-                        pass
-                    continue
-
                 self.progress_label.set(
                     f"Classifying Study {idx + 1} of {total_studies} ({mode}/{model_type}): {mrn} / {study_uid}")
 
@@ -1594,10 +1601,8 @@ class MainApp:
                 elif action == 'previous':
                     idx = max(0, idx - 1)
                     force_show = True
-                    direction = -1
                 else:  # approve or skip
                     idx += 1
-                    direction = 1
 
                 try:
                     self.progress_bar.config(value=idx)
