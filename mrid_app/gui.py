@@ -5447,7 +5447,8 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     if not is_first:
         root.bind("<w>", on_previous)
 
-    # Number keys 1..9 set the dropdown under the mouse to the Nth label.
+    # Number keys 1..9 set the dropdown under the mouse to the Nth label; 0 sets
+    # it to "Other".
     def _make_number_handler(n):
         def _handler(event=None):
             dd = hover_state.get("dd")
@@ -5459,6 +5460,12 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         return _handler
     for _n in range(1, 10):
         root.bind(str(_n), _make_number_handler(_n), add="+")
+
+    def _on_zero(event=None):
+        dd = hover_state.get("dd")
+        if dd is not None:
+            dd.set_value("Other")
+    root.bind("0", _on_zero, add="+")
 
     # Spacebar pages the scroll area: down until the bottom is reached, then up
     # until the top, reversing at each end — so the user can sweep through more
