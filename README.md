@@ -244,7 +244,7 @@ python tests.py
 - "Other" is always appended to `TARGET_SERIES` as the catch-all label for not target series
 
 #### Manual Mode
-Review and annotate every series manually. Each study opens in a window of thumbnails with a label dropdown per series. Controls (and hotkeys) are as follows:
+Review and annotate every series manually. Each study opens in a window of thumbnails with a label dropdown per series. Exams with no series to display are skipped automatically. Controls (and hotkeys) are as follows:
 - **Approve (d)** save current labels and advance to the next study.
 - **Skip (s)** move on to the next study without saving labels. Next time you start classification, this case will remain in the unclassified pool.
 - **Previous (w)** step back to the prior study (it reloads your previously-approved labels if present). You can do this as many times as you want (taking you back to the first study), but when you next advance you will go back to the next previously unclassified study.

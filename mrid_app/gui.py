@@ -1481,6 +1481,7 @@ class MainApp:
             # even if it was already classified (so revisits load saved labels).
             idx = 0
             force_show = False
+            direction = 1   # +1 forward (approve/skip), -1 backward (previous)
             while 0 <= idx < total_studies:
                 if self.stop_requested.is_set():
                     logger.info("Classification loop aborted by user.")
@@ -1488,6 +1489,22 @@ class MainApp:
                     return
 
                 mrn, study_uid, accn, series_dict = all_studies[idx]
+
+                # Auto-skip exams with no series to display (nothing to classify).
+                # Skip in the current navigation direction so paging back with
+                # Previous doesn't bounce forward over an empty exam.
+                if not any((series_dict or {}).values()):
+                    logger.info(f"Auto-skipping study {mrn}/{study_uid}: no series to display.")
+                    idx += direction
+                    if idx < 0:           # no earlier non-empty exam — resume forward
+                        idx, direction = 0, 1
+                    try:
+                        self.progress_bar.config(value=max(0, min(idx, total_studies)))
+                        self.master.update_idletasks()
+                    except Exception:
+                        pass
+                    continue
+
                 self.progress_label.set(
                     f"Classifying Study {idx + 1} of {total_studies} ({mode}/{model_type}): {mrn} / {study_uid}")
 
@@ -1577,8 +1594,10 @@ class MainApp:
                 elif action == 'previous':
                     idx = max(0, idx - 1)
                     force_show = True
+                    direction = -1
                 else:  # approve or skip
                     idx += 1
+                    direction = 1
 
                 try:
                     self.progress_bar.config(value=idx)
