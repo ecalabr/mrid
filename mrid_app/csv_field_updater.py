@@ -30,6 +30,10 @@ def check_missing_fields(csv_path):
     """
     try:
         df = pd.read_csv(csv_path)
+        # An empty CSV (e.g. an auto-completed exam with no series) has no rows
+        # to extract DICOM fields from — nothing is missing, so skip it.
+        if df.empty:
+            return []
         expected_fields = get_expected_field_names()
         current_fields = set(df.columns)
 
