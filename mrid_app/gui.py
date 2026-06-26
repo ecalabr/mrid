@@ -1503,6 +1503,40 @@ class MainApp:
                 if not any((_series or {}).values()):
                     self._autocomplete_empty_study(output_dir, _mrn, _uid, _accn)
 
+            # Semi-Auto inference prefetch: while the user reviews the current
+            # study, compute the next study's model pre-selections in the
+            # background so the next window can appear without waiting on it.
+            prefetch = {}            # study idx -> {'thread', 'result':[obj]}
+            prefetch_lock = threading.Lock()
+
+            def _prefetch(next_idx):
+                if mode != "Semi-Auto" or not (0 <= next_idx < total_studies):
+                    return
+                n_mrn, n_uid, n_accn, n_series = all_studies[next_idx]
+                if not any((n_series or {}).values()):
+                    return  # empty / auto-completed exam — nothing to infer
+                n_dir = get_study_dir_name(n_mrn, n_uid, n_accn)
+                n_csv = os.path.join(get_classified_outputs_dir(output_dir), n_dir, get_study_csv_name(n_dir))
+                if os.path.exists(n_csv):
+                    return  # already classified — will use saved labels, no inference
+                with prefetch_lock:
+                    if next_idx in prefetch:
+                        return
+                    holder = {'result': [None], 'thread': None}
+                    prefetch[next_idx] = holder
+
+                def _work():
+                    try:
+                        holder['result'][0] = processing.optimize_study_selections(
+                            n_series, model_type,
+                            rf_model, rf_target_encoder, rf_feature_encoder,
+                            cnn_model, cnn_target_encoder, self.rf_field_types)
+                    except Exception as e:
+                        logger.debug(f"Prefetch inference failed for study {next_idx}: {e}")
+                        holder['result'][0] = None
+                holder['thread'] = threading.Thread(target=_work, daemon=True)
+                holder['thread'].start()
+
             idx = 0
             force_show = False
             while 0 <= idx < total_studies:
@@ -1560,11 +1594,20 @@ class MainApp:
                 preset_labels = self._load_study_labels(output_dir, mrn, study_uid, accn) if csv_exists else None
                 optimized_result = None
                 if mode == "Semi-Auto" and not preset_labels:
-                    optimized_result = processing.optimize_study_selections(
-                        series_dict, model_type,
-                        rf_model, rf_target_encoder, rf_feature_encoder,
-                        cnn_model, cnn_target_encoder, self.rf_field_types
-                    )
+                    # Use the prefetched result if it was computed during the
+                    # previous study's review; otherwise compute it now.
+                    with prefetch_lock:
+                        holder = prefetch.pop(idx, None)
+                    if holder is not None:
+                        if holder['thread'] is not None:
+                            holder['thread'].join()
+                        optimized_result = holder['result'][0]
+                    if optimized_result is None:
+                        optimized_result = processing.optimize_study_selections(
+                            series_dict, model_type,
+                            rf_model, rf_target_encoder, rf_feature_encoder,
+                            cnn_model, cnn_target_encoder, self.rf_field_types
+                        )
 
                 is_first = (idx == 0)
 
@@ -1588,8 +1631,11 @@ class MainApp:
                     )
                 self.master.after(0, _show_classify)
 
-                while not study_done_event.is_set():
-                    time.sleep(0.1)
+                # Overlap the next study's inference with this study's review.
+                _prefetch(idx + 1)
+
+                # Wake immediately when the user acts (no fixed poll latency).
+                while not study_done_event.wait(timeout=0.1):
                     if self.stop_requested.is_set():
                         self.classification_finished(aborted=True)
                         return
@@ -4366,19 +4412,9 @@ def _fit_window_to_screen(root, content_frame, button_frame, pad_x=0, pad_y=0):
 
         content_w = content_frame.winfo_reqwidth()
 
-        # Scrollbar width — read from the actual scrollbar widget if possible,
-        # otherwise fall back to a safe default
+        # Scrollbar width is a small, predictable constant; measuring the actual
+        # widget would force an extra (expensive) relayout for no real gain.
         scrollbar_w = scale_value(20)
-        try:
-            # The scrollbar is the second child of the outer frame (canvas sibling)
-            outer = content_frame.master.master  # content_frame → canvas → outer
-            for child in outer.winfo_children():
-                if isinstance(child, ctk.CTkScrollbar):
-                    child.update_idletasks()
-                    scrollbar_w = child.winfo_reqwidth()
-                    break
-        except Exception:
-            pass
 
         canvas = content_frame.master                 # content_frame → canvas
         content_h = content_frame.winfo_reqheight()
@@ -4426,19 +4462,17 @@ def _fit_window_to_screen(root, content_frame, button_frame, pad_x=0, pad_y=0):
         root.update_idletasks()
 
         # Empirical correction: if the content still overflows the canvas
-        # viewport (padding under-counted), grow the window to absorb the
-        # overflow — capped at the available height, beyond which it scrolls.
+        # viewport (padding under-counted), grow the window once to absorb the
+        # overflow — capped at the available height, beyond which it scrolls. A
+        # single corrective pass keeps the (expensive) relayout count low.
         try:
-            for _ in range(4):
-                if win_h >= avail_h:
-                    break
+            if win_h < avail_h:
                 viewport_h = canvas.winfo_height()
                 overflow = content_frame.winfo_reqheight() - viewport_h
-                if overflow <= 0:
-                    break
-                win_h = min(avail_h, win_h + overflow + scale_value(4))
-                root.wm_geometry(f"{win_w}x{win_h}+{x}+{y}")
-                root.update_idletasks()
+                if overflow > 0:
+                    win_h = min(avail_h, win_h + overflow + scale_value(4))
+                    root.wm_geometry(f"{win_w}x{win_h}+{x}+{y}")
+                    root.update_idletasks()
         except Exception:
             pass
     except Exception:
