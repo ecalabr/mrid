@@ -363,6 +363,7 @@ def get_series_probabilities_batch(dicom_paths, model, feature_encoder, field_ty
 
     feats = [None] * n
     workers = max(1, min(get_num_parallel_workers(), n))
+    _t = time.perf_counter()   # [BENCH]
     try:
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -371,15 +372,23 @@ def get_series_probabilities_batch(dicom_paths, model, feature_encoder, field_ty
     except Exception:
         for i, p in enumerate(dicom_paths):
             feats[i] = get_series_features(p)
+    logger.info(f"[BENCH]   RF header reads ({n} series, {workers} workers): "
+                f"{(time.perf_counter()-_t)*1000:.0f} ms")  # [BENCH]
 
     valid = [i for i, f in enumerate(feats) if f]
     if not valid:
         return results
     try:
+        _t = time.perf_counter()   # [BENCH]
         X_final = _build_rf_feature_matrix(pd.DataFrame([feats[i] for i in valid]),
                                            feature_encoder, field_types)
+        logger.info(f"[BENCH]   RF feature build (preprocess + text embed + encode, "
+                    f"{len(valid)} series): {(time.perf_counter()-_t)*1000:.0f} ms")  # [BENCH]
         _force_single_thread_predict(model)
+        _t = time.perf_counter()   # [BENCH]
         probas = model.predict_proba(X_final)
+        logger.info(f"[BENCH]   RF predict_proba ({len(valid)} series): "
+                    f"{(time.perf_counter()-_t)*1000:.0f} ms")  # [BENCH]
         for j, i in enumerate(valid):
             results[i] = probas[j]
     except Exception as e:

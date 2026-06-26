@@ -1,3 +1,4 @@
+import time
 import pandas as pd
 from .config import SEMANTIC_MODEL_NAME, DICOM_HEADER_FIELDS
 from .field_detection import analyze_dataframe_fields, preprocess_by_type
@@ -77,11 +78,14 @@ def encode_text_features(feature_df, text_cols):
             continue
 
         text_data = feature_df[col].tolist()
+        _t = time.perf_counter()   # [BENCH]
         embeddings = model.encode(
             text_data,
             show_progress_bar=False,
             convert_to_numpy=True
         )
+        logger.info(f"[BENCH]     text embed '{col}' ({len(text_data)} rows): "
+                    f"{(time.perf_counter()-_t)*1000:.0f} ms")  # [BENCH]
         embedding_df = pd.DataFrame(
             embeddings,
             index=feature_df.index,

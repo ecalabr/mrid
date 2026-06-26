@@ -1,6 +1,7 @@
 import os
 import subprocess
 import csv
+import time
 import numpy as np
 import pydicom
 from PIL import Image
@@ -525,6 +526,7 @@ def get_image_probabilities_batch(dicom_paths, model, target_encoder):
     workers = max(1, min(get_num_parallel_workers(), n))
     def _load(i):
         return i, load_image_tensor(dicom_paths[i], num_slices=num_slices, image_size=image_size)
+    _t = time.perf_counter()   # [BENCH]
     try:
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -533,6 +535,8 @@ def get_image_probabilities_batch(dicom_paths, model, target_encoder):
     except Exception:
         for i in range(n):
             tensors[i] = load_image_tensor(dicom_paths[i], num_slices=num_slices, image_size=image_size)
+    logger.info(f"[BENCH]   CNN image load ({n} series, {workers} workers, "
+                f"{num_slices} slice(s)): {(time.perf_counter()-_t)*1000:.0f} ms")  # [BENCH]
 
     valid = [i for i, t in enumerate(tensors) if t is not None]
     if not valid:
@@ -543,10 +547,13 @@ def get_image_probabilities_batch(dicom_paths, model, target_encoder):
             device = next(model.parameters()).device
         except StopIteration:
             device = torch.device('cpu')
+        _t = time.perf_counter()   # [BENCH]
         with torch.no_grad():
             batch = torch.cat([tensors[i].to(device) for i in valid], dim=0)
             outputs = model(batch)
             probs = torch.nn.functional.softmax(outputs, dim=1).cpu().numpy()
+        logger.info(f"[BENCH]   CNN forward (batch {len(valid)}, {device}): "
+                    f"{(time.perf_counter()-_t)*1000:.0f} ms")  # [BENCH]
         for j, i in enumerate(valid):
             results[i] = probs[j]
     except Exception as e:
@@ -598,12 +605,23 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
         series_list.append((series_desc, first_path))
     paths = [p for _, p in series_list]
 
+    # ---- [BENCH] temporary inference timing (remove later) ----
+    _bench_n = len(paths)
+    _bench_t0 = time.perf_counter()
+
     rf_list = None
     if model_type in ["DICOM Header Model", "Header + Image Model"] and rf_model is not None:
+        _t = time.perf_counter()
         rf_list = get_series_probabilities_batch(paths, rf_model, rf_feature_encoder, rf_field_types)
+        logger.info(f"[BENCH] RF inference ({_bench_n} series): {(time.perf_counter()-_t)*1000:.0f} ms")
     cnn_list = None
     if model_type in ["Image-Based Model", "Header + Image Model"] and cnn_model is not None:
+        _t = time.perf_counter()
         cnn_list = get_image_probabilities_batch(paths, cnn_model, cnn_target_encoder)
+        logger.info(f"[BENCH] CNN inference ({_bench_n} series): {(time.perf_counter()-_t)*1000:.0f} ms")
+    logger.info(f"[BENCH] optimize_study_selections TOTAL ({_bench_n} series, {model_type}): "
+                f"{(time.perf_counter()-_bench_t0)*1000:.0f} ms")
+    # ---- end [BENCH] ----
 
     temp_predictions = {}
     for i, (series_desc, first_path) in enumerate(series_list):
