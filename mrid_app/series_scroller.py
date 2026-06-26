@@ -222,20 +222,25 @@ def _attach_window_menu(panel, scroller):
     menu.add_command(label="Default window/level", command=lambda: scroller.set_window('default'))
 
     def _popup(event):
+        # Post the menu on button *release* (not press) and let the menu keep its
+        # own grab: opening on press and releasing the grab immediately caused the
+        # pending button-release to dismiss the menu before a choice could be
+        # made. Posting on release leaves the menu open so a second click (or a
+        # hold-and-release onto an item) confirms the choice.
         try:
             menu.tk_popup(event.x_root, event.y_root)
-        finally:
+        except Exception:
             try:
                 menu.grab_release()
             except Exception:
                 pass
         return "break"
 
-    panel.bind("<Button-3>", _popup, add="+")
+    panel.bind("<ButtonRelease-3>", _popup, add="+")
     if sys.platform == "darwin":
         # macOS commonly delivers right-click as Button-2 / Control-click.
-        panel.bind("<Button-2>", _popup, add="+")
-        panel.bind("<Control-Button-1>", _popup, add="+")
+        panel.bind("<ButtonRelease-2>", _popup, add="+")
+        panel.bind("<Control-ButtonRelease-1>", _popup, add="+")
 
 
 def attach_series_scrolling(panel, dicom_path, display_size):
