@@ -320,9 +320,24 @@ def prepare_and_cache_cnn_data(filepaths, labels, load_slices_func, output_dir, 
     processed_results = []
     completed = 0
 
+    # Use a 'spawn' context so worker processes start fresh and do NOT inherit
+    # the parent's threads and locks. While the app runs (especially Semi-Auto,
+    # which runs torch/OpenMP inference, plus the thumbnail thread pool) the
+    # parent accumulates background threads; forking such a process can deadlock
+    # the children on inherited locks — which showed up here as a hang during
+    # image loading that only happened after using the app and cleared on
+    # restart. Spawn avoids inheriting that state entirely.
     try:
-        with mp.Pool(processes=num_workers) as pool:
-            for result in pool.imap_unordered(_process_single_image, args_list, chunksize=chunksize):
+        pool_ctx = mp.get_context("spawn")
+    except Exception:
+        pool_ctx = mp
+
+    try:
+        with pool_ctx.Pool(processes=num_workers) as pool:
+            # A small chunksize keeps results streaming so the cancel check below
+            # runs frequently (rather than batching many images per dispatch).
+            for result in pool.imap_unordered(_process_single_image, args_list,
+                                              chunksize=min(chunksize, 4)):
                 # Abort promptly on cancel: kill the worker processes and stop.
                 if cancel_check is not None and cancel_check():
                     logger.info("CNN preprocessing cancelled by user.")
