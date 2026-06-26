@@ -461,6 +461,29 @@ def load_image_tensor(dicom_path, num_slices=1, load_slices_func=None, image_siz
         return None
 
 
+def load_image_tensor_from_thumbnail(thumbnail_path, image_size=None):
+    """Build a 1-slice CNN input tensor from a pre-rendered series thumbnail.
+
+    The thumbnail is the series' center slice rendered exactly as the CNN's
+    training input (same DICOM windowing + 0-255 normalization), so this matches
+    DICOM loading but skips re-opening and re-decoding the whole series — the
+    dominant cost for many-series exams on slow storage. Only valid for
+    single-slice (2D) input. Returns a [1, 1, H, W] tensor, or None."""
+    try:
+        import torch
+        from PIL import Image
+        from .cnn import _get_transforms
+        transforms = _get_transforms(image_size)
+        if transforms is None:
+            return None
+        with Image.open(thumbnail_path) as img:
+            tensor = transforms(img.convert('L'))   # [1, H, W]
+        return tensor.unsqueeze(0)                   # [1, 1, H, W]
+    except Exception as e:
+        logger.debug(f"Error loading thumbnail tensor {thumbnail_path}: {e}")
+        return None
+
+
 def get_image_probabilities(dicom_path, model, target_encoder):
     if not all([model, target_encoder]):
         return None
@@ -499,13 +522,17 @@ def get_image_probabilities(dicom_path, model, target_encoder):
         return None
 
 
-def get_image_probabilities_batch(dicom_paths, model, target_encoder):
+def get_image_probabilities_batch(dicom_paths, model, target_encoder, thumbnail_paths=None):
     """Predict CNN probabilities for many series at once.
 
     Returns a list aligned with *dicom_paths* (None where the image couldn't be
     loaded). Per-series image tensors are loaded in parallel (I/O bound) and run
-    through the model as a single batched forward pass, so a study's series share
-    one model call instead of one each."""
+    through the model as a single batched forward pass.
+
+    For single-slice (2D) models, a pre-rendered series *thumbnail* (the center
+    slice, rendered identically to the CNN's training input) is used when
+    available — this avoids re-opening every DICOM file in the series, which is
+    the dominant cost on large exams over slow storage."""
     n = len(dicom_paths)
     results = [None] * n
     if not all([model, target_encoder]) or n == 0:
@@ -520,11 +547,20 @@ def get_image_probabilities_batch(dicom_paths, model, target_encoder):
     except Exception:
         num_slices = 1
     image_size = getattr(model, 'image_size', None)
+    use_thumbs = (num_slices == 1 and thumbnail_paths is not None)
 
     # Load image tensors in parallel — the slow part is DICOM I/O.
     tensors = [None] * n
+    _from_thumb = [False] * n
     workers = max(1, min(get_num_parallel_workers(), n))
     def _load(i):
+        if use_thumbs:
+            tp = thumbnail_paths[i]
+            if tp and os.path.exists(tp):
+                t = load_image_tensor_from_thumbnail(tp, image_size=image_size)
+                if t is not None:
+                    _from_thumb[i] = True
+                    return i, t
         return i, load_image_tensor(dicom_paths[i], num_slices=num_slices, image_size=image_size)
     _t = time.perf_counter()   # [BENCH]
     try:
@@ -536,7 +572,8 @@ def get_image_probabilities_batch(dicom_paths, model, target_encoder):
         for i in range(n):
             tensors[i] = load_image_tensor(dicom_paths[i], num_slices=num_slices, image_size=image_size)
     logger.info(f"[BENCH]   CNN image load ({n} series, {workers} workers, "
-                f"{num_slices} slice(s)): {(time.perf_counter()-_t)*1000:.0f} ms")  # [BENCH]
+                f"{num_slices} slice(s), {sum(_from_thumb)} from thumbnail): "
+                f"{(time.perf_counter()-_t)*1000:.0f} ms")  # [BENCH]
 
     valid = [i for i, t in enumerate(tensors) if t is not None]
     if not valid:
@@ -598,12 +635,17 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
     # study's series — one sentence-transformer encode + one RF predict, and one
     # CNN forward pass — instead of one call per series, which dominated the time
     # to advance between exams in Semi-Auto.
-    series_list = []   # (series_desc, first_path)
+    series_list = []   # (series_desc, first_path, thumb_path)
     for series_desc, dicom_paths in study_dict.items():
         first_entry = dicom_paths[0]
-        first_path = first_entry.get('dicom_path', '') if isinstance(first_entry, dict) else first_entry
-        series_list.append((series_desc, first_path))
-    paths = [p for _, p in series_list]
+        if isinstance(first_entry, dict):
+            first_path = first_entry.get('dicom_path', '')
+            thumb_path = first_entry.get('thumbnail_path', '')
+        else:
+            first_path, thumb_path = first_entry, ''
+        series_list.append((series_desc, first_path, thumb_path))
+    paths = [p for _, p, _ in series_list]
+    thumb_paths = [tp for _, _, tp in series_list]
 
     # ---- [BENCH] temporary inference timing (remove later) ----
     _bench_n = len(paths)
@@ -617,14 +659,15 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
     cnn_list = None
     if model_type in ["Image-Based Model", "Header + Image Model"] and cnn_model is not None:
         _t = time.perf_counter()
-        cnn_list = get_image_probabilities_batch(paths, cnn_model, cnn_target_encoder)
+        cnn_list = get_image_probabilities_batch(paths, cnn_model, cnn_target_encoder,
+                                                 thumbnail_paths=thumb_paths)
         logger.info(f"[BENCH] CNN inference ({_bench_n} series): {(time.perf_counter()-_t)*1000:.0f} ms")
     logger.info(f"[BENCH] optimize_study_selections TOTAL ({_bench_n} series, {model_type}): "
                 f"{(time.perf_counter()-_bench_t0)*1000:.0f} ms")
     # ---- end [BENCH] ----
 
     temp_predictions = {}
-    for i, (series_desc, first_path) in enumerate(series_list):
+    for i, (series_desc, first_path, _thumb) in enumerate(series_list):
         rf_proba = rf_list[i] if rf_list is not None else None
         cnn_proba = cnn_list[i] if cnn_list is not None else None
 
