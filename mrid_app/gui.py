@@ -4885,6 +4885,9 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     dropdown_values = TARGET_SERIES
     dropdown_vars = {}
     panel_widgets = {}  # Store panel widgets for parallel loading
+    # Tracks which label dropdown the mouse is currently over, so number keys
+    # 1..n set that dropdown to the corresponding label.
+    hover_state = {"dd": None}
 
     # Precompute color map for the dropdown labels
     try:
@@ -5129,6 +5132,31 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                         self.var.trace_add('write', lambda *a: self._update_display())
                     else:
                         self.var.trace('w', lambda *a: self._update_display())
+                except Exception:
+                    pass
+
+                # Track hover so the window-level number-key shortcut targets this
+                # dropdown while the mouse is over it.
+                def _enter(_e=None):
+                    hover_state["dd"] = self
+                def _leave(_e=None):
+                    if hover_state.get("dd") is self:
+                        hover_state["dd"] = None
+                try:
+                    self.btn.bind("<Enter>", _enter, add="+")
+                    self.btn.bind("<Leave>", _leave, add="+")
+                except Exception:
+                    pass
+
+            def set_value(self, label):
+                """Set this dropdown's label (used by the number-key shortcut)."""
+                try:
+                    self.var.set(label)
+                except Exception:
+                    pass
+                self._update_display(label)
+                try:
+                    self._handle_duplicates(label)
                 except Exception:
                     pass
 
@@ -5394,6 +5422,19 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     root.bind("<d>", lambda event: on_done())
     if not is_first:
         root.bind("<w>", on_previous)
+
+    # Number keys 1..9 set the dropdown under the mouse to the Nth label.
+    def _make_number_handler(n):
+        def _handler(event=None):
+            dd = hover_state.get("dd")
+            if dd is None:
+                return
+            idx = n - 1
+            if 0 <= idx < len(dd.options):
+                dd.set_value(dd.options[idx])
+        return _handler
+    for _n in range(1, 10):
+        root.bind(str(_n), _make_number_handler(_n), add="+")
 
     _fit_window_to_screen(root, content_frame, button_frame,
                           pad_x=scale_value(20), pad_y=scale_value(20))

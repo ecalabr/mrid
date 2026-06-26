@@ -273,6 +273,8 @@ Study classifications are deleted only after a single confirmation at the very e
 - `d` = Approve
 - `w` = Previous (Manual/Semi-Auto and Verify)
 - In Manual/Semi-Auto, **double-click a label dropdown** to reset it to **Other**.
+- In Manual/Semi-Auto, hover a label dropdown and press a **number key `1`–`9`** to assign the corresponding label (1 = first label, in `TARGET_SERIES` order).
+- **Right-click any thumbnail** (Manual, Semi-Auto, Verify, Analyze) for **Auto window/level** (percentile-based contrast, re-read from the DICOM) or **Default window/level** (the DICOM's own window). The choice carries through while scrolling the series.
 
 ### Model Types
 
@@ -298,6 +300,8 @@ Then:
 ### Series Thumbnail Scrolling
 
 Everywhere a center-slice thumbnail is shown (classification, verification, and Analyze naming windows), you can **scroll the mouse wheel over the image to page through the entire series**. Slices are loaded from the DICOM source on demand in a background thread, so thumbnail caching and window load times are unaffected. A slice counter (e.g. `12/48`) appears on the image once you start scrolling.
+
+**Window/level:** right-click a thumbnail to choose **Auto window/level** — a percentile-based contrast computed from the image (re-read from the DICOM) — or **Default window/level** (the DICOM's own window). The chosen window is applied consistently to every slice as you scroll.
 
 ### Headless Batch Classification
 

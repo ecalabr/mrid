@@ -42,6 +42,9 @@ class SeriesScroller:
         self._wake = threading.Event()
         self._worker = None
         self._alive = True
+        self._user_scrolled = False  # only annotate slice counter after a scroll
+        self._window = None          # applied window: None (DICOM default) or (wc, ww)
+        self._window_request = None  # pending 'auto' / 'default' window change
 
         panel.bind("<MouseWheel>", self._on_mousewheel, add="+")
         panel.bind("<Button-4>", lambda e: self._step(-1), add="+")  # Linux up
@@ -61,6 +64,7 @@ class SeriesScroller:
 
     def _step(self, direction):
         with self._lock:
+            self._user_scrolled = True
             if self._worker is None:
                 # First scroll: spin up the background loader
                 self._worker = threading.Thread(target=self._worker_loop, daemon=True)
@@ -72,6 +76,17 @@ class SeriesScroller:
                 self._pending_steps += direction
         self._wake.set()
         return "break"
+
+    def set_window(self, mode):
+        """Request an 'auto' or 'default' window/level. The change is computed in
+        the worker thread and re-renders the current slice; it then applies to all
+        slices while scrolling. Safe to call before the user has scrolled."""
+        with self._lock:
+            self._window_request = mode
+            if self._worker is None:
+                self._worker = threading.Thread(target=self._worker_loop, daemon=True)
+                self._worker.start()
+        self._wake.set()
 
     # ── Background loading ────────────────────────────────────────────────────
 
@@ -93,20 +108,39 @@ class SeriesScroller:
             self._pending_steps = 0
 
         while self._alive:
+            # Apply any pending window/level change before rendering.
+            with self._lock:
+                req = self._window_request
+                self._window_request = None
+            if req is not None:
+                self._apply_window_request(req)
+
             with self._lock:
                 index = self._index
             img = self._get_slice(index)
             if img is not None:
                 self._show(img, index)
-            # Wait until the index changes (or widget is destroyed)
+            # Wait until the index changes, a window change is requested, or the
+            # widget is destroyed.
             self._wake.clear()
             with self._lock:
-                if self._index == index:
-                    wait_needed = True
-                else:
-                    wait_needed = False
+                wait_needed = (self._index == index and self._window_request is None)
             if wait_needed:
                 self._wake.wait()
+
+    def _apply_window_request(self, req):
+        from . import processing
+        new_window = None
+        if req == 'auto':
+            with self._lock:
+                idx = self._index if self._index is not None else (len(self._files) // 2)
+                path = self._files[idx] if self._files else self.dicom_path
+            arr = processing.read_slice_array(path)
+            new_window = processing.compute_auto_window(arr)
+        # 'default' -> new_window stays None (DICOM default)
+        with self._lock:
+            self._window = new_window
+            self._cache.clear()
 
     def _get_slice(self, index):
         with self._lock:
@@ -115,8 +149,9 @@ class SeriesScroller:
                 self._cache.move_to_end(index)
                 return cached
             path = self._files[index]
+            window = self._window
         from .processing import _load_single_slice
-        img = _load_single_slice(path)
+        img = _load_single_slice(path, window=window)
         if img is None:
             return None
         img = img.convert("RGB").resize((self.display_size, self.display_size))
@@ -153,7 +188,10 @@ class SeriesScroller:
                 with self._lock:
                     if self._index != index:
                         return
-                tk_img = ImageTk.PhotoImage(self._annotate(img, index), master=self.panel)
+                # Only stamp the slice counter once the user has actually
+                # scrolled (a window/level change alone shouldn't add it).
+                shown = self._annotate(img, index) if self._user_scrolled else img
+                tk_img = ImageTk.PhotoImage(shown, master=self.panel)
                 self.panel.configure(image=tk_img)
                 self.panel.image = tk_img
             except Exception as e:
@@ -165,6 +203,41 @@ class SeriesScroller:
             pass
 
 
+def _attach_window_menu(panel, scroller):
+    """Right-click menu on a thumbnail to auto- or default-window/level it."""
+    import sys
+    import tkinter as tk
+    try:
+        from . import ui_theme
+    except Exception:
+        ui_theme = None
+
+    menu = tk.Menu(panel, tearoff=0)
+    if ui_theme is not None:
+        try:
+            ui_theme.style_menu(menu)
+        except Exception:
+            pass
+    menu.add_command(label="Auto window/level", command=lambda: scroller.set_window('auto'))
+    menu.add_command(label="Default window/level", command=lambda: scroller.set_window('default'))
+
+    def _popup(event):
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            try:
+                menu.grab_release()
+            except Exception:
+                pass
+        return "break"
+
+    panel.bind("<Button-3>", _popup, add="+")
+    if sys.platform == "darwin":
+        # macOS commonly delivers right-click as Button-2 / Control-click.
+        panel.bind("<Button-2>", _popup, add="+")
+        panel.bind("<Control-Button-1>", _popup, add="+")
+
+
 def attach_series_scrolling(panel, dicom_path, display_size):
     """Attach mouse-wheel series scrolling to a thumbnail Label.
 
@@ -174,6 +247,7 @@ def attach_series_scrolling(panel, dicom_path, display_size):
     try:
         scroller = SeriesScroller(panel, dicom_path, display_size)
         panel._series_scroller = scroller
+        _attach_window_menu(panel, scroller)
         return scroller
     except Exception as e:
         logger.debug(f"Could not attach series scrolling: {e}")

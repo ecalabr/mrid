@@ -350,12 +350,79 @@ def load_center_slice_fast(dicom_path):
         return None
 
 
-def _load_single_slice(dicom_path):
+def compute_auto_window(arr):
+    """Compute a robust window/level (center, width) for a pixel array using
+    1st–99th percentiles, so the displayed contrast ignores outliers and most of
+    the background. Returns (window_center, window_width) or None."""
+    try:
+        if arr is None:
+            return None
+        finite = arr[np.isfinite(arr)]
+        if finite.size == 0:
+            return None
+        lo = float(np.percentile(finite, 1.0))
+        hi = float(np.percentile(finite, 99.0))
+        if hi <= lo:
+            lo, hi = float(finite.min()), float(finite.max())
+        if hi <= lo:
+            return None
+        return ((lo + hi) / 2.0, hi - lo)
+    except Exception:
+        return None
+
+
+def read_slice_array(dicom_path):
+    """Return the raw float32 pixel array for a slice (for computing an auto
+    window/level), or None on error."""
+    try:
+        ds = pydicom.dcmread(dicom_path, force=True)
+        return ds.pixel_array.astype(np.float32)
+    except Exception as e:
+        logger.debug(f"Error reading slice array {dicom_path}: {e}")
+        return None
+
+
+def _resolve_window(arr, window, ds=None):
+    """Resolve a (center, width) window for *arr*.
+
+    window:
+      - None    -> use the DICOM WindowCenter/Width if present (the default),
+                   else no clipping (min/max normalize).
+      - 'auto'  -> a percentile-based auto window from arr.
+      - (wc,ww) -> an explicit window (e.g. one computed once for a whole series).
+    """
+    if window is None:
+        if ds is None:
+            return None
+        ww = getattr(ds, "WindowWidth", None)
+        wc = getattr(ds, "WindowCenter", None)
+        if ww is None or wc is None:
+            return None
+        if isinstance(ww, pydicom.multival.MultiValue):
+            ww = ww[0]
+        if isinstance(wc, pydicom.multival.MultiValue):
+            wc = wc[0]
+        try:
+            return (float(wc), float(ww))
+        except Exception:
+            return None
+    if window == 'auto':
+        return compute_auto_window(arr)
+    try:
+        wc, ww = window
+        return (float(wc), float(ww))
+    except Exception:
+        return None
+
+
+def _load_single_slice(dicom_path, window=None):
     """
     Helper to load and process a single DICOM slice into a PIL Image.
 
     Args:
         dicom_path: Path to DICOM file
+        window: windowing to apply — None (DICOM default), 'auto', or an explicit
+            (center, width) tuple. See _resolve_window.
 
     Returns:
         PIL Image or None
@@ -364,16 +431,11 @@ def _load_single_slice(dicom_path):
         ds = pydicom.dcmread(dicom_path, force=True)
         arr = ds.pixel_array.astype(np.float32)
 
-        # Apply windowing if available
-        ww = getattr(ds, "WindowWidth", None)
-        wc = getattr(ds, "WindowCenter", None)
-
-        if ww and wc:
-            if isinstance(ww, pydicom.multival.MultiValue):
-                ww = float(ww[0])
-            if isinstance(wc, pydicom.multival.MultiValue):
-                wc = float(wc[0])
-            arr = np.clip(arr, wc - ww / 2, wc + ww / 2)
+        win = _resolve_window(arr, window, ds=ds)
+        if win is not None:
+            wc, ww = win
+            if ww > 0:
+                arr = np.clip(arr, wc - ww / 2, wc + ww / 2)
 
         # Normalize to 0-255
         arr -= arr.min()
