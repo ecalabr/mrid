@@ -8,7 +8,7 @@ import pandas as pd
 import pydicom
 from .prep import _preprocess_df, encode_text_features
 from .config import N_ESTIMATORS, DICOM_HEADER_FIELDS
-from .utils import safe_get_dicom_attribute, extract_study_id_from_path, get_study_csv_name, get_classified_outputs_dir, filter_nonempty_frames
+from .utils import safe_get_dicom_attribute, extract_study_id_from_path, get_study_csv_name, get_classified_outputs_dir, filter_nonempty_frames, get_num_parallel_workers
 from .csv_field_updater import (
     scan_for_missing_fields,
     update_all_csvs_with_missing_fields
@@ -298,53 +298,90 @@ def get_series_probabilities(dicom_path, model, feature_encoder, field_types=Non
     if not features:
         return None
 
-    X_pred_raw = pd.DataFrame([features])
+    try:
+        X_final = _build_rf_feature_matrix(pd.DataFrame([features]), feature_encoder, field_types)
+        _force_single_thread_predict(model)
+        return model.predict_proba(X_final)[0]
+    except Exception as e:
+        logger.debug(f"RF Prediction probability failed: {e}")
+        return None
 
-    # Preprocess using field types if available
+
+def _build_rf_feature_matrix(X_pred_raw, feature_encoder, field_types=None):
+    """Build the model-ready feature matrix from raw header features (1+ rows).
+
+    Shared by single- and batch-series RF inference. Text columns are embedded in
+    one batched sentence-transformer call (the dominant cost), so processing all
+    of a study's series at once is far faster than one call per series."""
     if field_types is not None:
         X_clean = _preprocess_df(X_pred_raw, is_training=False, field_types=field_types)
     else:
-        # Fallback: preprocess without field types (will auto-detect but less reliable for single sample)
         X_clean = _preprocess_df(X_pred_raw, is_training=False)
 
-    # Determine categorical and text columns from the cleaned data
-    # We need to match what was used during training
     from .field_detection import analyze_dataframe_fields
-
     if field_types is not None:
-        # Use the field types from training
         categorical_cols = [f for f, info in field_types.items() if info['type'] == 'categorical' and f in X_clean.columns]
         text_cols = [f for f, info in field_types.items() if info['type'] == 'text' and f in X_clean.columns]
     else:
-        # Try to infer (less reliable)
         field_names = [field[0] for field in DICOM_HEADER_FIELDS]
         detected_types = analyze_dataframe_fields(X_pred_raw, field_names)
         categorical_cols = [f for f, info in detected_types.items() if info['type'] == 'categorical' and f in X_clean.columns]
         text_cols = [f for f, info in detected_types.items() if info['type'] == 'text' and f in X_clean.columns]
 
+    X_encoded_cat = feature_encoder.transform(X_clean[categorical_cols]) if categorical_cols else []
+    embedded_features_dfs = encode_text_features(X_clean, text_cols) if text_cols else []
+    X_final_num = X_clean.drop(columns=categorical_cols + text_cols) if categorical_cols or text_cols else X_clean
+
+    if len(categorical_cols) > 0:
+        X_encoded_cat_df = pd.DataFrame(X_encoded_cat, index=X_final_num.index, columns=categorical_cols)
+        X_final = pd.concat([X_final_num, X_encoded_cat_df] + embedded_features_dfs, axis=1)
+    else:
+        X_final = pd.concat([X_final_num] + embedded_features_dfs, axis=1)
+    return X_final
+
+
+def _force_single_thread_predict(model):
+    # The model was trained with n_jobs=-1; for these small predict batches the
+    # joblib ThreadPool is pure overhead (and churned/hung once per series).
     try:
-        X_encoded_cat = feature_encoder.transform(X_clean[categorical_cols]) if categorical_cols else []
-        embedded_features_dfs = encode_text_features(X_clean, text_cols) if text_cols else []
-        X_final_num = X_clean.drop(columns=categorical_cols + text_cols) if categorical_cols or text_cols else X_clean
+        if getattr(model, "n_jobs", 1) not in (None, 1):
+            model.n_jobs = 1
+    except Exception:
+        pass
 
-        if len(categorical_cols) > 0:
-            X_encoded_cat_df = pd.DataFrame(X_encoded_cat, index=X_final_num.index, columns=categorical_cols)
-            X_final = pd.concat([X_final_num, X_encoded_cat_df] + embedded_features_dfs, axis=1)
-        else:
-            X_final = pd.concat([X_final_num] + embedded_features_dfs, axis=1)
 
-        # Force single-threaded prediction: the model was trained with
-        # n_jobs=-1, so each predict_proba would otherwise spawn a joblib
-        # ThreadPool. For one-sample inference that is pure overhead and has
-        # been observed to hang/churn when called once per series.
-        try:
-            if getattr(model, "n_jobs", 1) not in (None, 1):
-                model.n_jobs = 1
-        except Exception:
-            pass
+def get_series_probabilities_batch(dicom_paths, model, feature_encoder, field_types=None):
+    """Predict RF probabilities for many series at once.
 
-        y_pred_proba = model.predict_proba(X_final)[0]
-        return y_pred_proba
+    Returns a list aligned with *dicom_paths* (None where a series' header could
+    not be read). Header reads are parallelized and the text embedding + RF
+    predict run once over the whole batch."""
+    n = len(dicom_paths)
+    results = [None] * n
+    if not all([model, feature_encoder]) or n == 0:
+        return results
+
+    feats = [None] * n
+    workers = max(1, min(get_num_parallel_workers(), n))
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, f in ex.map(lambda ip: (ip[0], get_series_features(ip[1])), list(enumerate(dicom_paths))):
+                feats[i] = f
+    except Exception:
+        for i, p in enumerate(dicom_paths):
+            feats[i] = get_series_features(p)
+
+    valid = [i for i, f in enumerate(feats) if f]
+    if not valid:
+        return results
+    try:
+        X_final = _build_rf_feature_matrix(pd.DataFrame([feats[i] for i in valid]),
+                                           feature_encoder, field_types)
+        _force_single_thread_predict(model)
+        probas = model.predict_proba(X_final)
+        for j, i in enumerate(valid):
+            results[i] = probas[j]
     except Exception as e:
-        logger.debug(f"RF Prediction probability failed: {e}")
-        return None
+        logger.debug(f"Batched RF prediction failed: {e}")
+    return results

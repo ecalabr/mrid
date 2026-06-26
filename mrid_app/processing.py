@@ -4,11 +4,12 @@ import csv
 import numpy as np
 import pydicom
 from PIL import Image
-from .header import get_series_probabilities
+from .header import get_series_probabilities, get_series_probabilities_batch
 from .cnn import prepare_cnn_input_data
 from .config import OVERRIDE_THRESHOLD, PREFER_3D, DICOM_HEADER_FIELDS
 from .utils import (safe_get_dicom_attribute, get_nifti_prefix, extract_study_id_from_path,
-                     get_study_dir_name, get_study_csv_name, get_classified_outputs_dir)
+                     get_study_dir_name, get_study_csv_name, get_classified_outputs_dir,
+                     get_num_parallel_workers)
 from .logging_config import get_logger
 
 logger = get_logger()
@@ -497,6 +498,62 @@ def get_image_probabilities(dicom_path, model, target_encoder):
         return None
 
 
+def get_image_probabilities_batch(dicom_paths, model, target_encoder):
+    """Predict CNN probabilities for many series at once.
+
+    Returns a list aligned with *dicom_paths* (None where the image couldn't be
+    loaded). Per-series image tensors are loaded in parallel (I/O bound) and run
+    through the model as a single batched forward pass, so a study's series share
+    one model call instead of one each."""
+    n = len(dicom_paths)
+    results = [None] * n
+    if not all([model, target_encoder]) or n == 0:
+        return results
+    try:
+        import torch
+    except Exception:
+        return results
+
+    try:
+        num_slices = int(model.conv1.in_channels)
+    except Exception:
+        num_slices = 1
+    image_size = getattr(model, 'image_size', None)
+
+    # Load image tensors in parallel — the slow part is DICOM I/O.
+    tensors = [None] * n
+    workers = max(1, min(get_num_parallel_workers(), n))
+    def _load(i):
+        return i, load_image_tensor(dicom_paths[i], num_slices=num_slices, image_size=image_size)
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, t in ex.map(_load, range(n)):
+                tensors[i] = t
+    except Exception:
+        for i in range(n):
+            tensors[i] = load_image_tensor(dicom_paths[i], num_slices=num_slices, image_size=image_size)
+
+    valid = [i for i, t in enumerate(tensors) if t is not None]
+    if not valid:
+        return results
+    try:
+        model.eval()
+        try:
+            device = next(model.parameters()).device
+        except StopIteration:
+            device = torch.device('cpu')
+        with torch.no_grad():
+            batch = torch.cat([tensors[i].to(device) for i in valid], dim=0)
+            outputs = model(batch)
+            probs = torch.nn.functional.softmax(outputs, dim=1).cpu().numpy()
+        for j, i in enumerate(valid):
+            results[i] = probs[j]
+    except Exception as e:
+        logger.debug(f"Batched CNN prediction failed: {e}")
+    return results
+
+
 def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model, cnn_target_encoder, rf_field_types=None):
     """
     Optimize series selections for a study. Returns a tuple:
@@ -530,25 +587,28 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
     all_labels = target_encoder.classes_
     target_labels = [label for label in all_labels if label.lower() != 'other']
 
-    # Step 1: Get predictions for all series
-    temp_predictions = {}
+    # Step 1: Get predictions for all series. Inference is BATCHED across the
+    # study's series — one sentence-transformer encode + one RF predict, and one
+    # CNN forward pass — instead of one call per series, which dominated the time
+    # to advance between exams in Semi-Auto.
+    series_list = []   # (series_desc, first_path)
     for series_desc, dicom_paths in study_dict.items():
-        # Extract DICOM path from hierarchy entry
         first_entry = dicom_paths[0]
-        if isinstance(first_entry, dict):
-            first_path = first_entry.get('dicom_path', '')
-        else:
-            first_path = first_entry
-        rf_proba = None
-        cnn_proba = None
+        first_path = first_entry.get('dicom_path', '') if isinstance(first_entry, dict) else first_entry
+        series_list.append((series_desc, first_path))
+    paths = [p for _, p in series_list]
 
-        # Get RF predictions
-        if model_type in ["DICOM Header Model", "Header + Image Model"] and rf_model is not None:
-            rf_proba = get_series_probabilities(first_path, rf_model, rf_feature_encoder, rf_field_types)
+    rf_list = None
+    if model_type in ["DICOM Header Model", "Header + Image Model"] and rf_model is not None:
+        rf_list = get_series_probabilities_batch(paths, rf_model, rf_feature_encoder, rf_field_types)
+    cnn_list = None
+    if model_type in ["Image-Based Model", "Header + Image Model"] and cnn_model is not None:
+        cnn_list = get_image_probabilities_batch(paths, cnn_model, cnn_target_encoder)
 
-        # Get CNN predictions
-        if model_type in ["Image-Based Model", "Header + Image Model"] and cnn_model is not None:
-            cnn_proba = get_image_probabilities(first_path, cnn_model, cnn_target_encoder)
+    temp_predictions = {}
+    for i, (series_desc, first_path) in enumerate(series_list):
+        rf_proba = rf_list[i] if rf_list is not None else None
+        cnn_proba = cnn_list[i] if cnn_list is not None else None
 
         # Combine predictions based on model type
         final_proba = None
