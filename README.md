@@ -366,7 +366,7 @@ The template must produce a unique name per study; invalid filename characters a
 THUMBNAIL_FORMAT = 'JPEG'   # 'JPEG' or 'PNG'
 THUMBNAIL_QUALITY = 75      # JPEG compression quality, 1-100
 ```
-Affects GUI thumbnails only (the CNN preprocesses images separately).
+Used for the GUI thumbnails. For single-slice (2D) image models the same center-slice thumbnail is also reused as the CNN's input during Semi-Auto pre-selection — it is rendered identically to the model's training input (same windowing and normalization), which avoids re-reading the full DICOM series and makes pre-selection on large exams much faster. PNG is lossless; very low JPEG quality could therefore slightly perturb those predictions. Multi-slice (2.5D) models and all training still read the full DICOM pixel data.
 
 #### Classification
 

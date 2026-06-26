@@ -1,7 +1,6 @@
 import os
 import subprocess
 import csv
-import time
 import numpy as np
 import pydicom
 from PIL import Image
@@ -551,7 +550,6 @@ def get_image_probabilities_batch(dicom_paths, model, target_encoder, thumbnail_
 
     # Load image tensors in parallel — the slow part is DICOM I/O.
     tensors = [None] * n
-    _from_thumb = [False] * n
     workers = max(1, min(get_num_parallel_workers(), n))
     def _load(i):
         if use_thumbs:
@@ -559,10 +557,8 @@ def get_image_probabilities_batch(dicom_paths, model, target_encoder, thumbnail_
             if tp and os.path.exists(tp):
                 t = load_image_tensor_from_thumbnail(tp, image_size=image_size)
                 if t is not None:
-                    _from_thumb[i] = True
                     return i, t
         return i, load_image_tensor(dicom_paths[i], num_slices=num_slices, image_size=image_size)
-    _t = time.perf_counter()   # [BENCH]
     try:
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -571,9 +567,6 @@ def get_image_probabilities_batch(dicom_paths, model, target_encoder, thumbnail_
     except Exception:
         for i in range(n):
             tensors[i] = load_image_tensor(dicom_paths[i], num_slices=num_slices, image_size=image_size)
-    logger.info(f"[BENCH]   CNN image load ({n} series, {workers} workers, "
-                f"{num_slices} slice(s), {sum(_from_thumb)} from thumbnail): "
-                f"{(time.perf_counter()-_t)*1000:.0f} ms")  # [BENCH]
 
     valid = [i for i, t in enumerate(tensors) if t is not None]
     if not valid:
@@ -584,13 +577,10 @@ def get_image_probabilities_batch(dicom_paths, model, target_encoder, thumbnail_
             device = next(model.parameters()).device
         except StopIteration:
             device = torch.device('cpu')
-        _t = time.perf_counter()   # [BENCH]
         with torch.no_grad():
             batch = torch.cat([tensors[i].to(device) for i in valid], dim=0)
             outputs = model(batch)
             probs = torch.nn.functional.softmax(outputs, dim=1).cpu().numpy()
-        logger.info(f"[BENCH]   CNN forward (batch {len(valid)}, {device}): "
-                    f"{(time.perf_counter()-_t)*1000:.0f} ms")  # [BENCH]
         for j, i in enumerate(valid):
             results[i] = probs[j]
     except Exception as e:
@@ -647,24 +637,13 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
     paths = [p for _, p, _ in series_list]
     thumb_paths = [tp for _, _, tp in series_list]
 
-    # ---- [BENCH] temporary inference timing (remove later) ----
-    _bench_n = len(paths)
-    _bench_t0 = time.perf_counter()
-
     rf_list = None
     if model_type in ["DICOM Header Model", "Header + Image Model"] and rf_model is not None:
-        _t = time.perf_counter()
         rf_list = get_series_probabilities_batch(paths, rf_model, rf_feature_encoder, rf_field_types)
-        logger.info(f"[BENCH] RF inference ({_bench_n} series): {(time.perf_counter()-_t)*1000:.0f} ms")
     cnn_list = None
     if model_type in ["Image-Based Model", "Header + Image Model"] and cnn_model is not None:
-        _t = time.perf_counter()
         cnn_list = get_image_probabilities_batch(paths, cnn_model, cnn_target_encoder,
                                                  thumbnail_paths=thumb_paths)
-        logger.info(f"[BENCH] CNN inference ({_bench_n} series): {(time.perf_counter()-_t)*1000:.0f} ms")
-    logger.info(f"[BENCH] optimize_study_selections TOTAL ({_bench_n} series, {model_type}): "
-                f"{(time.perf_counter()-_bench_t0)*1000:.0f} ms")
-    # ---- end [BENCH] ----
 
     temp_predictions = {}
     for i, (series_desc, first_path, _thumb) in enumerate(series_list):

@@ -1599,23 +1599,15 @@ class MainApp:
                     with prefetch_lock:
                         holder = prefetch.pop(idx, None)
                     if holder is not None:
-                        _tw = time.perf_counter()   # [BENCH]
                         if holder['thread'] is not None:
                             holder['thread'].join()
-                        # [BENCH] 0 ms => inference fully hidden behind review;
-                        # >0 ms => inference outran the user's review time.
-                        logger.info(f"[BENCH] prefetch wait (study {idx}, {len(series_dict)} series): "
-                                    f"{(time.perf_counter()-_tw)*1000:.0f} ms")
                         optimized_result = holder['result'][0]
                     if optimized_result is None:
-                        _ti = time.perf_counter()   # [BENCH]
                         optimized_result = processing.optimize_study_selections(
                             series_dict, model_type,
                             rf_model, rf_target_encoder, rf_feature_encoder,
                             cnn_model, cnn_target_encoder, self.rf_field_types
                         )
-                        logger.info(f"[BENCH] INLINE inference (study {idx}, {len(series_dict)} series, "
-                                    f"not prefetched): {(time.perf_counter()-_ti)*1000:.0f} ms")
 
                 is_first = (idx == 0)
 
