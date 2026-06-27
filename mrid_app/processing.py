@@ -197,58 +197,79 @@ def background_conversion_worker(*args, convert=True, **kwargs):
                 logger.error(f"Failed to convert {first_path}: {e}")
 
 
+# Only these header tags are needed to group a series and sort it spatially.
+# Reading just these (instead of the full header) and in a single pass over the
+# directory is far cheaper than two full-header passes — the dominant cost when
+# loading multi-slice (2.5D) inputs from many series on slow/network storage.
+_SERIES_SORT_TAGS = [
+    "SeriesInstanceUID",
+    "ImageOrientationPatient",
+    "ImagePositionPatient",
+    "InstanceNumber",
+]
+
+
 def get_sorted_series_files(dicom_paths):
     """
     Find all files belonging to the same series as dicom_paths[0] and return
     their paths sorted spatially along the slice normal (falling back to
     InstanceNumber when position information is missing).
+
+    Each file's header is read exactly once, and only the few tags needed for
+    grouping and ordering are parsed.
     """
     if not dicom_paths:
         return []
     first_path = dicom_paths[0]
     base_dir = os.path.dirname(first_path)
     try:
-        first_ds = pydicom.dcmread(first_path, stop_before_pixels=True, force=True)
+        first_ds = pydicom.dcmread(first_path, stop_before_pixels=True, force=True,
+                                   specific_tags=_SERIES_SORT_TAGS)
         series_uid = first_ds.SeriesInstanceUID
     except Exception:
         return []
 
-    series_files = []
-    for fname in os.listdir(base_dir):
-        fpath = os.path.join(base_dir, fname)
-        if not os.path.isfile(fpath):
-            continue
-        try:
-            ds = pydicom.dcmread(fpath, stop_before_pixels=True, force=True)
-            if getattr(ds, "SeriesInstanceUID", None) == series_uid:
-                series_files.append(fpath)
-        except Exception:
-            continue
-
-    if not series_files:
-        return []
-
-    ds_ref = pydicom.dcmread(series_files[0], stop_before_pixels=True, force=True)
-    iop = getattr(ds_ref, "ImageOrientationPatient", None)
-    if iop is not None and len(iop) == 6:
-        R = np.array(iop[0:3], dtype=np.float32)
-        C = np.array(iop[3:6], dtype=np.float32)
-        slice_normal = np.cross(R, C)
-    else:
-        slice_normal = np.array([0, 0, 1], dtype=np.float32)
-
+    # Single pass: read each header once, keeping only same-series files, and
+    # capture the spatial sort key as we go. The slice normal is taken from the
+    # first matching file's orientation (falling back to axial).
+    slice_normal = None
     keyed = []
-    for fpath in series_files:
+    # os.scandir exposes the dirent file type, avoiding a stat() syscall per file
+    # (os.listdir + os.path.isfile would incur one) — meaningful on network storage.
+    try:
+        dir_iter = list(os.scandir(base_dir))
+    except Exception:
+        return []
+    for entry in dir_iter:
         try:
-            ds = pydicom.dcmread(fpath, stop_before_pixels=True, force=True)
-            ipp = getattr(ds, "ImagePositionPatient", None)
-            if ipp is not None and len(ipp) == 3:
-                sort_key = float(np.dot(np.array(ipp, dtype=np.float32), slice_normal))
-            else:
-                sort_key = float(getattr(ds, "InstanceNumber", 0))
-            keyed.append((sort_key, fpath))
+            if not entry.is_file():
+                continue
         except Exception:
             continue
+        fpath = entry.path
+        try:
+            ds = pydicom.dcmread(fpath, stop_before_pixels=True, force=True,
+                                 specific_tags=_SERIES_SORT_TAGS)
+        except Exception:
+            continue
+        if getattr(ds, "SeriesInstanceUID", None) != series_uid:
+            continue
+
+        if slice_normal is None:
+            iop = getattr(ds, "ImageOrientationPatient", None)
+            if iop is not None and len(iop) == 6:
+                R = np.array(iop[0:3], dtype=np.float32)
+                C = np.array(iop[3:6], dtype=np.float32)
+                slice_normal = np.cross(R, C)
+            else:
+                slice_normal = np.array([0, 0, 1], dtype=np.float32)
+
+        ipp = getattr(ds, "ImagePositionPatient", None)
+        if ipp is not None and len(ipp) == 3:
+            sort_key = float(np.dot(np.array(ipp, dtype=np.float32), slice_normal))
+        else:
+            sort_key = float(getattr(ds, "InstanceNumber", 0) or 0)
+        keyed.append((sort_key, fpath))
 
     keyed.sort(key=lambda x: x[0])
     return [fpath for _, fpath in keyed]
