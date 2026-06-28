@@ -20,6 +20,7 @@ TEST_MODULES = [
     'tests.test_csv_field_updater',
     'tests.test_scaling',
     'tests.test_scanner',
+    'tests.test_utils',
 ]
 
 def run_module_tests(module_name):

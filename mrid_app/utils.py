@@ -194,6 +194,16 @@ def sanitize_target_series(target_series):
     return sanitized
 
 
+def _collapse_newlines(name):
+    """Replace newlines that leak in from DICOM header values (MRN/Accession/
+    Study UID can contain stray CR/LF) with '-' so they never end up literally
+    in output folder or CSV names. A run of newlines, together with any dashes
+    adjacent to it, collapses to a single '-' — newlines never produce two or
+    more consecutive dashes.
+    """
+    return re.sub(r'-*[\r\n][-\r\n]*', '-', name)
+
+
 def format_study_name(mrn, study_uid, accn, template):
     """
     Build a study name from a *given* template, filling missing MRN/Study UID/
@@ -211,9 +221,10 @@ def format_study_name(mrn, study_uid, accn, template):
         accn = _generate_deterministic_placeholder('accn', mrn, study_uid)
 
     try:
-        return template.format(mrn=mrn, study_uid=study_uid, accn=accn)
+        name = template.format(mrn=mrn, study_uid=study_uid, accn=accn)
     except Exception:
-        return STUDY_NAME_TEMPLATE.format(mrn=mrn, study_uid=study_uid, accn=accn)
+        name = STUDY_NAME_TEMPLATE.format(mrn=mrn, study_uid=study_uid, accn=accn)
+    return _collapse_newlines(name)
 
 
 def get_study_dir_name(mrn, study_uid, accn=None):
