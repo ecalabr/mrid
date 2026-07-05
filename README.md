@@ -6,6 +6,11 @@ A GUI application for automated classification and organization of MRI DICOM ser
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+<p align="center">
+  <img src="docs/images/main_window.png" alt="MRID main window" width="860">
+  <br><em>The MRID main window — set the input/output directories, pick a workflow mode and model type, and start.</em>
+</p>
+
 ## Table of Contents
 
 - [Overview](#overview)
@@ -224,6 +229,13 @@ python tests.py
 
 ### Classification Modes
 
+Every review mode (Analyze, Manual, Semi-Auto) opens the same per-study window: a grid of center-slice thumbnails, each with a color-coded label dropdown, and **Stop / Skip / Approve / Previous** controls along the bottom.
+
+<p align="center">
+  <img src="docs/images/classify_semiauto.png" alt="Per-study classification window in Semi-Auto mode, showing a grid of MRI series thumbnails with color-coded label dropdowns" width="900">
+  <br><em>The classification window in Semi-Auto mode. The models have pre-selected a label for each series (color-coded: T1, T2, FLAIR, T1c, Other); you review and adjust before approving.</em>
+</p>
+
 #### Analyze Mode
 
 **Use case:** first-time dataset exploration, automatic `TARGET_SERIES` (config parameter) configuration, and pre-training both models with **zero manual labeling**.
@@ -261,6 +273,12 @@ Classifies and saves every study without review. Best for large datasets with co
 
 #### Verify Mode
 Quality control for already-classified studies. Thumbnails are shown in batches grouped by label; toggle any wrong ones to from **Correct** to **Incorrect** by clicking and approve. Controls are similar to manual/semi-auto mode.
+
+<p align="center">
+  <img src="docs/images/verify_flair.png" alt="Verify mode window showing a batch of series all classified as FLAIR, each with a Correct/Incorrect toggle" width="900">
+  <br><em>Verify mode groups every series that received the same label into one batch (FLAIR shown), so outliers are easy to spot. Click a tile's toggle to flip it from <strong>Correct</strong> to <strong>Incorrect</strong>.</em>
+</p>
+
 - **Approve (d)** saves any **Incorrect** labels and moves on to the next batch of images.
 - **Skip (s)** moves on to the next batch without saving any **Incorrect** labels. Effectively the same as approving without changing any labels to **Incorrect**.
 - **Previous (w)** steps back to the prior batch, including across labels (e.g. from the first T2 batch back to the last T1 batch), and reloads the **Incorrect** marks you set earlier so you can revise them.
@@ -334,6 +352,19 @@ The wizard walks you through generating or editing a project config without touc
 1. **Output naming** (study name template, thumbnail format/quality)
 2. **Classification & DICOM filtering** (target series with per-series 3D preference, ImageType include/exclude filters, stacked-series handling)
 3. **Classification UI** (grid size, thresholds, ordering). An **Advanced Settings** page covers model hyperparameters, the DICOM header field list, the Analyze coverage threshold and HDBSCAN method, and the log level. Saving rewrites the config file while preserving its comments. In Analyze mode the target-series section is locked, since Analyze determines the series itself.
+
+<p align="center">
+  <img src="docs/images/config_wizard_naming.png" alt="Config wizard step 1: output naming" width="640">
+  <br><em>Step 1 — Output naming: study-folder template and thumbnail format/quality.</em>
+</p>
+<p align="center">
+  <img src="docs/images/config_wizard_classification.png" alt="Config wizard step 2: classification and DICOM filtering" width="640">
+  <br><em>Step 2 — Classification &amp; DICOM filtering: target labels with per-label 3D preference, ImageType include/exclude, and stacked-series handling.</em>
+</p>
+<p align="center">
+  <img src="docs/images/config_wizard_ui.png" alt="Config wizard step 3: classification UI settings" width="640">
+  <br><em>Step 3 — Classification UI: grid layout, auto-classification threshold, parallel workers, and study ordering. <strong>Advanced Settings</strong> exposes model hyperparameters and the DICOM header fields.</em>
+</p>
 
 ### Configuration Menu
 
