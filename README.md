@@ -108,6 +108,12 @@ cd mrid
 conda create -n mrid python=3.12 -y
 conda activate mrid
 
+# Recommended on Linux: install a Tk build with Xft/fontconfig support BEFORE
+# installing CustomTkinter, so the GUI renders anti-aliased fonts and rounded
+# corners. Many conda Tk builds ship without it; MRID still works without this
+# step but falls back to square corners and a plain system font.
+conda install -c conda-forge "tk=*=xft_*" -y
+
 # Install PyTorch first — pick the right command for your GPU
 # (see "PyTorch GPU Setup" below). CPU-only example:
 pip install torch torchvision
@@ -617,6 +623,14 @@ Install a GPU-enabled PyTorch build (see [PyTorch GPU Setup](#pytorch-gpu-setup)
 
 #### Square corners / limited fonts on Linux
 Some conda Linux Tk builds ship without the font support needed for anti-aliased rounded corners. On those, MRID automatically uses clean **square** corners, picks a readable proportional system font instead of the default monospaced one, and substitutes plain-text labels for icon glyphs (e.g. `▶`) that those fonts can't render — a normal, fully functional outcome (nothing to fix).
+
+To get the anti-aliased fonts and rounded corners instead, install a Tk build with Xft/fontconfig support into the conda environment, then reinstall/rebuild so CustomTkinter picks it up:
+
+```bash
+conda install -c conda-forge "tk=*=xft_*"
+```
+
+This is only needed on Linux. Do it **before** installing CustomTkinter (it's included in the Linux install steps above); if you added it later, restart the app afterwards.
 
 #### Getting help
 - Run `python tests.py` to verify the installation
