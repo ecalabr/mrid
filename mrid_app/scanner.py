@@ -7,7 +7,7 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .config import (IGNORE_MULTIPLE_ORIENTATIONS, SEPARATE_STACKED_SERIES, MAX_SPLIT,
                      THUMBNAIL_FORMAT, THUMBNAIL_QUALITY)
-from .utils import get_symlink_dir_name, get_num_parallel_workers
+from .utils import get_symlink_dir_name, get_num_parallel_workers, _collapse_newlines
 from .logging_config import get_logger
 
 logger = get_logger()
@@ -302,11 +302,15 @@ def extract_and_save_center_slice(file_records, thumbnail_dir, mrn, study_uid, s
 
         file_extension = '.jpg' if THUMBNAIL_FORMAT.upper() == 'JPEG' else '.png'
 
-        # Create thumbnail filename
+        # Create thumbnail filename. Collapse stray CR/LF that can leak in from
+        # DICOM header values (e.g. a multi-valued PatientID) so the filename —
+        # and the thumbnail_path stored in hierarchy.yaml — never contains an
+        # embedded newline.
         if split_index is not None:
             thumbnail_filename = f"{mrn}_{study_uid}_{series_uid}_{split_index:02d}{file_extension}"
         else:
             thumbnail_filename = f"{mrn}_{study_uid}_{series_uid}{file_extension}"
+        thumbnail_filename = _collapse_newlines(thumbnail_filename)
 
         thumbnail_path = os.path.join(thumbnail_dir, thumbnail_filename)
 

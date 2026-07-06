@@ -362,7 +362,11 @@ def get_symlink_dir_name(mrn, study_uid, series_uid, accn="", split_index=None):
     if split_index is not None:
         dir_name = f"{dir_name}-{split_index:02d}"
 
-    return dir_name
+    # Strip stray CR/LF that can leak in from DICOM header values (e.g. a
+    # multi-valued PatientID); otherwise the symlink directory name — and every
+    # path stored referencing it (hierarchy.yaml, classification CSVs) — would
+    # contain an embedded newline. See [[format_study_name]] for the same fix.
+    return _collapse_newlines(dir_name)
 
 
 def extract_study_id_from_path(study_path):

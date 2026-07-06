@@ -27,7 +27,8 @@ import shutil
 import yaml
 
 from .logging_config import get_logger
-from .utils import get_classified_outputs_dir, get_study_csv_name, extract_study_id_from_path
+from .utils import (get_classified_outputs_dir, get_study_csv_name,
+                    extract_study_id_from_path, _collapse_newlines)
 
 logger = get_logger()
 
@@ -40,7 +41,13 @@ _OUTPUT_SUBDIRS = ("classified_outputs", "series_thumbnails", "dicom_symlinks")
 def rebase_output_path(path, new_output_dir):
     """If *path* lives under a known output subdirectory, rebase it onto
     *new_output_dir* (keeping the subdir-relative tail). Otherwise return it
-    unchanged."""
+    unchanged.
+
+    Embedded CR/LF characters (which older scans could bake into symlink
+    directory and thumbnail file names via an unsanitized PatientID) are
+    collapsed, so the rebased path never contains a stray newline that renders
+    as a spurious extra path segment. The matching on-disk names are cleaned in
+    lockstep by :func:`_sanitize_stored_names`, so the collapsed path resolves."""
     if not path:
         return path
     norm = path.replace("\\", "/")
@@ -49,8 +56,8 @@ def rebase_output_path(path, new_output_dir):
         i = norm.find(marker)
         if i != -1:
             tail = norm[i + 1:]                  # e.g. "dicom_symlinks/AB/x.dcm"
-            return os.path.normpath(os.path.join(new_output_dir, tail))
-    return path
+            return _collapse_newlines(os.path.normpath(os.path.join(new_output_dir, tail)))
+    return _collapse_newlines(path)
 
 
 # Per-root file index (basename -> [full paths]) cached for one fix/scan run so
@@ -173,6 +180,47 @@ def _resolve_input_path(target, new_input_dir, source_root):
             except Exception as e:
                 logger.warning(f"Failed to copy missing data {src} -> {dest}: {e}")
     return None, False
+
+
+def _rename_no_clobber(src, dst, report):
+    """Rename *src* to *dst* on disk unless the destination already exists
+    (renaming into an existing name could merge/overwrite unrelated data)."""
+    if src == dst:
+        return
+    try:
+        if os.path.lexists(dst):
+            logger.warning(f"Cannot sanitize name; destination already exists: {dst!r}")
+            return
+        os.rename(src, dst)
+        report["sanitized_names"] += 1
+    except Exception as e:
+        logger.warning(f"Could not sanitize name {src!r} -> {dst!r}: {e}")
+
+
+def _sanitize_stored_names(output_dir, report):
+    """Rename symlink directories and thumbnail files whose names contain a stray
+    CR/LF (baked in by an older scan from an unsanitized PatientID) to their
+    newline-collapsed form.
+
+    The paths stored in hierarchy.yaml and the CSVs are collapsed the same way on
+    rebase, so cleaning the on-disk names here keeps both sides consistent —
+    otherwise the embedded newline surfaces as a spurious extra path segment that
+    resolves to nothing. Runs before the symlink/hierarchy/CSV passes so their
+    existence checks see the cleaned names."""
+    for subdir in ("dicom_symlinks", "series_thumbnails"):
+        base = os.path.join(output_dir, subdir)
+        if not os.path.isdir(base):
+            continue
+        try:
+            names = os.listdir(base)
+        except OSError as e:
+            logger.warning(f"Could not list {base}: {e}")
+            continue
+        for name in names:
+            if "\r" in name or "\n" in name:
+                clean = _collapse_newlines(name)
+                _rename_no_clobber(os.path.join(base, name),
+                                   os.path.join(base, clean), report)
 
 
 def _fix_symlinks(output_dir, new_input_dir, source_root, remove_missing, report):
@@ -389,6 +437,7 @@ def fix_project_paths(output_dir, new_input_dir, source_root=None, remove_missin
     report = {
         "symlinks_fixed": 0,
         "removed_symlink_dirs": 0,
+        "sanitized_names": 0,
         "hierarchy_updated": False,
         "csvs_updated": 0,
         "removed_series": 0,
@@ -401,6 +450,9 @@ def fix_project_paths(output_dir, new_input_dir, source_root=None, remove_missin
 
     # Fresh file index (input/source contents may have just changed).
     _clear_index_cache()
+    # Clean any newline-corrupted symlink/thumbnail names first so the rebased
+    # paths written below resolve to them.
+    _sanitize_stored_names(output_dir, report)
     _fix_symlinks(output_dir, new_input_dir, source_root, remove_missing, report)
     _fix_hierarchy(output_dir, new_input_dir, source_root, remove_missing, report)
     _fix_csvs(output_dir, new_input_dir, source_root, remove_missing, report)

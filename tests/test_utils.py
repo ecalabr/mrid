@@ -43,6 +43,14 @@ def test_format_study_name_preserves_existing_dashes():
     assert format_study_name("A--B", "U", "C", "{mrn}") == "A--B"
 
 
+def test_get_symlink_dir_name_sanitizes_newlines():
+    """A CR/LF leaking in from the PatientID must not end up in the symlink
+    directory name (which is stored in hierarchy.yaml and the CSVs)."""
+    from mrid_app.utils import get_symlink_dir_name
+    name = get_symlink_dir_name("A\rB", "1.3.99", "1.3.55", accn="none")
+    assert "\r" not in name and "\n" not in name and "--" not in name
+
+
 def test_csv_name_is_newline_free():
     """The classification CSV name derives from the study dir name and must be
     newline-free too."""

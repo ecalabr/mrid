@@ -2174,6 +2174,8 @@ class MainApp:
                 f"Hierarchy updated: {'yes' if rep.get('hierarchy_updated') else 'no'}",
                 f"Classification CSVs updated: {rep.get('csvs_updated', 0)}",
             ]
+            if rep.get("sanitized_names"):
+                parts.append(f"Newline-corrupted names cleaned: {rep.get('sanitized_names', 0)}")
             if rep.get("removed_series") or rep.get("removed_rows") or rep.get("removed_symlink_dirs"):
                 parts.append(f"Removed: {rep.get('removed_series',0)} series, "
                              f"{rep.get('removed_rows',0)} rows, "
