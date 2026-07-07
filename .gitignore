@@ -3,3 +3,8 @@ __pycache__/
 *.pyo
 .DS_Store
 .mrid_prefs.json
+
+# Python packaging build artifacts (from `pip install .`)
+*.egg-info/
+build/
+dist/

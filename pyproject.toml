@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mrid"
+version = "2.0"
+description = "MRI DICOM series classification and organization tool"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+
+# Runtime dependencies are intentionally not declared here: PyTorch must be
+# installed first with the build matching the user's GPU (see the README), and
+# the remaining packages are pinned in requirements.txt. Installing this project
+# only adds the `mrid` command; it does not pull in (and possibly override) a
+# CPU-only torch build.
+
+[project.scripts]
+mrid = "mrid_app.cli:main"
+
+[tool.setuptools]
+# The package plus the two top-level entry-point scripts, so `mrid` and
+# `mrid auto` resolve after a non-editable install too.
+packages = ["mrid_app"]
+py-modules = ["run", "headless_autoclassify"]

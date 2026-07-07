@@ -22,6 +22,7 @@ TEST_MODULES = [
     'tests.test_scanner',
     'tests.test_utils',
     'tests.test_path_fixer',
+    'tests.test_cli',
 ]
 
 def run_module_tests(module_name):

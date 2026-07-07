@@ -119,6 +119,9 @@ conda install -c conda-forge "tk=*=xft_*" -y
 pip install torch torchvision
 
 pip install -r requirements.txt
+
+# Install the `mrid` command (GUI launcher + `mrid auto` headless CLI)
+pip install -e .
 ```
 
 ### macOS
@@ -134,6 +137,9 @@ conda activate mrid
 pip install torch torchvision
 
 pip install -r requirements.txt
+
+# Install the `mrid` command (GUI launcher + `mrid auto` headless CLI)
+pip install -e .
 ```
 
 ### Windows
@@ -152,6 +158,9 @@ REM (see "PyTorch GPU Setup" below). CPU-only example:
 pip install torch torchvision
 
 pip install -r requirements.txt
+
+REM Install the `mrid` command (GUI launcher + `mrid auto` headless CLI)
+pip install -e .
 ```
 
 Notes for Windows:
@@ -209,8 +218,9 @@ python tests.py
 1. **Launch the application**
    ```bash
    conda activate mrid
-   python run.py
+   mrid
    ```
+   (Equivalent to `python run.py`, which still works.)
 
 2. **Select directories**
    - **Input DIR**: directory containing the DICOM files to classify
@@ -330,12 +340,14 @@ Everywhere a center-slice thumbnail is shown (classification, verification, and 
 
 ### Headless Batch Classification
 
-`headless_autoclassify.py` runs Full-Auto classification from the command line (no GUI), using models trained in the app:
+`mrid auto` runs Full-Auto classification from the command line (no GUI), using models trained in the app:
 
 ```bash
-python headless_autoclassify.py -i /data/dicoms -o /data/output
-python headless_autoclassify.py --help   # all options, including --config
+mrid auto -i /data/dicoms -o /data/output
+mrid auto --help   # all options, including --config
 ```
+
+(Equivalent to `python headless_autoclassify.py ...`, which still works.)
 
 ---
 
@@ -514,6 +526,7 @@ Standard logging level specification. Logs are written to `{output_dir}/mrid.log
 ```
 mrid/
 ├── mrid_app/                  # Application package
+│   ├── cli.py                 # `mrid` / `mrid auto` console entry point
 │   ├── config.py              # Default configuration (template for projects)
 │   ├── gui.py                 # Main GUI and workflows
 │   ├── ui_theme.py            # Dark theme, scaling, window placement
@@ -532,8 +545,9 @@ mrid/
 │   └── logging_config.py      # Logging setup
 ├── tests/                     # Unit tests
 ├── tests.py                   # Test runner (python tests.py)
-├── run.py                     # GUI entry point
-├── headless_autoclassify.py   # Command-line Full-Auto classification
+├── run.py                     # GUI entry point (also `mrid`)
+├── headless_autoclassify.py   # Command-line Full-Auto classification (also `mrid auto`)
+├── pyproject.toml             # Packaging + `mrid` console script
 └── requirements.txt
 ```
 
