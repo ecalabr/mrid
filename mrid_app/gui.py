@@ -4545,6 +4545,38 @@ def _make_scrollable_frame(root, pad_x=0, pad_y=0):
     return canvas, content_frame
 
 
+def _bind_space_paging(root, canvas):
+    """Bind spacebar to page *canvas*: down until the bottom is reached, then up
+    until the top, reversing at each end — so the user can sweep through more
+    items than fit on screen using one key.
+
+    Shared by the classification and verification windows so both behave
+    identically.
+    """
+    _scroll_dir = [1]  # 1 = page down, -1 = page up
+
+    def _on_space(event=None):
+        try:
+            top, bottom = canvas.yview()
+        except Exception:
+            return "break"
+        if _scroll_dir[0] == 1:
+            if bottom >= 0.999:          # at the bottom — reverse and page up
+                _scroll_dir[0] = -1
+                canvas.yview_scroll(-1, "pages")
+            else:
+                canvas.yview_scroll(1, "pages")
+        else:
+            if top <= 0.001:             # at the top — reverse and page down
+                _scroll_dir[0] = 1
+                canvas.yview_scroll(1, "pages")
+            else:
+                canvas.yview_scroll(-1, "pages")
+        return "break"
+
+    root.bind("<space>", _on_space, add="+")
+
+
 # Single shared, bounded thread pool for loading review/verification thumbnails.
 # Using one shared pool (instead of creating a new ThreadPoolExecutor per
 # window) keeps the total worker-thread count bounded, so paging through many
@@ -4850,6 +4882,10 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
     root.bind("<d>", lambda event: on_approve())
     if not is_first:
         root.bind("<w>", on_previous)
+
+    # Spacebar pages the scroll area (down, then reversing at each end) — same
+    # behavior as the Manual/Semi-Auto classification window.
+    _bind_space_paging(root, _canvas)
 
     _fit_window_to_screen(root, content_frame, button_frame,
                           pad_x=scale_value(20), pad_y=scale_value(20))
@@ -5503,29 +5539,8 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
             dd.set_value("Other")
     root.bind("0", _on_zero, add="+")
 
-    # Spacebar pages the scroll area: down until the bottom is reached, then up
-    # until the top, reversing at each end — so the user can sweep through more
-    # series than fit on screen using one key.
-    _scroll_dir = [1]  # 1 = page down, -1 = page up
-    def _on_space(event=None):
-        try:
-            top, bottom = _canvas.yview()
-        except Exception:
-            return "break"
-        if _scroll_dir[0] == 1:
-            if bottom >= 0.999:          # at the bottom — reverse and page up
-                _scroll_dir[0] = -1
-                _canvas.yview_scroll(-1, "pages")
-            else:
-                _canvas.yview_scroll(1, "pages")
-        else:
-            if top <= 0.001:             # at the top — reverse and page down
-                _scroll_dir[0] = 1
-                _canvas.yview_scroll(1, "pages")
-            else:
-                _canvas.yview_scroll(-1, "pages")
-        return "break"
-    root.bind("<space>", _on_space, add="+")
+    # Spacebar pages the scroll area (down, then reversing at each end).
+    _bind_space_paging(root, _canvas)
 
     _fit_window_to_screen(root, content_frame, button_frame,
                           pad_x=scale_value(20), pad_y=scale_value(20))

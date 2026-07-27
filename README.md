@@ -298,6 +298,7 @@ Quality control for already-classified studies. Thumbnails are shown in batches 
 - **Approve (d)** saves any **Incorrect** labels and moves on to the next batch of images.
 - **Skip (s)** moves on to the next batch without saving any **Incorrect** labels. Effectively the same as approving without changing any labels to **Incorrect**.
 - **Previous (w)** steps back to the prior batch, including across labels (e.g. from the first T2 batch back to the last T1 batch), and reloads the **Incorrect** marks you set earlier so you can revise them.
+- **`space`** pages down through the batch, reversing at the bottom — the same paging as Manual/Semi-Auto, useful when a batch has more thumbnails than fit on screen.
 
 Study classifications are deleted only after a single confirmation at the very end of the workflow. Any studies with deleted classifications will go back into the pool of unannotated studies for subsequent manual/semi-auto mode runs. Trained models are not used or required in this mode.
 
@@ -306,7 +307,7 @@ Study classifications are deleted only after a single confirmation at the very e
 - `s` = Skip
 - `d` = Approve
 - `w` = Previous (Manual/Semi-Auto and Verify)
-- In Manual/Semi-Auto, **`space`** pages the window down through the series, then reverses to page up at the bottom (and back to down at the top) — quick keyboard navigation when more series are present than fit on screen.
+- **`space`** pages the window down through the thumbnails, then reverses to page up at the bottom (and back to down at the top) — quick keyboard navigation when more thumbnails are present than fit on screen. Available in Manual, Semi-Auto, and Verify.
 - In Manual/Semi-Auto, **double-click a label dropdown** to reset it to **Other**.
 - In Manual/Semi-Auto, hover a label dropdown and press a **number key `1`–`9`** to assign the corresponding label (1 = first label, in `TARGET_SERIES` order), or **`0`** to set it to **Other**.
 - **Right-click any thumbnail** (Manual, Semi-Auto, Verify, Analyze) for **Auto window/level** (percentile-based contrast, re-read from the DICOM) or **Default window/level** (the DICOM's own window). The choice carries through while scrolling the series.
