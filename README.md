@@ -33,6 +33,7 @@ A GUI application for automated classification and organization of MRI DICOM ser
   - [Config Wizard](#config-wizard)
   - [Configuration Menu](#configuration-menu)
   - [Configuration Reference](#configuration-reference)
+    - [Header + Image fusion](#header--image-fusion)
 - [Project Structure](#project-structure)
 - [Advanced Features](#advanced-features)
 - [Troubleshooting](#troubleshooting)
@@ -318,7 +319,7 @@ Study classifications are deleted only after a single confirmation at the very e
 |-------|----------------------------------------------------------------------------------------|-----------|
 | **DICOM Header Model** | Random Forest on configurable header fields (timing, sequence, geometry, descriptions) | Fast, interpretable, no pixel data needed |
 | **Image-Based Model** | CNN on grayscale slice images (2D center slice, or 2.5D with `CNN_NUM_SLICES > 1`)     | Learns visual features, robust to metadata inconsistencies |
-| **Header + Image Model** | Average of both models' output probabilities                                           | Best accuracy (recommended) |
+| **Header + Image Model** | Both models combined by the configurable [fusion rule](#header--image-fusion) (`FUSION_METHOD`) | Best accuracy (recommended) |
 
 ### Training Models
 
@@ -331,7 +332,7 @@ Then:
 2. Click **Load Model(s)** in Semi-Auto or Full-Auto mode (loaded automatically after training)
 3. Check `model_files/rf_model_training_summary.txt` and `cnn_model_training_summary.txt` for results
 
-**Training tips:** balance classes, include diverse scanners/protocols, retrain as verified labels accumulate, and consider adding any additional relevant DICOM fields in the config to strengthen the header model or switching to 2.5D (`CNN_NUM_SLICES`) to strengthen the image model.
+**Training tips:** balance classes, include diverse scanners/protocols, retrain as verified labels accumulate, and consider adding any additional relevant DICOM fields in the config to strengthen the header model or switching to 2.5D (`CNN_NUM_SLICES`) to strengthen the image model. If the two models' summaries show markedly different accuracy, try a [fusion rule](#header--image-fusion) other than the default `average`.
 
 ### Series Thumbnail Scrolling
 
@@ -370,7 +371,7 @@ The wizard walks you through generating or editing a project config without touc
 #### Pages:
 1. **Output naming** (study name template, thumbnail format/quality)
 2. **Classification & DICOM filtering** (target series with per-series 3D preference, ImageType include/exclude filters, stacked-series handling)
-3. **Classification UI** (grid size, thresholds, ordering). An **Advanced Settings** page covers model hyperparameters, the DICOM header field list, the Analyze coverage threshold and HDBSCAN method, and the log level. Saving rewrites the config file while preserving its comments. In Analyze mode the target-series section is locked, since Analyze determines the series itself.
+3. **Classification UI** (grid size, thresholds, the [Header + Image fusion rule](#header--image-fusion), ordering). An **Advanced Settings** page covers model hyperparameters, the DICOM header field list, the Analyze coverage threshold and HDBSCAN method, and the log level. Saving rewrites the config file while preserving its comments. In Analyze mode the target-series section is locked, since Analyze determines the series itself.
 
 <p align="center">
   <img src="docs/images/config_wizard_naming.png" alt="Config wizard step 1: output naming" width="640">
@@ -382,7 +383,7 @@ The wizard walks you through generating or editing a project config without touc
 </p>
 <p align="center">
   <img src="docs/images/config_wizard_ui.png" alt="Config wizard step 3: classification UI settings" width="640">
-  <br><em>Step 3 — Classification UI: grid layout, auto-classification threshold, parallel workers, and study ordering. <strong>Advanced Settings</strong> exposes model hyperparameters and the DICOM header fields.</em>
+  <br><em>Step 3 — Classification UI: grid layout, auto-classification threshold, Header + Image fusion rule (hover the dropdown for a description of each), parallel workers, and study ordering. <strong>Advanced Settings</strong> exposes model hyperparameters and the DICOM header fields.</em>
 </p>
 
 ### Configuration Menu
@@ -460,6 +461,7 @@ NUM_COLUMNS = 6               # grid columns (classification & verify)
 NUM_ROWS = 4                  # grid rows (verify mode batches)
 THUMBNAIL_SCALE_FACTOR = 1.0  # extra multiplier for thumbnail size only
 OVERRIDE_THRESHOLD = 0.5      # min probability for auto-selection (0-1)
+FUSION_METHOD = 'average'     # how Header + Image probabilities are combined
 ALLOW_DUPLICATE_LABELS = False
 NUM_PARALLEL_WORKERS = 8      # workers for scanning, loading & CNN preprocessing
 RANDOMIZE_STUDY_ORDER = True  # shuffle study order (Manual/Semi-Auto)
@@ -470,6 +472,46 @@ STUDY_ORDER_SEED = 42         # seed for reproducible shuffling
 - `NUM_PARALLEL_WORKERS` is honored exactly (not capped to the CPU count) across every parallel stage — DICOM scanning, thumbnail generation, thumbnail loading, and CNN preprocessing.
 - With `ALLOW_DUPLICATE_LABELS = False` (default), assigning a label to one series clears it from any other series in the study; set `True` to allow several series per label (useful for datasets with frequently repeated series).
 - Randomized study order (using the specified seed) reduces labeling bias; Full-Auto always processes in original order.
+- `FUSION_METHOD` only affects the **Header + Image Model** type — see [Header + Image fusion](#header--image-fusion) below.
+
+#### Header + Image fusion
+
+When the **Header + Image Model** type is selected, both classifiers score every
+series and their two probability vectors are reduced to one before labels are
+assigned. `FUSION_METHOD` chooses that reduction:
+
+```python
+FUSION_METHOD = 'average'   # 'average' | 'product' | 'max' | 'confidence' | 'reliability'
+```
+
+| Method | Rule | Use it when |
+|---|---|---|
+| `average` *(default)* | Mean of both models, `p = (p_rf + p_cnn) / 2` | Both models are of comparable quality. This is the historical behavior. |
+| `product` | Normalized product, `p ∝ p_rf · p_cnn` | The two models make largely independent errors. Sharper than the mean; either model can veto a class it rules out. |
+| `max` | Per-class maximum, `p ∝ max(p_rf, p_cnn)` | You want a confident model never to be diluted by an uncertain one. |
+| `confidence` | Weight each model per series by its certainty, `1 - H(p)/log K` | Either model may be unreliable on *some* series. Adapts series by series; needs no extra training. |
+| `reliability` | Weight each model per class by its validation F1 | One model is much weaker overall, or each is stronger on different classes. |
+
+The first four are training-free and can be changed at any time, including
+between runs with already-trained models.
+
+**`reliability` requires trained metrics.** Each trainer records its own
+per-class F1 on its held-out validation split to `model_files/fusion_reliability.joblib`;
+the fusion weight for class *c* is each model's share of the two F1 scores for
+that class. Models trained before this file existed have no recorded metrics, so
+`reliability` falls back to `average` and logs a warning — **retrain both models
+to use it**. The two models may be trained independently and in either order;
+each writes only its own entry.
+
+**Choosing a method.** `average` is a safe default and is what to use when the
+header and image models perform similarly. Its weakness is that it weights a
+weak model equally with a strong one, so when one model is clearly worse on your
+data the combination can score *below* the better model alone. `reliability`
+targets exactly that case; `confidence` targets the case where reliability
+varies series to series rather than globally. If you are unsure, compare the
+per-class results in `model_files/rf_model_training_summary.txt` and
+`cnn_model_training_summary.txt`: similar scores favor `average`, a large and
+consistent gap favors `reliability`.
 
 #### CNN hyperparameters
 
@@ -539,6 +581,7 @@ mrid/
 │   ├── processing.py          # Classification, slice loading, NIfTI conversion
 │   ├── header.py              # Random Forest header model
 │   ├── cnn.py                 # CNN image model (2D / 2.5D)
+│   ├── fusion.py              # Header + image probability fusion rules
 │   ├── prep.py                # Header preprocessing and encoding
 │   ├── field_detection.py     # Automatic field type detection
 │   ├── csv_field_updater.py   # Back-fill new fields into existing CSVs
@@ -564,6 +607,7 @@ mrid/
 │   ├── cnn_classifier_model.pth
 │   ├── label_encoder.joblib
 │   ├── feature_encoder.joblib
+│   ├── fusion_reliability.joblib    # Per-class validation F1 for 'reliability' fusion
 │   ├── cnn_preprocessed_data_*.pkl  # CNN preprocessing cache
 │   ├── classification_data.csv
 │   └── selfsupervised_classification_data.csv   # Written by Analyze mode

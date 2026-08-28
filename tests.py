@@ -17,6 +17,7 @@ TEST_MODULES = [
     'tests.test_analyze_coverage',
     'tests.test_processing',
     'tests.test_cnn_slices',
+    'tests.test_fusion',
     'tests.test_csv_field_updater',
     'tests.test_scaling',
     'tests.test_scanner',

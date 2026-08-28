@@ -7,6 +7,7 @@ from PIL import Image
 from .header import get_series_probabilities, get_series_probabilities_batch
 from .cnn import prepare_cnn_input_data
 from .config import OVERRIDE_THRESHOLD, PREFER_3D, DICOM_HEADER_FIELDS
+from .fusion import fuse_probabilities, get_configured_method, load_reliability, reliability_weights
 from .utils import (safe_get_dicom_attribute, get_nifti_prefix, extract_study_id_from_path,
                      get_study_dir_name, get_study_csv_name, get_classified_outputs_dir,
                      get_num_parallel_workers)
@@ -609,7 +610,7 @@ def get_image_probabilities_batch(dicom_paths, model, target_encoder, thumbnail_
     return results
 
 
-def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model, cnn_target_encoder, rf_field_types=None):
+def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model, cnn_target_encoder, rf_field_types=None, model_files_dir=None):
     """
     Optimize series selections for a study. Returns a tuple:
       - final_assignments: dict mapping series_start_path -> label
@@ -625,8 +626,14 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
       4. Ensure each series is assigned only once
       5. Remaining series are assigned 'Other'
 
+    In "Header + Image Model" mode the two probability vectors are reduced to one
+    by the rule named in ``FUSION_METHOD`` (see :mod:`mrid_app.fusion`).
+
     Args:
         rf_field_types: Optional field types dictionary for consistent RF preprocessing
+        model_files_dir: Optional path to the project's ``model_files`` directory.
+            Only needed for the ``reliability`` fusion method, which reads the
+            per-class validation F1 scores recorded there at training time.
     """
     target_encoder = rf_target_encoder if rf_target_encoder is not None else cnn_target_encoder
     if target_encoder is None:
@@ -666,6 +673,19 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
         cnn_list = get_image_probabilities_batch(paths, cnn_model, cnn_target_encoder,
                                                  thumbnail_paths=thumb_paths)
 
+    # Resolve the fusion rule once per study rather than per series. The
+    # reliability rule additionally needs the per-class validation F1 scores
+    # recorded at training time; without them it falls back to 'average'.
+    fusion_method = get_configured_method() if model_type == "Header + Image Model" else None
+    fusion_weights = None
+    if fusion_method == "reliability" and model_files_dir:
+        fusion_weights = reliability_weights(load_reliability(model_files_dir), all_labels)
+        if fusion_weights is None:
+            logger.warning(
+                "FUSION_METHOD='reliability' but no usable validation metrics were found in "
+                f"{model_files_dir}; falling back to 'average'. Retrain both models to record them."
+            )
+
     temp_predictions = {}
     for i, (series_desc, first_path, _thumb) in enumerate(series_list):
         rf_proba = rf_list[i] if rf_list is not None else None
@@ -674,12 +694,8 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
         # Combine predictions based on model type
         final_proba = None
         if model_type == "Header + Image Model":
-            if rf_proba is not None and cnn_proba is not None:
-                final_proba = (rf_proba + cnn_proba) / 2
-            elif rf_proba is not None:
-                final_proba = rf_proba
-            elif cnn_proba is not None:
-                final_proba = cnn_proba
+            final_proba = fuse_probabilities(rf_proba, cnn_proba,
+                                             method=fusion_method, weights=fusion_weights)
         elif model_type == "DICOM Header Model":
             final_proba = rf_proba
         elif model_type == "Image-Based Model":
@@ -809,7 +825,8 @@ def full_auto_classify_study(study_dict, mrn, study_uid, output_root,
         model_type,
         rf_model, rf_target_encoder, rf_feature_encoder,
         cnn_model, cnn_target_encoder,
-        rf_field_types
+        rf_field_types,
+        model_files_dir=os.path.join(output_root, "model_files")
     )
     for path, label in final_assignments.items():
         logger.info(f"  -> Series starting with '{path}' auto-selected as: {label}")

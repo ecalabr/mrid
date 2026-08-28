@@ -228,6 +228,21 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
         y_pred = model.predict(X_test)
         accuracy = accuracy_score(y_test, y_pred)
 
+        # Record the per-class F1 on this held-out split so the 'reliability'
+        # fusion method can weight the header model against the image model
+        # class by class. Only this model's own key is written, so the two
+        # models can be trained independently and in either order.
+        try:
+            from sklearn.metrics import f1_score
+            from .fusion import record_validation_f1
+            class_indices = list(range(len(target_encoder.classes_)))
+            per_class_f1 = f1_score(y_test, y_pred, labels=class_indices,
+                                    average=None, zero_division=0)
+            record_validation_f1(model_files_dir, "rf",
+                                 target_encoder.classes_, per_class_f1)
+        except Exception as e:
+            logger.warning(f"Could not record header-model validation F1: {e}")
+
         final_message = f"✅ Header Model Training Complete!\nAccuracy on Test Set: {accuracy:.2f}\nModel and Encoders Saved."
         summary_path = os.path.join(model_files_dir, "rf_model_training_summary.txt")
         with open(summary_path, 'w') as f:

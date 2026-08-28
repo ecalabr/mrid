@@ -142,42 +142,8 @@ def _save_ui_scale(scale: float):
         logger.debug(f"Could not save ui_scale to {_PREFS_FILE}: {exc}")
 
 
-class _ToolTip:
-    """Simple hover tooltip for a tkinter widget."""
-
-    def __init__(self, widget, text=""):
-        self.widget = widget
-        self.text = text
-        self._tip_win = None
-        widget.bind("<Enter>", self._show, add="+")
-        widget.bind("<Leave>", self._hide, add="+")
-
-    def update_text(self, text):
-        self.text = text
-
-    def _show(self, _event=None):
-        if not self.text:
-            return
-        try:
-            x = self.widget.winfo_rootx() + 20
-            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
-            self._tip_win = tw = tk.Toplevel(self.widget)
-            tw.wm_overrideredirect(True)
-            tw.wm_geometry(f"+{x}+{y}")
-            tk.Label(tw, text=self.text, justify="left",
-                     background=ui_theme.TOOLTIP_BG, foreground=ui_theme.TOOLTIP_FG,
-                     relief="solid", borderwidth=1,
-                     font=("TkDefaultFont", 9)).pack()
-        except Exception:
-            pass
-
-    def _hide(self, _event=None):
-        try:
-            if self._tip_win:
-                self._tip_win.destroy()
-                self._tip_win = None
-        except Exception:
-            pass
+# Hover tooltips live in ui_theme so the config wizard can use the same widget.
+_ToolTip = ui_theme.ToolTip
 
 
 def _generate_color_map(labels):
@@ -1530,7 +1496,8 @@ class MainApp:
                         holder['result'][0] = processing.optimize_study_selections(
                             n_series, model_type,
                             rf_model, rf_target_encoder, rf_feature_encoder,
-                            cnn_model, cnn_target_encoder, self.rf_field_types)
+                            cnn_model, cnn_target_encoder, self.rf_field_types,
+                            model_files_dir=os.path.join(output_dir, "model_files"))
                     except Exception as e:
                         logger.debug(f"Prefetch inference failed for study {next_idx}: {e}")
                         holder['result'][0] = None
@@ -1606,7 +1573,8 @@ class MainApp:
                         optimized_result = processing.optimize_study_selections(
                             series_dict, model_type,
                             rf_model, rf_target_encoder, rf_feature_encoder,
-                            cnn_model, cnn_target_encoder, self.rf_field_types
+                            cnn_model, cnn_target_encoder, self.rf_field_types,
+                            model_files_dir=os.path.join(output_dir, "model_files")
                         )
 
                 is_first = (idx == 0)
@@ -5008,7 +4976,8 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 model_type,
                 rf_model, rf_target_encoder, rf_feature_encoder,
                 cnn_model, cnn_target_encoder,
-                rf_field_types  # Pass field types for consistent preprocessing
+                rf_field_types,  # Pass field types for consistent preprocessing
+                model_files_dir=os.path.join(output_root, "model_files")
             )
         # optimize_study_selections returns (final_assignments, predictions_by_path)
         try:

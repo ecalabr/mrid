@@ -472,7 +472,7 @@ class AugmentedImageDataset(Dataset):
         return image, label
 
 
-def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNClass=None, progress_callback=None, cancel_check=None):
+def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNClass=None, progress_callback=None, cancel_check=None, class_names=None):
     """
     Train CNN model with optional progress reporting.
 
@@ -484,6 +484,9 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
         SimpleCNNClass: Optional custom CNN class
         progress_callback: Optional callback function(current_epoch, total_epochs, loss, accuracy, message)
         cancel_check: Optional callable returning True if training should be aborted
+        class_names: Optional class names in label-encoder order. When given, the
+            best model's per-class F1 on the validation split is recorded for the
+            'reliability' fusion method (see mrid_app.fusion).
     """
     if torch is None:
         return None, None
@@ -580,6 +583,35 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
         if epoch_accuracy > best_accuracy:
             best_accuracy = epoch_accuracy
             torch.save(model.state_dict(), model_path)
+
+    # Record the best checkpoint's per-class F1 on the validation split so the
+    # 'reliability' fusion method can weight the image model against the header
+    # model class by class. Note this split also selected the checkpoint, so the
+    # score is mildly optimistic — the header model's is scored the same way, so
+    # the ratio the fusion weights are built from stays a fair comparison.
+    if class_names is not None and best_accuracy > 0:
+        try:
+            from sklearn.metrics import f1_score
+            from .fusion import record_validation_f1
+
+            best_model = model_cls(num_classes=num_classes, num_slices=num_slices,
+                                   image_size=image_size).to(device)
+            best_model.load_state_dict(torch.load(model_path, map_location=device))
+            best_model.eval()
+            preds = []
+            with torch.no_grad():
+                for inputs, _labels in val_loader:
+                    outputs = best_model(inputs.to(device))
+                    preds.append(torch.max(outputs.data, 1)[1].cpu().numpy())
+            if preds:
+                y_val_pred = np.concatenate(preds)
+                per_class_f1 = f1_score(y_val, y_val_pred,
+                                        labels=list(range(num_classes)),
+                                        average=None, zero_division=0)
+                record_validation_f1(os.path.join(output_dir, "model_files"), "cnn",
+                                     class_names, per_class_f1)
+        except Exception as e:
+            logger.warning(f"Could not record image-model validation F1: {e}")
 
     return model_path, best_accuracy
 
@@ -791,6 +823,7 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
                 X, y_encoded, num_classes, output_dir,
                 progress_callback=training_progress,
                 cancel_check=gui.is_cancelled,
+                class_names=getattr(target_encoder, "classes_", None),
             )
         except Exception as e:
             gui.update_status(f"❌ Error during CNN training: {e}")
