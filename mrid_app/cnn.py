@@ -499,7 +499,22 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
     lr = float(_cfg('LR', LR))
 
     from sklearn.model_selection import train_test_split
-    X_train, X_val, y_train, y_val = train_test_split(X_data, y_labels, test_size=0.2, random_state=42, stratify=y_labels)
+    # Stratifying needs at least two examples of every class. Small or heavily
+    # imbalanced label sets (a class with a single example) would otherwise
+    # raise here and abort training entirely, which is exactly the situation a
+    # user has when they are just starting to label. Fall back to an
+    # unstratified split and say so rather than failing.
+    try:
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_data, y_labels, test_size=0.2, random_state=42, stratify=y_labels)
+    except ValueError as e:
+        logger.warning(
+            f"Could not stratify the CNN train/validation split ({e}). Falling back "
+            f"to an unstratified split — add more examples of the rarest classes "
+            f"for a more reliable validation score."
+        )
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_data, y_labels, test_size=0.2, random_state=42)
     y_train_tensor = torch.from_numpy(y_train).long()
     y_val_tensor = torch.from_numpy(y_val).long()
 
@@ -542,12 +557,17 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     best_accuracy = 0.0
+    # Track whether anything has been written yet. Without this, a run whose
+    # validation accuracy is 0% on every epoch — quite possible on a small or
+    # very hard label set — never satisfies "better than best" and silently
+    # finishes with no checkpoint on disk at all.
+    saved_any = False
 
     for epoch in range(num_epochs):
         # Check for cancellation at the start of each epoch
         if cancel_check is not None and cancel_check():
             logger.info("CNN training cancelled by user during epoch loop.")
-            return model_path if best_accuracy > 0 else None, best_accuracy
+            return (model_path if saved_any else None), best_accuracy
 
         model.train()
         running_loss = 0.0
@@ -580,16 +600,17 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
 
         logger.info(f"Epoch {epoch + 1}/{num_epochs} - Loss: {avg_loss:.4f}, Val Acc: {epoch_accuracy:.2f}%")
 
-        if epoch_accuracy > best_accuracy:
-            best_accuracy = epoch_accuracy
+        if epoch_accuracy > best_accuracy or not saved_any:
+            best_accuracy = max(best_accuracy, epoch_accuracy)
             torch.save(model.state_dict(), model_path)
+            saved_any = True
 
     # Record the best checkpoint's per-class F1 on the validation split so the
     # 'reliability' fusion method can weight the image model against the header
     # model class by class. Note this split also selected the checkpoint, so the
     # score is mildly optimistic — the header model's is scored the same way, so
     # the ratio the fusion weights are built from stays a fair comparison.
-    if class_names is not None and best_accuracy > 0:
+    if class_names is not None and saved_any:
         try:
             from sklearn.metrics import f1_score
             from .fusion import record_validation_f1

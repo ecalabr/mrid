@@ -202,7 +202,19 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
             gui.close()
             return
         from sklearn.model_selection import train_test_split
-        X_train, X_test, y_train, y_test = train_test_split(X_final, y_encoded, test_size=0.3, random_state=42, stratify=y_encoded)
+        # See the matching note in cnn.py: stratifying needs two examples per
+        # class, which a small or newly-started label set may not have.
+        try:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_final, y_encoded, test_size=0.3, random_state=42, stratify=y_encoded)
+        except ValueError as e:
+            logger.warning(
+                f"Could not stratify the header train/test split ({e}). Falling back "
+                f"to an unstratified split — add more examples of the rarest classes "
+                f"for a more reliable accuracy estimate."
+            )
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_final, y_encoded, test_size=0.3, random_state=42)
 
         model = RandomForestClassifier(n_estimators=N_ESTIMATORS, random_state=42, n_jobs=-1, class_weight='balanced')
         model.fit(X_train, y_train)
