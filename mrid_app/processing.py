@@ -610,6 +610,47 @@ def get_image_probabilities_batch(dicom_paths, model, target_encoder, thumbnail_
     return results
 
 
+
+def _expand_to_label_space(proba, model, n_classes):
+    """Scatter a classifier's probability vector into the full label space.
+
+    ``RandomForestClassifier.predict_proba`` returns one column per class that
+    appeared in its *training labels*, not per class in the label encoder. When
+    a configured series type has no usable training examples — common on small
+    or newly-started projects — the vector comes back shorter than the label
+    space, and every class index used downstream then points at the wrong
+    column (or off the end of the array).
+
+    ``model.classes_`` holds the encoded label for each column, so it maps them
+    back. Classes the model never saw get probability 0, which is the correct
+    reading: it cannot predict them.
+
+    Returns the expanded vector, or None if the mapping is not recoverable.
+    """
+    if proba is None or n_classes is None:
+        return proba
+    if len(proba) == n_classes:
+        return proba
+    classes = getattr(model, 'classes_', None)
+    if classes is None or len(classes) != len(proba):
+        logger.warning(
+            f"Prediction has {len(proba)} classes but the label encoder has "
+            f"{n_classes}, and the model's class list does not explain the "
+            f"difference; ignoring this prediction."
+        )
+        return None
+    full = np.zeros(n_classes, dtype=np.float64)
+    for column, encoded in enumerate(classes):
+        index = int(encoded)
+        if 0 <= index < n_classes:
+            full[index] = proba[column]
+    logger.debug(
+        f"Expanded a {len(proba)}-class prediction into the {n_classes}-class "
+        f"label space (classes absent from training get probability 0)."
+    )
+    return full
+
+
 def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model, cnn_target_encoder, rf_field_types=None, model_files_dir=None):
     """
     Optimize series selections for a study. Returns a tuple:
@@ -686,10 +727,15 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
                 f"{model_files_dir}; falling back to 'average'. Retrain both models to record them."
             )
 
+    n_classes = len(all_labels)
     temp_predictions = {}
     for i, (series_desc, first_path, _thumb) in enumerate(series_list):
         rf_proba = rf_list[i] if rf_list is not None else None
         cnn_proba = cnn_list[i] if cnn_list is not None else None
+        # Align both vectors with the label encoder before anything indexes them
+        # by class position.
+        rf_proba = _expand_to_label_space(rf_proba, rf_model, n_classes)
+        cnn_proba = _expand_to_label_space(cnn_proba, cnn_model, n_classes)
 
         # Combine predictions based on model type
         final_proba = None
@@ -721,6 +767,8 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
         candidates = []
         for series_desc, pred in temp_predictions.items():
             current_path = pred['path']
+            if idx >= len(pred['proba']):
+                continue
             current_proba = pred['proba'][idx]
 
             # Only consider series that exceed the threshold

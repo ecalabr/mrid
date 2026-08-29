@@ -107,3 +107,80 @@ def test_cnn_saves_a_checkpoint_even_when_validation_accuracy_is_zero():
             config_module.NUM_EPOCHS = original
         assert model_path is not None and os.path.exists(model_path), \
             "no checkpoint written when validation accuracy never improved"
+
+
+# ── Classes absent from a model's training labels ───────────────────────────
+
+class _FakeRF:
+    """Stands in for a RandomForest that never saw one of the encoder's classes.
+    predict_proba returns one column per class in `classes_`, not per label."""
+
+    def __init__(self, classes):
+        self.classes_ = np.array(classes)
+
+
+def test_expand_to_label_space_scatters_columns_by_class():
+    """A model trained without class 2 must have its columns mapped back to the
+    right positions, with the unseen class scoring 0."""
+    from mrid_app.processing import _expand_to_label_space
+
+    model = _FakeRF([0, 1, 3])          # class 2 never appeared in training
+    proba = np.array([0.5, 0.3, 0.2])   # aligned with classes_, not the labels
+    full = _expand_to_label_space(proba, model, n_classes=4)
+
+    assert len(full) == 4
+    assert np.allclose(full, [0.5, 0.3, 0.0, 0.2])
+
+
+def test_expand_to_label_space_is_a_no_op_when_already_aligned():
+    from mrid_app.processing import _expand_to_label_space
+
+    proba = np.array([0.25, 0.25, 0.5])
+    model = _FakeRF([0, 1, 2])
+    assert _expand_to_label_space(proba, model, 3) is proba
+
+
+def test_expand_to_label_space_gives_up_when_unrecoverable():
+    """A length mismatch the class list cannot explain must be discarded, not
+    guessed at."""
+    from mrid_app.processing import _expand_to_label_space
+
+    assert _expand_to_label_space(np.array([0.5, 0.5]), _FakeRF([0, 1, 2]), 4) is None
+    assert _expand_to_label_space(None, _FakeRF([0]), 3) is None
+
+
+def test_optimize_study_selections_survives_a_class_missing_from_rf_training():
+    """The end-to-end failure this came from: the header model trained on 2 of
+    3 classes, and every study raised IndexError, silently producing no
+    predictions at all."""
+    from mrid_app import processing
+
+    classes = np.array(["T1", "T2", "FLAIR"])
+
+    class _Enc:
+        classes_ = classes
+
+    rf_model = _FakeRF([0, 2])                 # never saw "T2"
+    study_dict = {"s": ["/fake/a.dcm"]}
+
+    orig_rf = processing.get_series_probabilities_batch
+    orig_cnn = processing.get_image_probabilities_batch
+    orig_3d = processing.check_is_3d_acquisition
+    try:
+        # Two columns from the RF, three from the CNN.
+        processing.get_series_probabilities_batch = lambda *a, **k: [np.array([0.9, 0.1])]
+        processing.get_image_probabilities_batch = lambda *a, **k: [np.array([0.8, 0.1, 0.1])]
+        processing.check_is_3d_acquisition = lambda *a, **k: False
+
+        assignments, _ = processing.optimize_study_selections(
+            study_dict, "Header + Image Model",
+            rf_model, _Enc(), "feature-encoder",
+            "cnn-model", _Enc(), None)
+    finally:
+        processing.get_series_probabilities_batch = orig_rf
+        processing.get_image_probabilities_batch = orig_cnn
+        processing.check_is_3d_acquisition = orig_3d
+
+    # Must produce an assignment rather than raising; the RF's 0.9 belongs to
+    # "T1" (class 0) and its 0.1 to "FLAIR" (class 2), so T1 wins.
+    assert assignments.get("/fake/a.dcm") == "T1"
