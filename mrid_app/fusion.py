@@ -14,17 +14,19 @@ weight.  The rules below let a project pick a reduction that suits its data.
 Available methods (``FUSION_METHOD`` in ``config.py``)
 -----------------------------------------------------
 
-``average`` (default)
-    Arithmetic mean, ``p = (p_rf + p_cnn) / 2``.  The *sum rule* of Kittler et
-    al.  Robust and well behaved when both models are similarly accurate; it is
-    the historical behavior and remains the default.
-
-``product``
+``product`` (default)
     Normalized elementwise product, ``p ∝ p_rf · p_cnn``.  The *product rule*
     (equivalently a log-opinion pool).  Sharper than the mean and effectively
     lets either model veto a class it considers impossible, which helps when the
     two models make largely independent errors.  Correspondingly less forgiving
-    when one model is confidently wrong.
+    when one model is confidently wrong.  It is the default because it scored
+    highest on most of the evaluation datasets, by the widest margin at low
+    training-data volumes.
+
+``average``
+    Arithmetic mean, ``p = (p_rf + p_cnn) / 2``.  The *sum rule* of Kittler et
+    al.  The behavior of MRID before the other rules existed; a reasonable
+    choice when both models are similarly accurate.
 
 ``max``
     Per-class maximum, ``p ∝ max(p_rf, p_cnn)``.  The *max rule*.  The class
@@ -59,12 +61,12 @@ from .logging_config import get_logger
 logger = get_logger()
 
 #: Fusion methods accepted by :func:`fuse_probabilities`, in display order.
-FUSION_METHODS = ("average", "product", "max", "confidence", "reliability")
+FUSION_METHODS = ("product", "average", "max", "confidence", "reliability")
 
 #: Short human-readable descriptions, used by the config wizard tooltips.
 FUSION_METHOD_DESCRIPTIONS = {
-    "average":     "Mean of both models (sum rule) — the robust default.",
-    "product":     "Normalized product (log-opinion pool) — sharper; either model can veto a class.",
+    "product":     "Normalized product (log-opinion pool) — the default; either model can veto a class.",
+    "average":     "Mean of both models (sum rule) — the historical behavior.",
     "max":         "Per-class maximum (max rule) — the most confident model wins, never diluted.",
     "confidence":  "Weight each model per series by its certainty (entropy) — training-free, adaptive.",
     "reliability": "Weight each model per class by its validation F1 — best when one model is much weaker.",
@@ -76,6 +78,9 @@ RELIABILITY_FILENAME = "fusion_reliability.joblib"
 #: Cache for :func:`load_reliability`, keyed on (path, mtime_ns, size).
 _reliability_cache = {}
 
+#: Fallback when FUSION_METHOD is missing or unrecognised. Deliberately
+#: 'average', not the config default: a config written before FUSION_METHOD
+#: existed should keep behaving the way it did when it was written.
 _DEFAULT_METHOD = "average"
 
 

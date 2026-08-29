@@ -461,7 +461,7 @@ NUM_COLUMNS = 6               # grid columns (classification & verify)
 NUM_ROWS = 4                  # grid rows (verify mode batches)
 THUMBNAIL_SCALE_FACTOR = 1.0  # extra multiplier for thumbnail size only
 OVERRIDE_THRESHOLD = 0.5      # min probability for auto-selection (0-1)
-FUSION_METHOD = 'average'     # how Header + Image probabilities are combined
+FUSION_METHOD = 'product'     # how Header + Image probabilities are combined
 ALLOW_DUPLICATE_LABELS = False
 NUM_PARALLEL_WORKERS = 8      # workers for scanning, loading & CNN preprocessing
 RANDOMIZE_STUDY_ORDER = True  # shuffle study order (Manual/Semi-Auto)
@@ -481,19 +481,27 @@ series and their two probability vectors are reduced to one before labels are
 assigned. `FUSION_METHOD` chooses that reduction:
 
 ```python
-FUSION_METHOD = 'average'   # 'average' | 'product' | 'max' | 'confidence' | 'reliability'
+FUSION_METHOD = 'product'   # 'product' | 'average' | 'max' | 'confidence' | 'reliability'
 ```
 
 | Method | Rule | Use it when |
 |---|---|---|
-| `average` *(default)* | Mean of both models, `p = (p_rf + p_cnn) / 2` | Both models are of comparable quality. This is the historical behavior. |
-| `product` | Normalized product, `p ∝ p_rf · p_cnn` | The two models make largely independent errors. Sharper than the mean; either model can veto a class it rules out. |
+| `product` *(default)* | Normalized product, `p ∝ p_rf · p_cnn` | General use. The two models make largely independent errors; sharper than the mean, and either model can veto a class it rules out. |
+| `average` | Mean of both models, `p = (p_rf + p_cnn) / 2` | Both models are of comparable quality. This was MRID's behavior before the other rules existed. |
 | `max` | Per-class maximum, `p ∝ max(p_rf, p_cnn)` | You want a confident model never to be diluted by an uncertain one. |
 | `confidence` | Weight each model per series by its certainty, `1 - H(p)/log K` | Either model may be unreliable on *some* series. Adapts series by series; needs no extra training. |
 | `reliability` | Weight each model per class by its validation F1 | One model is much weaker overall, or each is stronger on different classes. |
 
 The first four are training-free and can be changed at any time, including
 between runs with already-trained models.
+
+**Why `product` is the default.** Across five public MRI datasets it scored
+highest on most of them, with its largest margin at small training-set sizes —
+the regime that matters when you are starting a project. `average` is never far
+behind when the two models are of similar quality, so switching back is a safe
+choice if you prefer the original behavior. A config file written before
+`FUSION_METHOD` existed keeps using `average`, so upgrading MRID never silently
+changes an existing project's results.
 
 **`reliability` requires trained metrics.** Each trainer records its own
 per-class F1 on its held-out validation split to `model_files/fusion_reliability.joblib`;
@@ -503,14 +511,14 @@ that class. Models trained before this file existed have no recorded metrics, so
 to use it**. The two models may be trained independently and in either order;
 each writes only its own entry.
 
-**Choosing a method.** `average` is a safe default and is what to use when the
-header and image models perform similarly. Its weakness is that it weights a
-weak model equally with a strong one, so when one model is clearly worse on your
-data the combination can score *below* the better model alone. `reliability`
-targets exactly that case; `confidence` targets the case where reliability
-varies series to series rather than globally. If you are unsure, compare the
-per-class results in `model_files/rf_model_training_summary.txt` and
-`cnn_model_training_summary.txt`: similar scores favor `average`, a large and
+**Choosing a method.** Start with the default. The failure mode to watch for is
+one model being clearly weaker than the other on your data: `product`, `average`
+and `max` all weight the two models equally, so a weak model can drag the
+combination *below* the better model used alone. `reliability` targets exactly
+that case; `confidence` targets the case where reliability varies series to
+series rather than globally. If you are unsure, compare the per-class results in
+`model_files/rf_model_training_summary.txt` and
+`cnn_model_training_summary.txt`: similar scores favor `product`, a large and
 consistent gap favors `reliability`.
 
 #### CNN hyperparameters

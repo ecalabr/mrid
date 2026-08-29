@@ -36,13 +36,16 @@ THUMBNAIL_SCALE_FACTOR = 1.0  # additional static scale multiplier applied to th
 OVERRIDE_THRESHOLD = 0.5  # probability threshold for auto-classification
 # How the header and image model probabilities are combined when using the
 # "Header + Image Model" type. One of:
-#   'average'     mean of both models (sum rule) — the robust default
-#   'product'     normalized product (log-opinion pool); either model can veto a class
+#   'product'     normalized product (log-opinion pool); either model can veto a
+#                 class. The default: it scored highest on most evaluation
+#                 datasets, with its largest margin at low training-data volumes.
+#   'average'     mean of both models (sum rule); the historical behavior
 #   'max'         per-class maximum (max rule); the most confident model wins
 #   'confidence'  weight each model per series by its certainty (entropy based)
 #   'reliability' weight each model per class by its validation F1 (recorded at
-#                 training time; falls back to 'average' if unavailable)
-FUSION_METHOD = 'average'
+#                 training time; falls back to 'average' if unavailable). Use
+#                 this when one model is much weaker than the other.
+FUSION_METHOD = 'product'
 ALLOW_DUPLICATE_LABELS = False  # allow multiple series to have the same label for manual classification
 NUM_PARALLEL_WORKERS = 8  # number of parallel workers (threads/processes) for file scanning, loading, and CNN data loading
 RANDOMIZE_STUDY_ORDER = True  # randomize the order of studies during manual/semi-auto classification

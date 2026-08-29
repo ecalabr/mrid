@@ -191,11 +191,25 @@ def test_unknown_configured_method_falls_back_to_average():
         config_module.FUSION_METHOD = original
 
 
-def test_config_default_is_the_historical_behavior():
-    """Existing projects must keep behaving exactly as before the new rules."""
+def test_config_default_is_product():
+    """New projects get the rule that scored best across the evaluation
+    datasets; see the FUSION_METHOD comment in config.py."""
     from mrid_app import config as config_module
 
-    assert config_module.FUSION_METHOD == "average"
+    assert config_module.FUSION_METHOD == "product"
+
+
+def test_missing_config_key_still_falls_back_to_average():
+    """A config written before FUSION_METHOD existed must keep the behavior it
+    had when it was written — the fallback is 'average', NOT the new default."""
+    from mrid_app import config as config_module
+
+    original = getattr(config_module, "FUSION_METHOD", "product")
+    try:
+        del config_module.FUSION_METHOD
+        assert get_configured_method() == "average"
+    finally:
+        config_module.FUSION_METHOD = original
 
 
 def test_every_method_has_a_wizard_description():
