@@ -1,4 +1,5 @@
 import os
+import threading as _threading
 import yaml
 from collections import defaultdict
 from typing import Optional
@@ -484,3 +485,33 @@ def warn_if_no_gpu_for_cnn(gui_parent: Optional[object] = None) -> bool:
         # Non-GUI environment or messagebox failed -> default to not proceeding
         logger.warning("No acceleration device detected. Operation cancelled by default in non-GUI context.")
         return False
+
+
+# ── Shared I/O thread pool ──────────────────────────────────────────────────
+
+_IO_EXECUTOR = None
+_IO_EXECUTOR_LOCK = _threading.Lock()
+
+
+def get_io_executor():
+    """One process-wide pool for the app's parallel DICOM reads.
+
+    Inference used to build a fresh ThreadPoolExecutor for every batch. That is
+    not just wasteful — ThreadPoolExecutor.submit() holds the *module-level*
+    concurrent.futures._global_shutdown_lock while it starts new worker threads,
+    and that lock is shared by every pool in the process. So a background
+    prefetch spinning up a pool blocks any other thread trying to submit, and
+    the GUI's thumbnail loading contends with it on a lock neither of them owns.
+    Reusing one pool means threads are started once instead of once per batch.
+
+    The pool is sized on first use from NUM_PARALLEL_WORKERS.
+    """
+    global _IO_EXECUTOR
+    if _IO_EXECUTOR is None:
+        with _IO_EXECUTOR_LOCK:
+            if _IO_EXECUTOR is None:
+                from concurrent.futures import ThreadPoolExecutor
+                _IO_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=max(1, get_num_parallel_workers()),
+                    thread_name_prefix="mrid-io")
+    return _IO_EXECUTOR

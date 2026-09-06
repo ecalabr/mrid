@@ -10,7 +10,7 @@ from .config import OVERRIDE_THRESHOLD, PREFER_3D, DICOM_HEADER_FIELDS
 from .fusion import fuse_probabilities, get_configured_method, load_reliability, reliability_weights
 from .utils import (safe_get_dicom_attribute, get_nifti_prefix, extract_study_id_from_path,
                      get_study_dir_name, get_study_csv_name, get_classified_outputs_dir,
-                     get_num_parallel_workers)
+                     get_num_parallel_workers, get_io_executor)
 from .logging_config import get_logger
 
 logger = get_logger()
@@ -572,7 +572,6 @@ def get_image_probabilities_batch(dicom_paths, model, target_encoder, thumbnail_
 
     # Load image tensors in parallel — the slow part is DICOM I/O.
     tensors = [None] * n
-    workers = max(1, min(get_num_parallel_workers(), n))
     def _load(i):
         if use_thumbs:
             tp = thumbnail_paths[i]
@@ -582,10 +581,10 @@ def get_image_probabilities_batch(dicom_paths, model, target_encoder, thumbnail_
                     return i, t
         return i, load_image_tensor(dicom_paths[i], num_slices=num_slices, image_size=image_size)
     try:
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            for i, t in ex.map(_load, range(n)):
-                tensors[i] = t
+        # Shared pool — see get_io_executor() for why a per-call pool hurts.
+        ex = get_io_executor()
+        for i, t in ex.map(_load, range(n)):
+            tensors[i] = t
     except Exception:
         for i in range(n):
             tensors[i] = load_image_tensor(dicom_paths[i], num_slices=num_slices, image_size=image_size)

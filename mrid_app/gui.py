@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import queue
 import threading
 import time
 import random
@@ -4553,14 +4554,59 @@ def _bind_space_paging(root, canvas):
 _THUMBNAIL_EXECUTOR = None
 
 
+_THUMBNAIL_EXECUTOR_LOCK = threading.Lock()
+
+
 def _get_thumbnail_executor():
     global _THUMBNAIL_EXECUTOR
     if _THUMBNAIL_EXECUTOR is None:
-        import concurrent.futures
-        _THUMBNAIL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max(1, get_num_parallel_workers()),
-            thread_name_prefix="mrid-thumb")
+        with _THUMBNAIL_EXECUTOR_LOCK:
+            if _THUMBNAIL_EXECUTOR is None:
+                import concurrent.futures
+                _THUMBNAIL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=max(1, get_num_parallel_workers()),
+                    thread_name_prefix="mrid-thumb")
     return _THUMBNAIL_EXECUTOR
+
+
+def _pump_thumbnail_results(root, results_q, update_fn, stop_event, interval_ms=40):
+    """Apply finished thumbnails to their panels, on the main thread.
+
+    Worker threads must never call into Tk. ``root.after()`` from a non-main
+    thread does not simply enqueue: _tkinter forwards the call to the thread
+    that owns the interpreter and *blocks the caller* until that thread services
+    Tcl's event queue. While a classification window is still being built the
+    main thread has not returned to the event loop, so every loader that
+    finishes early parks inside ``root.after`` — and with the shared pool
+    saturated the window never populates. That is the intermittent hang where a
+    window opens but no thumbnail or series description ever appears.
+
+    So loaders now only put results on a plain queue, and this poller — started
+    from and running on the main thread — drains it.
+    """
+    def _pump():
+        if stop_event.is_set():
+            return
+        try:
+            while True:
+                path, img = results_q.get_nowait()
+                try:
+                    update_fn(path, img)
+                except Exception as e:
+                    logger.debug(f"Error updating thumbnail for {path}: {e}")
+        except queue.Empty:
+            pass
+        except Exception as e:
+            logger.debug(f"Thumbnail pump error: {e}")
+        try:
+            root.after(interval_ms, _pump)
+        except Exception:
+            pass   # window destroyed
+
+    try:
+        root.after(interval_ms, _pump)
+    except Exception:
+        pass
 
 
 def show_verification_gui(batch_df, target_series, batch_start, total_series,
@@ -4677,6 +4723,7 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
     # abandon any outstanding loads the moment it closes.
     stop_loading = threading.Event()
     pending_futures = []
+    results_q = queue.Queue()
 
     def load_single_thumbnail(series_path, panel, output_dir):
         """Load a single thumbnail, preferring a pre-generated thumbnail (JPEG/PNG)."""
@@ -4723,20 +4770,18 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         except Exception as e:
             logger.debug(f"Error updating thumbnail: {e}")
 
-    def _on_thumbnail_loaded(future, series_path):
-        # Runs on a pool worker thread; bail out if the window has closed.
+    def _load_into_queue(series_path, *args):
+        """Runs on a pool worker thread. Touches no Tk: the result goes on a
+        queue that the main thread drains (see _pump_thumbnail_results)."""
         if stop_loading.is_set():
             return
         try:
-            pil_img = future.result()
+            pil_img = load_single_thumbnail(series_path, *args)
         except Exception as e:
             logger.debug(f"Error loading thumbnail for {series_path}: {e}")
             return
-        if pil_img is not None:
-            try:
-                root.after(0, lambda p=series_path, img=pil_img: update_thumbnail(p, img))
-            except Exception:
-                pass
+        if pil_img is not None and not stop_loading.is_set():
+            results_q.put((series_path, pil_img))
 
     # Submit each load to the shared pool (fast, non-blocking) — no per-window
     # thread or pool, so windows can't accumulate threads.
@@ -4744,11 +4789,11 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
     for idx, row_data in batch_df.iterrows():
         sp = row_data['Path']
         try:
-            fut = _executor.submit(load_single_thumbnail, sp, panel_widgets[sp], output_dir)
-            fut.add_done_callback(lambda f, p=sp: _on_thumbnail_loaded(f, p))
-            pending_futures.append(fut)
+            pending_futures.append(
+                _executor.submit(_load_into_queue, sp, panel_widgets[sp], output_dir))
         except Exception as e:
             logger.debug(f"Could not submit thumbnail load for {sp}: {e}")
+    _pump_thumbnail_results(root, results_q, update_thumbnail, stop_loading)
 
     button_frame = ctk.CTkFrame(root, fg_color="transparent")
     button_frame.grid(row=1, column=0, sticky="ew", pady=scale_value(10))
@@ -5324,6 +5369,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     # Load thumbnails on the shared bounded pool (same as verification mode).
     stop_loading = threading.Event()
     pending_futures = []
+    results_q = queue.Queue()
 
     def load_single_thumbnail(first_path, panel, dicom_paths, thumbnail_path):
         """Load a single thumbnail, preferring a pre-generated thumbnail (JPEG/PNG)."""
@@ -5382,28 +5428,27 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         except Exception as e:
             logger.debug(f"Error updating thumbnail: {e}")
 
-    def _on_thumbnail_loaded(future, series_path):
+    def _load_into_queue(series_path, *args):
+        """Runs on a pool worker thread. Touches no Tk: the result goes on a
+        queue that the main thread drains (see _pump_thumbnail_results)."""
         if stop_loading.is_set():
             return
         try:
-            pil_img = future.result()
+            pil_img = load_single_thumbnail(series_path, *args)
         except Exception as e:
             logger.debug(f"Error loading thumbnail for {series_path}: {e}")
             return
-        if pil_img is not None:
-            try:
-                root.after(0, lambda p=series_path, img=pil_img: update_thumbnail(p, img))
-            except Exception:
-                pass
+        if pil_img is not None and not stop_loading.is_set():
+            results_q.put((series_path, pil_img))
 
     _executor = _get_thumbnail_executor()
     for path, panel_data in panel_widgets.items():
         try:
-            fut = _executor.submit(load_single_thumbnail, path, panel_data[0], panel_data[1], panel_data[2])
-            fut.add_done_callback(lambda f, p=path: _on_thumbnail_loaded(f, p))
-            pending_futures.append(fut)
+            pending_futures.append(_executor.submit(
+                _load_into_queue, path, panel_data[0], panel_data[1], panel_data[2]))
         except Exception as e:
             logger.debug(f"Could not submit thumbnail load for {path}: {e}")
+    _pump_thumbnail_results(root, results_q, update_thumbnail, stop_loading)
 
     button_frame = ctk.CTkFrame(root, fg_color="transparent")
     button_frame.grid(row=1, column=0, sticky="ew", pady=scale_value(10))

@@ -8,7 +8,7 @@ import pandas as pd
 import pydicom
 from .prep import _preprocess_df, encode_text_features
 from .config import N_ESTIMATORS, DICOM_HEADER_FIELDS
-from .utils import safe_get_dicom_attribute, extract_study_id_from_path, get_study_csv_name, get_classified_outputs_dir, filter_nonempty_frames, get_num_parallel_workers
+from .utils import safe_get_dicom_attribute, extract_study_id_from_path, get_study_csv_name, get_classified_outputs_dir, filter_nonempty_frames, get_num_parallel_workers, get_io_executor
 from .csv_field_updater import (
     scan_for_missing_fields,
     update_all_csvs_with_missing_fields
@@ -389,12 +389,13 @@ def get_series_probabilities_batch(dicom_paths, model, feature_encoder, field_ty
         return results
 
     feats = [None] * n
-    workers = max(1, min(get_num_parallel_workers(), n))
     try:
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            for i, f in ex.map(lambda ip: (ip[0], get_series_features(ip[1])), list(enumerate(dicom_paths))):
-                feats[i] = f
+        # Shared pool: a per-call pool would start and tear down threads on
+        # every batch, and each start holds concurrent.futures' process-wide
+        # _global_shutdown_lock, stalling unrelated submits elsewhere in the app.
+        ex = get_io_executor()
+        for i, f in ex.map(lambda ip: (ip[0], get_series_features(ip[1])), list(enumerate(dicom_paths))):
+            feats[i] = f
     except Exception:
         for i, p in enumerate(dicom_paths):
             feats[i] = get_series_features(p)
