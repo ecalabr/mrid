@@ -788,12 +788,15 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
             gui.close()
             return
 
-        # Note: y_str contains the string labels, need to filter and encode them
-        # Filter to match only valid classifications
+        # Keep exactly the rows the label decision above settled on. Filtering
+        # on 'other'/'none' again here would undo the single-target-series case,
+        # which deliberately keeps the negatives as an 'Other' class — dropping
+        # them leaves one class, and softmax then returns 1.0 for every series.
+        keep_labels = set(master_df['Classification'].astype(str))
         valid_indices = []
         valid_classifications = []
         for idx, classification in enumerate(y_str):
-            if str(classification).lower() not in ['other', 'none']:
+            if str(classification) in keep_labels:
                 valid_indices.append(idx)
                 valid_classifications.append(classification)
 

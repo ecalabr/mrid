@@ -15,13 +15,19 @@ Available methods (``FUSION_METHOD`` in ``config.py``)
 -----------------------------------------------------
 
 ``product`` (default)
-    Normalized elementwise product, ``p ∝ p_rf · p_cnn``.  The *product rule*
-    (equivalently a log-opinion pool).  Sharper than the mean and effectively
-    lets either model veto a class it considers impossible, which helps when the
-    two models make largely independent errors.  Correspondingly less forgiving
-    when one model is confidently wrong.  It is the default because it scored
-    highest on most of the evaluation datasets, by the widest margin at low
+    Geometric mean, ``p = sqrt(p_rf · p_cnn)`` — the *product rule* of Kittler
+    et al., left un-normalized.  Sharper than the arithmetic mean and lets
+    either model veto a class it considers impossible, which helps when the two
+    models make largely independent errors.  Correspondingly less forgiving when
+    one model is confidently wrong.  It is the default because it scored highest
+    on most of the evaluation datasets, by the widest margin at low
     training-data volumes.
+
+    It is deliberately *not* renormalized to sum to 1.  Kittler's rule is stated
+    for argmax decisions; MRID instead thresholds the score, and normalizing
+    would leave only relative ranking.  With two classes and a saturated model
+    that is pathological — the winning class normalizes to 1.0 however
+    unconvinced the other model was.
 
 ``average``
     Arithmetic mean, ``p = (p_rf + p_cnn) / 2``.  The *sum rule* of Kittler et
@@ -48,8 +54,10 @@ Available methods (``FUSION_METHOD`` in ``config.py``)
     each model is stronger on a different subset of classes.  Falls back to
     ``average`` when the recorded validation metrics are unavailable.
 
-All rules return a vector that sums to 1 over the classes, so
-``OVERRIDE_THRESHOLD`` keeps the same meaning regardless of the method chosen.
+Every rule returns scores on the same scale as the two models' own
+probabilities, so ``OVERRIDE_THRESHOLD`` keeps the same meaning regardless of
+the method chosen. ``average``, ``max`` and ``confidence`` also happen to sum to
+1; ``product`` (a geometric mean) does not, deliberately — see its note below.
 """
 
 import os
@@ -273,8 +281,19 @@ def fuse_probabilities(rf_proba, cnn_proba, method=None, weights=None):
         return average
 
     if method == "product":
-        fused = _normalize(rf * cnn)
-        return fused if fused is not None else average
+        # Geometric mean, NOT a normalized product. MRID compares the fused
+        # score against OVERRIDE_THRESHOLD, so the score has to carry
+        # confidence, not just relative ranking. Normalizing p ∝ rf·cnn throws
+        # the magnitude away: with two classes and a saturated image model
+        # (p≈[0,1]), the losing class is multiplied to ~0 and the winner
+        # normalizes to 1.0 no matter how low the header probability was —
+        # every series then looks like a perfect match.
+        #
+        # sqrt(rf·cnn) keeps each component between the two models' own
+        # probabilities, so it stays on the same scale they are on and the
+        # threshold keeps its meaning, while still letting either model veto a
+        # class it rules out.
+        return np.sqrt(np.clip(rf * cnn, 0.0, None))
 
     if method == "max":
         fused = _normalize(np.maximum(rf, cnn))

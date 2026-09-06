@@ -23,16 +23,30 @@ def test_average_is_bit_for_bit_the_historical_mean():
     assert np.array_equal(fused, (rf + cnn) / 2)
 
 
-def test_all_methods_return_a_distribution():
-    """Every rule yields a vector summing to 1, so OVERRIDE_THRESHOLD keeps its
-    meaning no matter which method is configured."""
+def test_all_methods_stay_on_the_probability_scale():
+    """Every rule must return scores in [0, 1] bounded by what the two models
+    themselves said, so OVERRIDE_THRESHOLD keeps its meaning whichever method is
+    configured. Only some rules also sum to 1 — see the next test."""
     rf = np.array([0.7, 0.2, 0.1])
     cnn = np.array([0.1, 0.6, 0.3])
     weights = (np.array([0.8, 0.8, 0.8]), np.array([0.2, 0.2, 0.2]))
+    lo, hi = np.minimum(rf, cnn), np.maximum(rf, cnn)
     for method in FUSION_METHODS:
         fused = fuse_probabilities(rf, cnn, method=method, weights=weights)
-        assert _sums_to_one(fused), f"{method} did not return a distribution: {fused}"
-        assert np.all(fused >= 0.0), f"{method} returned a negative probability"
+        assert np.all(fused >= 0.0) and np.all(fused <= 1.0), \
+            f"{method} left [0, 1]: {fused}"
+        if method != "max":   # the max rule is renormalized, so it can exceed hi
+            assert np.all(fused <= hi + 1e-9), f"{method} exceeded both models: {fused}"
+
+
+def test_only_the_normalizing_rules_sum_to_one():
+    """'product' is a geometric mean and deliberately does not normalize; the
+    others do. This is the property the single-target-series bug turned on."""
+    rf = np.array([0.7, 0.2, 0.1])
+    cnn = np.array([0.1, 0.6, 0.3])
+    for method in ("average", "max", "confidence"):
+        assert _sums_to_one(fuse_probabilities(rf, cnn, method=method)), method
+    assert not _sums_to_one(fuse_probabilities(rf, cnn, method="product"))
 
 
 def test_single_model_passes_through_unchanged():
@@ -56,13 +70,28 @@ def test_product_rule_lets_either_model_veto():
     assert int(np.argmax(fuse_probabilities(rf, cnn, method="average"))) == 0
 
 
-def test_product_falls_back_to_average_on_disjoint_support():
-    """No overlapping support would give an all-zero product; fall back instead
-    of returning an unusable vector."""
+def test_product_scores_zero_when_the_models_completely_disagree():
+    """With disjoint support every class is vetoed by one model or the other.
+    Scoring it all zero means nothing clears the threshold and the series falls
+    through to 'Other' — the honest outcome when the models flatly disagree."""
     rf = np.array([1.0, 0.0])
     cnn = np.array([0.0, 1.0])
     fused = fuse_probabilities(rf, cnn, method="product")
-    assert np.array_equal(fused, (rf + cnn) / 2)
+    assert np.allclose(fused, [0.0, 0.0])
+
+
+def test_product_reflects_header_confidence_with_a_saturated_image_model():
+    """Regression for the single-target-series bug: with one target class the
+    image model can only ever say 'target', and the old normalized product then
+    returned 1.0 for every series regardless of what the header model thought,
+    so nothing could be told apart."""
+    cnn = np.array([0.0, 1.0])            # [Other, target] — saturated
+    weak = fuse_probabilities(np.array([0.90, 0.10]), cnn, method="product")
+    strong = fuse_probabilities(np.array([0.15, 0.85]), cnn, method="product")
+
+    assert weak[1] < 0.5, f"a header probability of 0.10 must not select: {weak[1]}"
+    assert strong[1] > 0.5, f"a header probability of 0.85 must select: {strong[1]}"
+    assert strong[1] > weak[1] + 0.3, "the two must be clearly separated"
 
 
 def test_max_rule_picks_the_globally_most_confident_class():
@@ -260,14 +289,23 @@ def test_optimize_study_selections_honors_the_configured_method():
     """The same probabilities must produce different labels under different
     rules — proof the config value reaches the fusion step."""
     classes = ["T1", "T2", "FLAIR"]
-    rf = [0.50, 0.40, 0.10]    # header leans T1
-    cnn = [0.10, 0.52, 0.38]   # image leans T2
+    rf = [0.30, 0.90, 0.10]    # header: confident T2
+    cnn = [0.20, 0.85, 0.30]   # image: agrees on T2
 
-    # Averaging leaves every class under OVERRIDE_THRESHOLD (peak 0.46), so no
-    # label is confident enough to assign. The product rule concentrates on the
-    # class both models rank highly and clears the threshold.
-    assert _run_optimize("average", rf, cnn, classes) == "Other"
+    # Both models are confident about T2, so the geometric mean stays high and
+    # the label is assigned. Weighting the image model to nothing while the
+    # header disagrees, by contrast, leaves nothing over the threshold.
     assert _run_optimize("product", rf, cnn, classes) == "T2"
+    assert _run_optimize("average", rf, cnn, classes) == "T2"
+
+    # Where the rules genuinely differ: the image model is sure, the header
+    # model is not. Averaging clears the threshold on the image model's
+    # confidence alone (0.55); the product rule requires both to be convinced,
+    # and sqrt(0.15 * 0.95) = 0.38 is not enough.
+    rf_weak = [0.40, 0.15, 0.10]
+    cnn_sure = [0.03, 0.95, 0.02]
+    assert _run_optimize("average", rf_weak, cnn_sure, classes) == "T2"
+    assert _run_optimize("product", rf_weak, cnn_sure, classes) == "Other"
 
 
 def test_optimize_study_selections_uses_recorded_reliability_weights():
