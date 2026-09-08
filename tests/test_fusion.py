@@ -342,3 +342,37 @@ def test_optimize_study_selections_uses_recorded_reliability_weights():
         # threshold, so the disagreement resolves to Other instead.
         empty = os.path.join(tmp, "absent")
         assert _run_optimize("reliability", rf, cnn, classes, empty) == "Other"
+
+
+# ── Runtime config binding ──────────────────────────────────────────────────
+
+def test_override_threshold_follows_a_runtime_config_load():
+    """OVERRIDE_THRESHOLD and PREFER_3D used to be imported by value at module
+    load, so a config loaded afterwards — Load/Reload Config File, one the
+    wizard just wrote, or Analyze mode setting PREFER_3D itself — never reached
+    the classifier."""
+    from mrid_app import config as config_module
+    from mrid_app import processing
+
+    orig_t = config_module.OVERRIDE_THRESHOLD
+    orig_p = config_module.PREFER_3D
+    try:
+        config_module.OVERRIDE_THRESHOLD = 0.25
+        config_module.PREFER_3D = {"T1": True}
+        assert processing.get_override_threshold() == 0.25
+        assert processing.get_prefer_3d() == {"T1": True}
+    finally:
+        config_module.OVERRIDE_THRESHOLD = orig_t
+        config_module.PREFER_3D = orig_p
+
+
+def test_override_threshold_survives_a_bad_config_value():
+    from mrid_app import config as config_module
+    from mrid_app import processing
+
+    orig = config_module.OVERRIDE_THRESHOLD
+    try:
+        config_module.OVERRIDE_THRESHOLD = "not a number"
+        assert processing.get_override_threshold() == 0.5
+    finally:
+        config_module.OVERRIDE_THRESHOLD = orig

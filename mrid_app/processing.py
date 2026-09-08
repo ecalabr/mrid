@@ -6,7 +6,7 @@ import pydicom
 from PIL import Image
 from .header import get_series_probabilities, get_series_probabilities_batch
 from .cnn import prepare_cnn_input_data
-from .config import OVERRIDE_THRESHOLD, PREFER_3D, DICOM_HEADER_FIELDS
+from .config import DICOM_HEADER_FIELDS
 from .fusion import fuse_probabilities, get_configured_method, load_reliability, reliability_weights
 from .utils import (safe_get_dicom_attribute, get_nifti_prefix, extract_study_id_from_path,
                      get_study_dir_name, get_study_csv_name, get_classified_outputs_dir,
@@ -14,6 +14,35 @@ from .utils import (safe_get_dicom_attribute, get_nifti_prefix, extract_study_id
 from .logging_config import get_logger
 
 logger = get_logger()
+
+
+def _cfg(name, default):
+    """Read a config value at call time.
+
+    These used to be imported by value at module load, which silently ignored
+    anything set afterwards: Load/Reload Config File, a config the wizard just
+    wrote, and Analyze mode's own PREFER_3D all failed to reach the classifier
+    unless the module happened not to be imported yet. cnn.py already reads its
+    hyperparameters this way; this matches it.
+    """
+    try:
+        from . import config as _config
+        return getattr(_config, name, default)
+    except Exception:
+        return default
+
+
+def get_override_threshold():
+    """Minimum probability for a series to be auto-selected for a label."""
+    try:
+        return float(_cfg('OVERRIDE_THRESHOLD', 0.5))
+    except Exception:
+        return 0.5
+
+
+def get_prefer_3d():
+    """PREFER_3D: a dict of label -> bool, or a single bool for all labels."""
+    return _cfg('PREFER_3D', {})
 
 
 def convert_series_to_nifti(series_dir, output_path, label):
@@ -716,6 +745,8 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
     # Resolve the fusion rule once per study rather than per series. The
     # reliability rule additionally needs the per-class validation F1 scores
     # recorded at training time; without them it falls back to 'average'.
+    override_threshold = get_override_threshold()
+    prefer_3d_cfg = get_prefer_3d()
     fusion_method = get_configured_method() if model_type == "Header + Image Model" else None
     fusion_weights = None
     if fusion_method == "reliability" and model_files_dir:
@@ -771,7 +802,7 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
             current_proba = pred['proba'][idx]
 
             # Only consider series that exceed the threshold
-            if current_proba > OVERRIDE_THRESHOLD:
+            if current_proba > override_threshold:
                 # Check if this is a 3D acquisition
                 is_3d = check_is_3d_acquisition(current_path)
                 candidates.append((current_path, current_proba, is_3d))
@@ -779,10 +810,10 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
         if candidates:
             # Apply PREFER_3D logic if enabled for this label
             # PREFER_3D may be a bool (applies to all non-Other series) or a dict
-            if isinstance(PREFER_3D, bool):
-                prefer_3d = PREFER_3D if label != "Other" else False
+            if isinstance(prefer_3d_cfg, bool):
+                prefer_3d = prefer_3d_cfg if label != "Other" else False
             else:
-                prefer_3d = PREFER_3D.get(label, False)
+                prefer_3d = prefer_3d_cfg.get(label, False)
 
             if prefer_3d:
                 # Check if there's at least one 3D series

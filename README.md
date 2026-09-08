@@ -474,6 +474,33 @@ STUDY_ORDER_SEED = 42         # seed for reproducible shuffling
 - Randomized study order (using the specified seed) reduces labeling bias; Full-Auto always processes in original order.
 - `FUSION_METHOD` only affects the **Header + Image Model** type — see [Header + Image fusion](#header--image-fusion) below.
 
+**Tuning `OVERRIDE_THRESHOLD`.** A series is auto-selected for a label only when
+its probability exceeds this value; otherwise it falls through to `Other`. The
+threshold therefore trades two error types against each other:
+
+| | lower it (e.g. 0.2) | raise it (e.g. 0.7) |
+|---|---|---|
+| Target series missed and left as `Other` | fewer | more |
+| Unwanted series wrongly given a target label | more | fewer |
+
+Across five public MRI datasets, macro F1 peaked around **0.2** rather than the
+default 0.5 — worth roughly +0.015 to +0.035 depending on the fusion rule, on a
+flat plateau between 0.15 and 0.30. The default stays at **0.5** because that
+gain is largely an artifact of how macro F1 is computed: it averages over the
+target classes and `Other` alike, so with eight or ten target classes and one
+`Other`, recovering target series outweighs the extra junk misfiled into them.
+Whether that is the right trade depends on your workflow.
+
+- **Lower it** if a missed series is expensive and you are reviewing results
+  anyway (Semi-Auto, Verify) — you will catch more real series and correct more
+  false ones.
+- **Raise it** if a wrong label is expensive, e.g. Full-Auto feeding a pipeline
+  with no human review.
+- Two things shift the best value: with **less training data** the models are
+  less confident, so a lower threshold helps more; and where **one model is much
+  weaker** than the other, a low threshold mostly lets its bad predictions
+  through — the one evaluation dataset with a weak image model preferred 0.5.
+
 #### Header + Image fusion
 
 When the **Header + Image Model** type is selected, both classifiers score every
