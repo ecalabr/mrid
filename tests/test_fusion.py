@@ -220,12 +220,28 @@ def test_unknown_configured_method_falls_back_to_average():
         config_module.FUSION_METHOD = original
 
 
-def test_config_default_is_product():
+def test_config_default_is_reliability():
     """New projects get the rule that scored best across the evaluation
     datasets; see the FUSION_METHOD comment in config.py."""
     from mrid_app import config as config_module
 
-    assert config_module.FUSION_METHOD == "product"
+    assert config_module.FUSION_METHOD == "reliability"
+
+
+def test_default_rule_handles_a_saturated_image_model():
+    """The default must not repeat the failure that made 'product' unusable on a
+    single-target-series project: with one target class the image model can only
+    say 'target', and the default must still follow the header model."""
+    cnn = np.array([0.0, 1.0])                      # [Other, target], saturated
+    weights = reliability_weights(
+        {"rf": {"Other": 0.9, "target": 0.9}, "cnn": {"Other": 0.1, "target": 0.1}},
+        ["Other", "target"])
+
+    weak = fuse_probabilities(np.array([0.90, 0.10]), cnn,
+                              method="reliability", weights=weights)
+    strong = fuse_probabilities(np.array([0.15, 0.85]), cnn,
+                                method="reliability", weights=weights)
+    assert weak[1] < 0.5 < strong[1], f"weak={weak[1]:.3f} strong={strong[1]:.3f}"
 
 
 def test_missing_config_key_still_falls_back_to_average():
@@ -233,7 +249,7 @@ def test_missing_config_key_still_falls_back_to_average():
     had when it was written — the fallback is 'average', NOT the new default."""
     from mrid_app import config as config_module
 
-    original = getattr(config_module, "FUSION_METHOD", "product")
+    original = getattr(config_module, "FUSION_METHOD", "reliability")
     try:
         del config_module.FUSION_METHOD
         assert get_configured_method() == "average"

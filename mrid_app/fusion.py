@@ -69,15 +69,15 @@ from .logging_config import get_logger
 logger = get_logger()
 
 #: Fusion methods accepted by :func:`fuse_probabilities`, in display order.
-FUSION_METHODS = ("product", "average", "max", "confidence", "reliability")
+FUSION_METHODS = ("reliability", "average", "product", "max", "confidence")
 
 #: Short human-readable descriptions, used by the config wizard tooltips.
 FUSION_METHOD_DESCRIPTIONS = {
-    "product":     "Normalized product (log-opinion pool) — the default; either model can veto a class.",
+    "reliability": "Weight each model per class by its validation F1 — the default; best when one model is weaker.",
     "average":     "Mean of both models (sum rule) — the historical behavior.",
+    "product":     "Geometric mean — conservative; both models must be confident.",
     "max":         "Per-class maximum (max rule) — the most confident model wins, never diluted.",
     "confidence":  "Weight each model per series by its certainty (entropy) — training-free, adaptive.",
-    "reliability": "Weight each model per class by its validation F1 — best when one model is much weaker.",
 }
 
 #: File written next to the models holding each model's per-class validation F1.
