@@ -5,9 +5,16 @@ numpy
 pillow
 PyYAML
 pandas
-scikit-learn
+# Pinned: the header model's results depend on both of these. scikit-learn
+# determines the Random Forest and its train/test split, and
+# sentence-transformers produces the SeriesDescription embeddings that feed it.
+# An unintended upgrade of either shifts published numbers -- moving from
+# scikit-learn 1.8 to 1.9 changed one evaluation dataset's header-model macro F1
+# by 0.066. Raise these deliberately, and re-run the evaluation when you do.
+scikit-learn==1.9.0
 joblib
-sentence-transformers
+sentence-transformers==5.6.0
+transformers==5.13.0   # pulled in by sentence-transformers; pinned for the same reason
 torch>=1.8.0    # Optional for CNN functionality
 torchvision
 umap-learn      # UMAP dimensionality reduction for Analyze mode
