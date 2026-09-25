@@ -27,6 +27,8 @@ import math
 import numpy as np
 from PIL import Image
 
+from .utils import get_random_seed
+
 logger = logging.getLogger("mrid")
 
 # ── ResNet feature extraction ─────────────────────────────────────────────────
@@ -200,11 +202,11 @@ def _pca_to_variance(features_l2: np.ndarray) -> np.ndarray:
     # Cap at _PCA_MAX_COMPONENTS and n_samples-1.
     max_comp = min(_PCA_MAX_COMPONENTS, n_samples - 1, n_features)
     try:
-        pca_full = PCA(n_components=max_comp, random_state=42).fit(features_l2)
+        pca_full = PCA(n_components=max_comp, random_state=get_random_seed()).fit(features_l2)
         cumvar = np.cumsum(pca_full.explained_variance_ratio_)
         n_comp = int(np.searchsorted(cumvar, _PCA_VARIANCE_TARGET)) + 1
         n_comp = max(1, min(n_comp, max_comp))
-        features_pca = PCA(n_components=n_comp, random_state=42).fit_transform(features_l2)
+        features_pca = PCA(n_components=n_comp, random_state=get_random_seed()).fit_transform(features_l2)
         logger.info(
             f"PCA: {n_features}-D → {n_comp}-D  "
             f"(variance retained: {cumvar[n_comp - 1]:.1%})"
@@ -235,7 +237,7 @@ def _umap_reduce(features_pca: np.ndarray) -> np.ndarray:
             n_neighbors=n_neighbors,
             min_dist=_UMAP_MIN_DIST,
             metric=_UMAP_METRIC,
-            random_state=42,
+            random_state=get_random_seed(),
             n_jobs=1,       # explicit — silences "n_jobs overridden" warning
             low_memory=False,
         )

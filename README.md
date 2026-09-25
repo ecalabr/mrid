@@ -465,13 +465,22 @@ FUSION_METHOD = 'reliability' # how Header + Image probabilities are combined
 ALLOW_DUPLICATE_LABELS = False
 NUM_PARALLEL_WORKERS = 8      # workers for scanning, loading & CNN preprocessing
 RANDOMIZE_STUDY_ORDER = True  # shuffle study order (Manual/Semi-Auto)
-STUDY_ORDER_SEED = 42         # seed for reproducible shuffling
+STUDY_ORDER_SEED = 42         # seed for everything random (see below)
 ```
 
 - The whole UI scales automatically with screen size; `THUMBNAIL_SCALE_FACTOR` adjusts thumbnails only (e.g. `0.75` smaller, `1.5` larger).
 - `NUM_PARALLEL_WORKERS` is honored exactly (not capped to the CPU count) across every parallel stage — DICOM scanning, thumbnail generation, thumbnail loading, and CNN preprocessing.
 - With `ALLOW_DUPLICATE_LABELS = False` (default), assigning a label to one series clears it from any other series in the study; set `True` to allow several series per label (useful for datasets with frequently repeated series).
 - Randomized study order (using the specified seed) reduces labeling bias; Full-Auto always processes in original order.
+
+**`STUDY_ORDER_SEED` seeds everything random**, despite the historical name: study
+order, the train/validation splits, Random Forest fitting, CNN weight
+initialization, batch shuffling and augmentation, and Analyze mode's PCA and
+UMAP. Training the same data twice with the same seed produces the same model,
+so a result can be reproduced from the project's config alone; change the seed
+to get an independent run. Determinism holds for repeated runs on the same
+machine and GPU. Results may still differ across different GPUs, between GPU and
+CPU, or across PyTorch builds, because the underlying kernels differ.
 - `FUSION_METHOD` only affects the **Header + Image Model** type — see [Header + Image fusion](#header--image-fusion) below.
 
 **Tuning `OVERRIDE_THRESHOLD`.** A series is auto-selected for a label only when

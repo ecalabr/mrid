@@ -8,7 +8,7 @@ import pandas as pd
 import pydicom
 from .prep import _preprocess_df, encode_text_features
 from .config import N_ESTIMATORS, DICOM_HEADER_FIELDS
-from .utils import safe_get_dicom_attribute, extract_study_id_from_path, get_study_csv_name, get_classified_outputs_dir, filter_nonempty_frames, get_num_parallel_workers, get_io_executor
+from .utils import safe_get_dicom_attribute, extract_study_id_from_path, get_study_csv_name, get_classified_outputs_dir, filter_nonempty_frames, get_num_parallel_workers, get_io_executor, seed_everything
 from .csv_field_updater import (
     scan_for_missing_fields,
     update_all_csvs_with_missing_fields
@@ -201,12 +201,15 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
             logger.info("Header model training cancelled by user.")
             gui.close()
             return
+        seed = seed_everything()
+        logger.info(f"Header model training seed: {seed} (config STUDY_ORDER_SEED)")
+
         from sklearn.model_selection import train_test_split
         # See the matching note in cnn.py: stratifying needs two examples per
         # class, which a small or newly-started label set may not have.
         try:
             X_train, X_test, y_train, y_test = train_test_split(
-                X_final, y_encoded, test_size=0.3, random_state=42, stratify=y_encoded)
+                X_final, y_encoded, test_size=0.3, random_state=seed, stratify=y_encoded)
         except ValueError as e:
             logger.warning(
                 f"Could not stratify the header train/test split ({e}). Falling back "
@@ -214,9 +217,9 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
                 f"for a more reliable accuracy estimate."
             )
             X_train, X_test, y_train, y_test = train_test_split(
-                X_final, y_encoded, test_size=0.3, random_state=42)
+                X_final, y_encoded, test_size=0.3, random_state=seed)
 
-        model = RandomForestClassifier(n_estimators=N_ESTIMATORS, random_state=42, n_jobs=-1, class_weight='balanced')
+        model = RandomForestClassifier(n_estimators=N_ESTIMATORS, random_state=seed, n_jobs=-1, class_weight='balanced')
         model.fit(X_train, y_train)
 
         gui.update_status("5/6: Saving model, encoders, and field types...")

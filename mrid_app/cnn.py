@@ -6,7 +6,8 @@ import hashlib
 import multiprocessing as mp
 from .utils import (extract_study_id_from_path, get_study_csv_name,
                     get_classified_outputs_dir, get_num_parallel_workers,
-                    filter_nonempty_frames)
+                    filter_nonempty_frames, seed_everything, torch_generator,
+                    get_random_seed)
 from .logging_config import get_logger
 
 logger = get_logger()
@@ -498,6 +499,11 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
     batch_size = int(_cfg('BATCH_SIZE', BATCH_SIZE))
     lr = float(_cfg('LR', LR))
 
+    # Seed before anything random happens: weight init, the split, batch order
+    # and the augmentation all draw from these generators.
+    seed = seed_everything()
+    logger.info(f"CNN training seed: {seed} (config STUDY_ORDER_SEED)")
+
     from sklearn.model_selection import train_test_split
     # Stratifying needs at least two examples of every class. Small or heavily
     # imbalanced label sets (a class with a single example) would otherwise
@@ -506,7 +512,7 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
     # unstratified split and say so rather than failing.
     try:
         X_train, X_val, y_train, y_val = train_test_split(
-            X_data, y_labels, test_size=0.2, random_state=42, stratify=y_labels)
+            X_data, y_labels, test_size=0.2, random_state=seed, stratify=y_labels)
     except ValueError as e:
         logger.warning(
             f"Could not stratify the CNN train/validation split ({e}). Falling back "
@@ -514,7 +520,7 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
             f"for a more reliable validation score."
         )
         X_train, X_val, y_train, y_val = train_test_split(
-            X_data, y_labels, test_size=0.2, random_state=42)
+            X_data, y_labels, test_size=0.2, random_state=seed)
     y_train_tensor = torch.from_numpy(y_train).long()
     y_val_tensor = torch.from_numpy(y_val).long()
 
@@ -523,7 +529,10 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
     train_dataset = AugmentedImageDataset(X_train, y_train_tensor, apply_augmentation=True)
     val_dataset = ImageDataset(X_val, y_val_tensor)
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    # An explicit generator pins the shuffle order independently of how much
+    # randomness weight initialization happened to consume first.
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
+                              generator=torch_generator(seed))
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
     # Channel count and image size come from the training data itself:
