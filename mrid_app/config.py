@@ -51,7 +51,13 @@ FUSION_METHOD = 'reliability'
 ALLOW_DUPLICATE_LABELS = False  # allow multiple series to have the same label for manual classification
 NUM_PARALLEL_WORKERS = 8  # number of parallel workers (threads/processes) for file scanning, loading, and CNN data loading
 RANDOMIZE_STUDY_ORDER = True  # randomize the order of studies during manual/semi-auto classification
-STUDY_ORDER_SEED = 42  # seed for pseudo-random study ordering (ensures reproducibility)
+# Seed for every pseudo-random part of MRID: study ordering, the train/validation
+# splits, Random Forest fitting, CNN weight initialization, batch shuffling and
+# augmentation, and Analyze mode's PCA/UMAP. Keeping one seed means a project's
+# results can be reproduced from its config. Training is deterministic for
+# repeated runs on the same machine and GPU; results may still differ across
+# different GPUs or PyTorch builds.
+STUDY_ORDER_SEED = 42
 
 # CNN hyperparameters
 IMAGE_SIZE = 128

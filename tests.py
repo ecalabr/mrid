@@ -20,6 +20,7 @@ TEST_MODULES = [
     'tests.test_fusion',
     'tests.test_small_label_sets',
     'tests.test_thumbnail_pump',
+    'tests.test_determinism',
     'tests.test_csv_field_updater',
     'tests.test_scaling',
     'tests.test_scanner',
