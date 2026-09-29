@@ -200,7 +200,7 @@ def test_image_type_filters_follow_the_config():
         config.EXCLUDE_TYPES = ["LOCALIZER"]
         assert _kept(files, check_dicom_batch(paths)) == ["orig_secondary", "original"]
 
-        config.INCLUDE_TYPES = []  # no requirement (used to fall back to the defaults)
+        config.INCLUDE_TYPES = []  # an empty list imposes no condition
         config.EXCLUDE_TYPES = []
         assert _kept(files, check_dicom_batch(paths)) == sorted(files)
 

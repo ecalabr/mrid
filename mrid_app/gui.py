@@ -4574,17 +4574,10 @@ def _get_thumbnail_executor():
 def _pump_thumbnail_results(root, results_q, update_fn, stop_event, interval_ms=40):
     """Apply finished thumbnails to their panels, on the main thread.
 
-    Worker threads must never call into Tk. ``root.after()`` from a non-main
-    thread does not simply enqueue: _tkinter forwards the call to the thread
-    that owns the interpreter and *blocks the caller* until that thread services
-    Tcl's event queue. While a classification window is still being built the
-    main thread has not returned to the event loop, so every loader that
-    finishes early parks inside ``root.after`` — and with the shared pool
-    saturated the window never populates. That is the intermittent hang where a
-    window opens but no thumbnail or series description ever appears.
-
-    So loaders now only put results on a plain queue, and this poller — started
-    from and running on the main thread — drains it.
+    Worker threads must never call into Tk: ``root.after()`` from another thread
+    blocks until the main thread services Tcl's event queue, which can deadlock
+    a window that is still being built. Loaders put results on *results_q*
+    instead, and this poller, running on the main thread, drains it.
     """
     def _pump():
         if stop_event.is_set():

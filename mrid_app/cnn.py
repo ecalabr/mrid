@@ -6,8 +6,7 @@ import hashlib
 import multiprocessing as mp
 from .utils import (extract_study_id_from_path, get_study_csv_name,
                     get_classified_outputs_dir, get_num_parallel_workers,
-                    filter_nonempty_frames, seed_everything, torch_generator,
-                    get_random_seed)
+                    filter_nonempty_frames, seed_everything, torch_generator)
 from .logging_config import get_logger
 
 logger = get_logger()
@@ -505,11 +504,8 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
     logger.info(f"CNN training seed: {seed} (config STUDY_ORDER_SEED)")
 
     from sklearn.model_selection import train_test_split
-    # Stratifying needs at least two examples of every class. Small or heavily
-    # imbalanced label sets (a class with a single example) would otherwise
-    # raise here and abort training entirely, which is exactly the situation a
-    # user has when they are just starting to label. Fall back to an
-    # unstratified split and say so rather than failing.
+    # Stratifying needs at least two examples of every class, which a small or
+    # newly-started label set may not have; fall back to an unstratified split.
     try:
         X_train, X_val, y_train, y_val = train_test_split(
             X_data, y_labels, test_size=0.2, random_state=seed, stratify=y_labels)
@@ -566,10 +562,8 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     best_accuracy = 0.0
-    # Track whether anything has been written yet. Without this, a run whose
-    # validation accuracy is 0% on every epoch — quite possible on a small or
-    # very hard label set — never satisfies "better than best" and silently
-    # finishes with no checkpoint on disk at all.
+    # Always save the first epoch, so a run whose validation accuracy never
+    # rises above 0% still produces a checkpoint.
     saved_any = False
 
     for epoch in range(num_epochs):
@@ -797,10 +791,8 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
             gui.close()
             return
 
-        # Keep exactly the rows the label decision above settled on. Filtering
-        # on 'other'/'none' again here would undo the single-target-series case,
-        # which deliberately keeps the negatives as an 'Other' class — dropping
-        # them leaves one class, and softmax then returns 1.0 for every series.
+        # Keep exactly the rows the label decision above settled on (for a
+        # single-target-series project that includes the 'Other' class).
         keep_labels = set(master_df['Classification'].astype(str))
         valid_indices = []
         valid_classifications = []

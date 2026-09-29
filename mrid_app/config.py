@@ -36,27 +36,19 @@ THUMBNAIL_SCALE_FACTOR = 1.0  # additional static scale multiplier applied to th
 OVERRIDE_THRESHOLD = 0.5  # probability threshold for auto-classification
 # How the header and image model probabilities are combined when using the
 # "Header + Image Model" type. One of:
-#   'reliability' weight each model per class by the F1 it achieved on its own
-#                 held-out validation split, recorded at training time. The
-#                 default: it scored highest of the fusion rules on most
-#                 evaluation datasets, and by a wide margin where one model was
-#                 much weaker than the other. Falls back to 'average' when those
-#                 metrics are absent (models trained before MRID recorded them).
-#   'average'     mean of both models (sum rule); the historical behavior
-#   'product'     geometric mean sqrt(p_rf * p_cnn); requires both models to be
-#                 confident, so it is the most conservative rule
-#   'max'         per-class maximum (max rule); the most confident model wins
+#   'reliability' weight each model per class by its validation F1, recorded at
+#                 training time (default; falls back to 'average' without it)
+#   'average'     mean of both models
+#   'product'     geometric mean; both models must be confident (conservative)
+#   'max'         per-class maximum; the most confident model wins
 #   'confidence'  weight each model per series by its certainty (entropy based)
 FUSION_METHOD = 'reliability'
 ALLOW_DUPLICATE_LABELS = False  # allow multiple series to have the same label for manual classification
 NUM_PARALLEL_WORKERS = 8  # number of parallel workers (threads/processes) for file scanning, loading, and CNN data loading
 RANDOMIZE_STUDY_ORDER = True  # randomize the order of studies during manual/semi-auto classification
-# Seed for every pseudo-random part of MRID: study ordering, the train/validation
-# splits, Random Forest fitting, CNN weight initialization, batch shuffling and
-# augmentation, and Analyze mode's PCA/UMAP. Keeping one seed means a project's
-# results can be reproduced from its config. Training is deterministic for
-# repeated runs on the same machine and GPU; results may still differ across
-# different GPUs or PyTorch builds.
+# Seed for everything random: study order, train/validation splits, model
+# training, and Analyze mode. Training is repeatable on the same machine and
+# GPU; results may differ across GPUs or PyTorch builds.
 STUDY_ORDER_SEED = 42
 
 # CNN hyperparameters

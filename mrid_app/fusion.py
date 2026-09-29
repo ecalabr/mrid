@@ -1,63 +1,40 @@
 """Fusion rules for combining the DICOM-header (Random Forest) and image (CNN)
 classifiers into a single per-series probability vector.
 
-The "Header + Image Model" mode runs both classifiers over every series and has
-to reduce their two probability vectors to one before the study-level label
-assignment in :func:`mrid_app.processing.optimize_study_selections` runs.
-
-Historically that reduction was a fixed 50/50 arithmetic mean.  That is a sound
-default when the two models are of comparable quality, but it degrades the
-result whenever one model is substantially weaker than the other on a given
-dataset: the weak model's errors are averaged into every prediction with equal
-weight.  The rules below let a project pick a reduction that suits its data.
+In "Header + Image Model" mode both classifiers score every series, and their
+two probability vectors are reduced to one before the study-level label
+assignment in :func:`mrid_app.processing.optimize_study_selections`.
 
 Available methods (``FUSION_METHOD`` in ``config.py``)
 -----------------------------------------------------
 
-``product`` (default)
-    Geometric mean, ``p = sqrt(p_rf · p_cnn)`` — the *product rule* of Kittler
-    et al., left un-normalized.  Sharper than the arithmetic mean and lets
-    either model veto a class it considers impossible, which helps when the two
-    models make largely independent errors.  Correspondingly less forgiving when
-    one model is confidently wrong.  It is the default because it scored highest
-    on most of the evaluation datasets, by the widest margin at low
-    training-data volumes.
-
-    It is deliberately *not* renormalized to sum to 1.  Kittler's rule is stated
-    for argmax decisions; MRID instead thresholds the score, and normalizing
-    would leave only relative ranking.  With two classes and a saturated model
-    that is pathological — the winning class normalizes to 1.0 however
-    unconvinced the other model was.
+``reliability`` (default)
+    Per-class reliability weighting. Each model's weight for class ``c`` is the
+    F1 it achieved for that class on its own held-out validation split,
+    recorded at training time (see :func:`record_validation_f1`). Suited to one
+    model being much weaker overall, or each being stronger on different
+    classes. Falls back to ``average`` when the metrics are unavailable.
 
 ``average``
-    Arithmetic mean, ``p = (p_rf + p_cnn) / 2``.  The *sum rule* of Kittler et
-    al.  The behavior of MRID before the other rules existed; a reasonable
-    choice when both models are similarly accurate.
+    Arithmetic mean, ``p = (p_rf + p_cnn) / 2`` (the *sum rule* of Kittler et
+    al.). A reasonable choice when both models are similarly accurate.
+
+``product``
+    Geometric mean, ``p = sqrt(p_rf · p_cnn)`` (the *product rule*, left
+    un-normalized so the score stays comparable with ``OVERRIDE_THRESHOLD``).
+    Either model can veto a class; the most conservative rule.
 
 ``max``
-    Per-class maximum, ``p ∝ max(p_rf, p_cnn)``.  The *max rule*.  The class
-    with the single highest posterior across both models wins, so a confident
+    Per-class maximum, ``p ∝ max(p_rf, p_cnn)`` (the *max rule*). A confident
     model is never diluted by an uncertain one.
 
 ``confidence``
-    Per-series confidence weighting.  Each model's weight is its normalized
-    certainty ``1 - H(p) / log K`` (``H`` = Shannon entropy, ``K`` = number of
-    classes), so for each individual series the model that is more certain
-    contributes more.  Training-free and adapts series by series rather than
-    globally.
+    Per-series weighting by each model's normalized certainty
+    ``1 - H(p) / log K`` (``H`` = Shannon entropy, ``K`` = number of classes).
+    Training-free; adapts series by series.
 
-``reliability``
-    Per-class reliability weighting.  Each model's weight for class ``c`` is the
-    F1 score it achieved for that class on its own held-out validation split,
-    recorded at training time (see :func:`record_validation_f1`).  This is the
-    rule to use when one model is globally much stronger than the other, or when
-    each model is stronger on a different subset of classes.  Falls back to
-    ``average`` when the recorded validation metrics are unavailable.
-
-Every rule returns scores on the same scale as the two models' own
-probabilities, so ``OVERRIDE_THRESHOLD`` keeps the same meaning regardless of
-the method chosen. ``average``, ``max`` and ``confidence`` also happen to sum to
-1; ``product`` (a geometric mean) does not, deliberately — see its note below.
+Every rule returns scores on the same scale as the models' own probabilities,
+so ``OVERRIDE_THRESHOLD`` means the same thing whichever rule is chosen.
 """
 
 import os
@@ -74,7 +51,7 @@ FUSION_METHODS = ("reliability", "average", "product", "max", "confidence")
 #: Short human-readable descriptions, used by the config wizard tooltips.
 FUSION_METHOD_DESCRIPTIONS = {
     "reliability": "Weight each model per class by its validation F1 — the default; best when one model is weaker.",
-    "average":     "Mean of both models (sum rule) — the historical behavior.",
+    "average":     "Mean of both models (sum rule) — good when both models are similarly accurate.",
     "product":     "Geometric mean — conservative; both models must be confident.",
     "max":         "Per-class maximum (max rule) — the most confident model wins, never diluted.",
     "confidence":  "Weight each model per series by its certainty (entropy) — training-free, adaptive.",
@@ -86,16 +63,15 @@ RELIABILITY_FILENAME = "fusion_reliability.joblib"
 #: Cache for :func:`load_reliability`, keyed on (path, mtime_ns, size).
 _reliability_cache = {}
 
-#: Fallback when FUSION_METHOD is missing or unrecognised. Deliberately
-#: 'average', not the config default: a config written before FUSION_METHOD
-#: existed should keep behaving the way it did when it was written.
+#: Fallback when FUSION_METHOD is unrecognized: 'average' needs no training
+#: metrics, so it always works.
 _DEFAULT_METHOD = "average"
 
 
 def get_configured_method():
     """Return ``FUSION_METHOD`` from the (possibly runtime-loaded) config.
 
-    Unknown or missing values fall back to ``average`` so an out-of-date or
+    An unrecognized value falls back to ``average`` with a warning, so a
     hand-edited config can never break classification.
     """
     try:
@@ -269,9 +245,7 @@ def fuse_probabilities(rf_proba, cnn_proba, method=None, weights=None):
         )
         return rf_proba
 
-    # The historical default. Both inputs already sum to 1, so the mean does
-    # too — computed directly (not via _normalize) to keep it bit-for-bit
-    # identical to the behavior that predates the other rules.
+    # Both inputs sum to 1, so the mean does too; it is also the fallback below.
     average = (rf + cnn) / 2.0
 
     if method is None:
@@ -281,18 +255,11 @@ def fuse_probabilities(rf_proba, cnn_proba, method=None, weights=None):
         return average
 
     if method == "product":
-        # Geometric mean, NOT a normalized product. MRID compares the fused
-        # score against OVERRIDE_THRESHOLD, so the score has to carry
-        # confidence, not just relative ranking. Normalizing p ∝ rf·cnn throws
-        # the magnitude away: with two classes and a saturated image model
-        # (p≈[0,1]), the losing class is multiplied to ~0 and the winner
-        # normalizes to 1.0 no matter how low the header probability was —
-        # every series then looks like a perfect match.
-        #
-        # sqrt(rf·cnn) keeps each component between the two models' own
-        # probabilities, so it stays on the same scale they are on and the
-        # threshold keeps its meaning, while still letting either model veto a
-        # class it rules out.
+        # Geometric mean, deliberately not normalized: the fused score is
+        # compared against OVERRIDE_THRESHOLD, so it must keep its magnitude.
+        # Normalizing rf·cnn would push the winning class toward 1.0 however
+        # unsure the other model was. sqrt(rf·cnn) stays between the two
+        # models' own probabilities while still letting either veto a class.
         return np.sqrt(np.clip(rf * cnn, 0.0, None))
 
     if method == "max":

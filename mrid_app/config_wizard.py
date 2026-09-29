@@ -352,7 +352,7 @@ class ConfigWizard:
                                            hint="probability 0–1 for Semi/Full-Auto")
         self.v_fusion = self._option_row(
             grid, 4, "Header + Image fusion:",
-            self._initial["FUSION_METHOD"] or "average",
+            self._initial["FUSION_METHOD"] or "reliability",
             list(FUSION_METHODS), width=140,
             hint="how the two models' probabilities are combined",
             tooltips=FUSION_METHOD_DESCRIPTIONS)

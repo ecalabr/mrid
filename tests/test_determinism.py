@@ -1,12 +1,9 @@
 """Training must be reproducible from the seed in the project config.
 
-CNN training previously had no fixed seed, so retraining the same data gave a
-different model every time. On one evaluation dataset four identical runs
-spanned 0.067 macro F1, which is enough to make reported figures irreproducible.
-Everything random now derives from config.STUDY_ORDER_SEED.
+Everything random derives from config.STUDY_ORDER_SEED, so retraining the same
+data with the same seed must produce the same model.
 """
 
-import os
 import tempfile
 
 import numpy as np

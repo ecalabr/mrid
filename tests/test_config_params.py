@@ -145,7 +145,7 @@ def _set_labels(path, labels):
 
 def test_prefer_3d_default_follows_the_projects_own_labels():
     # The repository PREFER_3D lists the example labels (T1, T2, FLAIR, T1c).
-    # Suggesting that to a breast project would show labels it doesn't have.
+    # Suggesting that to a project with other labels would list labels it lacks.
     with _old_config(drop=("PREFER_3D",)) as path:
         _set_labels(path, ["AX DCE", "T1", "Other"])
         suggested = cp.project_defaults(path)["PREFER_3D"]

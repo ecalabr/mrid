@@ -9,21 +9,15 @@ from .cnn import prepare_cnn_input_data
 from .fusion import fuse_probabilities, get_configured_method, load_reliability, reliability_weights
 from .utils import (safe_get_dicom_attribute, get_nifti_prefix, extract_study_id_from_path,
                      get_study_dir_name, get_study_csv_name, get_classified_outputs_dir,
-                     get_num_parallel_workers, get_io_executor)
+                     get_io_executor)
 from .logging_config import get_logger
 
 logger = get_logger()
 
 
 def _cfg(name, default):
-    """Read a config value at call time.
-
-    These used to be imported by value at module load, which silently ignored
-    anything set afterwards: Load/Reload Config File, a config the wizard just
-    wrote, and Analyze mode's own PREFER_3D all failed to reach the classifier
-    unless the module happened not to be imported yet. cnn.py already reads its
-    hyperparameters this way; this matches it.
-    """
+    """Read a config value at call time, so a config loaded or reloaded after
+    import (Load/Reload Config File, the wizard, Analyze mode) takes effect."""
     try:
         from . import config as _config
         return getattr(_config, name, default)
@@ -679,6 +673,11 @@ def _expand_to_label_space(proba, model, n_classes):
     return full
 
 
+# model_files directories already warned about missing reliability metrics
+# (the warning would otherwise repeat for every study).
+_warned_no_reliability = set()
+
+
 def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model, cnn_target_encoder, rf_field_types=None, model_files_dir=None):
     """
     Optimize series selections for a study. Returns a tuple:
@@ -751,7 +750,8 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
     fusion_weights = None
     if fusion_method == "reliability" and model_files_dir:
         fusion_weights = reliability_weights(load_reliability(model_files_dir), all_labels)
-        if fusion_weights is None:
+        if fusion_weights is None and model_files_dir not in _warned_no_reliability:
+            _warned_no_reliability.add(model_files_dir)
             logger.warning(
                 "FUSION_METHOD='reliability' but no usable validation metrics were found in "
                 f"{model_files_dir}; falling back to 'average'. Retrain both models to record them."

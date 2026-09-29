@@ -9,7 +9,7 @@ import pydicom
 from .prep import (_preprocess_df, encode_text_features, configured_semantic_model_name,
                    get_semantic_model, inference_semantic_model_name, SEMANTIC_MODEL_ATTR)
 from . import config
-from .utils import safe_get_dicom_attribute, extract_study_id_from_path, get_study_csv_name, get_classified_outputs_dir, filter_nonempty_frames, get_num_parallel_workers, get_io_executor, seed_everything
+from .utils import safe_get_dicom_attribute, extract_study_id_from_path, get_study_csv_name, get_classified_outputs_dir, filter_nonempty_frames, get_io_executor, seed_everything
 from .csv_field_updater import (
     scan_for_missing_fields,
     update_all_csvs_with_missing_fields

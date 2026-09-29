@@ -5,10 +5,8 @@ from .logging_config import get_logger
 
 logger = get_logger()
 
-#: The text embedding model of every header model trained before MRID recorded
-#: the model on the header model itself. It was the only one ever used: the
-#: configured name was read from the repository config at import, so a project
-#: config could not change it.
+#: The text embedding model of header models trained before MRID recorded it on
+#: the model itself (the only one those versions used).
 LEGACY_SEMANTIC_MODEL_NAME = 'all-MiniLM-L6-v2'
 
 #: Attribute on a trained header model (RandomForestClassifier) naming the text

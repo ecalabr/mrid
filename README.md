@@ -3,7 +3,7 @@
 A GUI application for automated classification and organization of MRI DICOM series using machine learning models.
 
 [![Version 2.0](https://img.shields.io/badge/version-2.0-brightgreen.svg)](https://github.com/ecalabr/mrid)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 <p align="center">
@@ -75,9 +75,11 @@ MRID automates the classification and organization of brain MRI DICOM series. It
 - **User-friendly configuration**: Per-project `config.py` with a guided Config Wizard for non-coders
 
 ### Machine Learning
-- **Random Forest header model** with automatic DICOM header field type detection and smart encoding such as semantic text encoding (sentence transformers) for free text fields like series descriptions
+- **Random Forest header model** with automatic DICOM header field type detection and smart encoding such as semantic text encoding (any [sentence-transformers](#text-embedding-model) model) for free text fields like series descriptions
 - **CNN image model** with on-the-fly augmentation, parallel preprocessing, and preprocessing cache
     - **2D or 2.5D CNN input**: classify from the center slice alone or from several evenly spaced slices (see configurable parameter: `CNN_NUM_SLICES`)
+- **Selectable header + image fusion**: five rules for combining the two models, including per-class reliability weighting (see [Header + Image fusion](#header--image-fusion))
+- **Reproducible training**: one seed in the project config makes training repeatable
 
 ### User Interface
 - **Modern dark-mode GUI** (CustomTkinter) with a uniform appearance on Windows, macOS, and Linux
@@ -98,7 +100,7 @@ MRID runs on Linux, macOS, and Windows. All platforms follow the same outline:
 3. Install the remaining dependencies with pip
 4. Install [dcm2niix](#dcm2niix) (optional — only needed for NIfTI conversion)
 
-**System requirements:** Python 3.8+, 8 GB+ RAM (16 GB+ recommended for CNN training). A PyTorch compatible GPU is optional but speeds up CNN training and Analyze mode considerably.
+**System requirements:** Python 3.11+, 8 GB+ RAM (16 GB+ recommended for CNN training). A PyTorch compatible GPU is optional but speeds up CNN training and Analyze mode considerably.
 
 ### Linux
 
@@ -332,7 +334,7 @@ Then:
 2. Click **Load Model(s)** in Semi-Auto or Full-Auto mode (loaded automatically after training)
 3. Check `model_files/rf_model_training_summary.txt` and `cnn_model_training_summary.txt` for results
 
-**Training tips:** balance classes, include diverse scanners/protocols, retrain as verified labels accumulate, and consider adding any additional relevant DICOM fields in the config to strengthen the header model or switching to 2.5D (`CNN_NUM_SLICES`) to strengthen the image model. If the two models' summaries show markedly different accuracy, try a [fusion rule](#header--image-fusion) other than the default `average`.
+**Training tips:** balance classes, include diverse scanners/protocols, retrain as verified labels accumulate, and consider adding any additional relevant DICOM fields in the config to strengthen the header model or switching to 2.5D (`CNN_NUM_SLICES`) to strengthen the image model. See [Header + Image fusion](#header--image-fusion) for how the two models are combined.
 
 ### Series Thumbnail Scrolling
 
@@ -352,18 +354,9 @@ mrid auto --help   # all options
 
 (Equivalent to `python headless_autoclassify.py ...`, which still works.)
 
-**Which config is used.** `--config` if given; otherwise the project's own `config.py` in the output directory, as in the GUI. If neither exists, `mrid auto` logs a warning and uses the repository default config.
+`mrid auto` uses `--config` if given, otherwise the project's `config.py` in the output directory (as the GUI does), otherwise the repository default config with a warning.
 
-**Configs from older MRID versions.** If the config file lacks settings added in a newer MRID version, `mrid auto` stops before doing any work and, for each missing setting, shows what it does, which values are valid, and its default. You can:
-
-- **Accept the default** (press Enter)
-- **Enter a value**, which is validated (you are asked again until it is valid; a blank line goes back)
-- **Accept the defaults for all remaining** settings
-- **Cancel**, which leaves the file unchanged and prints the lines to paste into it yourself
-
-After a final confirmation the chosen values are appended to the config file as a commented block, leaving everything already in it untouched, and the run continues. Settings that depend on the project are suggested accordingly: `PREFER_3D` is keyed to the project's own `TARGET_SERIES`.
-
-Scripts and batch jobs cannot answer prompts. Without a terminal, `mrid auto` exits with the same copy-paste instructions; add `--accept-config-defaults` to add the defaults automatically instead:
+If the config lacks settings added in a newer MRID version, `mrid auto` asks about each one before starting: accept the default, enter a value (validated), accept all remaining defaults, or cancel (the file is left unchanged and the lines to add are printed). Chosen values are appended to the config file. Without a terminal it exits with those instructions instead; add `--accept-config-defaults` to add the defaults automatically:
 
 ```bash
 mrid auto -i /data/dicoms -o /data/output --accept-config-defaults
@@ -401,7 +394,7 @@ The wizard walks you through generating or editing a project config without touc
 </p>
 <p align="center">
   <img src="docs/images/config_wizard_ui.png" alt="Config wizard step 3: classification UI settings" width="640">
-  <br><em>Step 3 — Classification UI: grid layout, auto-classification threshold, Header + Image fusion rule (hover the dropdown for a description of each), parallel workers, and study ordering. <strong>Advanced Settings</strong> exposes model hyperparameters and the DICOM header fields.</em>
+  <br><em>Step 3 — Classification UI: grid layout, auto-classification threshold, Header + Image fusion rule (hover the dropdown for a description of each), parallel workers, and study ordering. <strong>Advanced Settings</strong> exposes model hyperparameters, the text embedding model, and the DICOM header fields.</em>
 </p>
 
 ### Configuration Menu
@@ -415,7 +408,7 @@ The wizard walks you through generating or editing a project config without touc
 | **Reload Config File** | Re-read the active config after manual edits |
 | **Add Missing Parameters** | Add parameters newer MRID versions introduced to an older config, with editable suggested defaults |
 
-When a workflow starts, a `config.py` already in the output directory is loaded automatically. If it comes from an older MRID version and lacks newer settings, MRID lists them with suggested defaults (hover a name for what it does). Edit any value, then **Add to Config** validates each value and appends them to the file, or **Skip** to use the defaults for this session only. The same check runs for the headless CLI (see [Headless Batch Classification](#headless-batch-classification)).
+When a workflow starts, a `config.py` already in the output directory is loaded automatically. If it lacks settings added in a newer MRID version, MRID lists them with suggested defaults (hover a name for a description): **Add to Config** validates and appends them to the file; **Skip** uses the defaults for this session only.
 
 ### Configuration Reference
 
@@ -490,92 +483,31 @@ STUDY_ORDER_SEED = 42         # seed for everything random (see below)
 - `NUM_PARALLEL_WORKERS` is honored exactly (not capped to the CPU count) across every parallel stage — DICOM scanning, thumbnail generation, thumbnail loading, and CNN preprocessing.
 - With `ALLOW_DUPLICATE_LABELS = False` (default), assigning a label to one series clears it from any other series in the study; set `True` to allow several series per label (useful for datasets with frequently repeated series).
 - Randomized study order (using the specified seed) reduces labeling bias; Full-Auto always processes in original order.
+- `STUDY_ORDER_SEED` seeds everything random, not just study order: train/validation splits, model training (Random Forest, CNN weights, batch order, augmentation) and Analyze mode. Retraining the same data with the same seed gives the same model on the same machine and GPU; results can differ across GPUs or PyTorch builds.
+- `FUSION_METHOD` only affects the **Header + Image Model** type; see below.
 
-**`STUDY_ORDER_SEED` seeds everything random**, despite the historical name: study
-order, the train/validation splits, Random Forest fitting, CNN weight
-initialization, batch shuffling and augmentation, and Analyze mode's PCA and
-UMAP. Training the same data twice with the same seed produces the same model,
-so a result can be reproduced from the project's config alone; change the seed
-to get an independent run. Determinism holds for repeated runs on the same
-machine and GPU. Results may still differ across different GPUs, between GPU and
-CPU, or across PyTorch builds, because the underlying kernels differ.
-- `FUSION_METHOD` only affects the **Header + Image Model** type — see [Header + Image fusion](#header--image-fusion) below.
+**Tuning `OVERRIDE_THRESHOLD`.** A series is auto-selected for a label only if its probability exceeds the threshold; otherwise it becomes `Other`.
 
-**Tuning `OVERRIDE_THRESHOLD`.** A series is auto-selected for a label only when
-its probability exceeds this value; otherwise it falls through to `Other`. The
-threshold therefore trades two error types against each other:
-
-| | lower it (e.g. 0.2) | raise it (e.g. 0.7) |
+| | Lower (e.g. 0.2) | Higher (e.g. 0.7) |
 |---|---|---|
-| Target series missed and left as `Other` | fewer | more |
-| Unwanted series wrongly given a target label | more | fewer |
+| Target series missed (left as `Other`) | fewer | more |
+| Unwanted series given a target label | more | fewer |
 
-Across five public MRI datasets, macro F1 peaked around **0.2** rather than the
-default 0.5 — worth roughly +0.015 to +0.035 depending on the fusion rule, on a
-flat plateau between 0.15 and 0.30. The default stays at **0.5** because that
-gain is largely an artifact of how macro F1 is computed: it averages over the
-target classes and `Other` alike, so with eight or ten target classes and one
-`Other`, recovering target series outweighs the extra junk misfiled into them.
-Whether that is the right trade depends on your workflow.
-
-- **Lower it** if a missed series is expensive and you are reviewing results
-  anyway (Semi-Auto, Verify) — you will catch more real series and correct more
-  false ones.
-- **Raise it** if a wrong label is expensive, e.g. Full-Auto feeding a pipeline
-  with no human review.
-- Two things shift the best value: with **less training data** the models are
-  less confident, so a lower threshold helps more; and where **one model is much
-  weaker** than the other, a low threshold mostly lets its bad predictions
-  through — the one evaluation dataset with a weak image model preferred 0.5.
+Lower it when you review results anyway (Semi-Auto, Verify) and a missed series is costly; raise it when a wrong label is costly, e.g. Full-Auto output feeding a pipeline without review. With little training data the models are less confident, which favors a lower value.
 
 #### Header + Image fusion
 
-When the **Header + Image Model** type is selected, both classifiers score every
-series and their two probability vectors are reduced to one before labels are
-assigned. `FUSION_METHOD` chooses that reduction:
-
-```python
-FUSION_METHOD = 'reliability'  # 'reliability' | 'average' | 'product' | 'max' | 'confidence'
-```
+With the **Header + Image Model** type, both models score every series and `FUSION_METHOD` sets how their probabilities are combined:
 
 | Method | Rule | Use it when |
 |---|---|---|
-| `reliability` *(default)* | Weight each model per class by its validation F1 | General use. Handles the common case where one model is much weaker overall, or each is stronger on different classes. |
-| `average` | Mean of both models, `p = (p_rf + p_cnn) / 2` | Both models are of comparable quality. This was MRID's behavior before the other rules existed. |
-| `product` | Geometric mean, `p = sqrt(p_rf · p_cnn)` | You want a conservative rule that labels a series only when *both* models are convinced. Fewer false labels, more series left as `Other`. |
-| `max` | Per-class maximum, `p ∝ max(p_rf, p_cnn)` | You want a confident model never to be diluted by an uncertain one. |
-| `confidence` | Weight each model per series by its certainty, `1 - H(p)/log K` | Either model may be unreliable on *some* series. Adapts series by series; needs no extra training. |
+| `reliability` *(default)* | Weight each model per class by its validation F1 | General use; handles one model being much weaker, or each being stronger on different classes |
+| `average` | Mean, `(p_rf + p_cnn) / 2` | Both models are similarly accurate |
+| `product` | Geometric mean, `sqrt(p_rf · p_cnn)` | Label a series only when *both* models agree (fewer false labels, more `Other`) |
+| `max` | Per-class maximum | A confident model should never be diluted by an uncertain one |
+| `confidence` | Weight each model per series by its certainty (entropy) | Either model may be unreliable on individual series |
 
-All except `reliability` are training-free and can be changed at any time,
-including between runs with already-trained models.
-
-**Why `reliability` is the default.** Across five public MRI datasets it scored
-highest of the combination rules on most of them, and by a wide margin on the
-dataset where the image model was much weaker than the header model — the case
-where a fixed 50/50 mean does worst. It needs the per-class validation scores
-that training records; when those are absent (a model trained by an older MRID)
-it falls back to `average` and logs a warning, so upgrading never silently
-changes an existing project's results. A config file written before
-`FUSION_METHOD` existed also keeps using `average`.
-
-**`reliability` requires trained metrics.** Each trainer records its own
-per-class F1 on its held-out validation split to `model_files/fusion_reliability.joblib`;
-the fusion weight for class *c* is each model's share of the two F1 scores for
-that class. Models trained before this file existed have no recorded metrics, so
-`reliability` falls back to `average` and logs a warning — **retrain both models
-to use it**. The two models may be trained independently and in either order;
-each writes only its own entry.
-
-**Choosing a method.** Start with the default. The failure mode it exists to
-handle is one model being clearly weaker than the other on your data: `average`,
-`product` and `max` all weight the two models equally, so a weak model can drag
-the combination *below* the better model used alone. `reliability` targets exactly
-that case; `confidence` targets the case where reliability varies series to
-series rather than globally. If you are unsure, compare the per-class results in
-`model_files/rf_model_training_summary.txt` and
-`cnn_model_training_summary.txt`: a large and consistent gap is exactly what
-`reliability` is for, while similar scores make `average` and `reliability`
-behave much alike.
+`reliability` uses the per-class F1 each model records on its validation split during training (`model_files/fusion_reliability.joblib`). If either model has no recorded metrics (e.g. it was trained by an earlier MRID version), `reliability` falls back to `average` with a warning until both are retrained. The other rules need no training metrics and can be switched at any time. An unrecognized value also falls back to `average`.
 
 #### CNN hyperparameters
 
@@ -602,9 +534,9 @@ N_ESTIMATORS = 400    # number of trees
 ```python
 SEMANTIC_MODEL_NAME = 'all-MiniLM-L6-v2'
 ```
-The [sentence-transformers](https://www.sbert.net) model that embeds free-text header fields (e.g. `SeriesDescription`) for the header model. Use any sentence-transformers model on the [Hugging Face Hub](https://huggingface.co/models?library=sentence-transformers), such as `'all-mpnet-base-v2'` (larger, slower) or a multilingual model for non-English series descriptions, or the path to a local model folder. It is downloaded on first use, so an offline machine needs the model in its Hugging Face cache or as a local folder. If the model cannot be loaded, training stops with an error instead of silently leaving out the text features.
+The [sentence-transformers](https://www.sbert.net) model that embeds free-text header fields (e.g. `SeriesDescription`) for the header model: any model on the [Hugging Face Hub](https://huggingface.co/models?library=sentence-transformers) (e.g. `'all-mpnet-base-v2'`, or a multilingual model for non-English descriptions) or a local model folder. It is downloaded on first use, so offline machines need it cached or stored locally. If it cannot be loaded, training stops with an error.
 
-A trained header model always classifies with the embedding model it was trained with, because a different model produces different features. After changing `SEMANTIC_MODEL_NAME`, retrain the header model; until then MRID logs a warning and keeps using the old one.
+A trained header model always uses the embedding model it was trained with. After changing `SEMANTIC_MODEL_NAME`, retrain the header model; until then MRID logs a warning.
 
 #### DICOM header fields
 
@@ -618,7 +550,7 @@ DICOM_HEADER_FIELDS = [
 ```
 The header model's input features. Field types (numerical / array / categorical / free text) are detected automatically and encoded appropriately; for example, free-text fields use semantic sentence embeddings. When you add fields, the next training run offers to back-fill them into existing classification CSVs from the original DICOMs.
 
-A trained header model records the fields it was trained on and always classifies with those, since its features must match. After changing `DICOM_HEADER_FIELDS`, retrain the header model; until then MRID logs a warning listing the difference. (Models trained before MRID recorded this take their fields from their saved `field_types.joblib`.)
+A trained header model always classifies with the fields it was trained on. After changing `DICOM_HEADER_FIELDS`, retrain the header model; until then MRID logs a warning listing the difference.
 
 ##### DICOM header field encoding parameters
 ```python
@@ -650,6 +582,7 @@ mrid/
 │   ├── ui_theme.py            # Dark theme, scaling, window placement
 │   ├── config_wizard.py       # Guided config setup
 │   ├── config_io.py           # Comment-preserving config rewriting
+│   ├── config_params.py       # Missing-setting detection, validation and prompts
 │   ├── series_scroller.py     # Mouse-wheel series scrolling on thumbnails
 │   ├── analyze.py             # Analyze mode: ResNet50 → PCA → UMAP → HDBSCAN
 │   ├── scanner.py             # DICOM scanning and hierarchy building
@@ -778,7 +711,7 @@ This is only needed on Linux. Do it **before** installing CustomTkinter (it's in
 ```bash
 python tests.py
 ```
-All tests should pass. The suite covers configuration, DICOM scanning and processing, slice selection (2D/2.5D), field detection, config rewriting, and UI scaling.
+All tests should pass. The suite covers configuration handling, DICOM scanning and processing, slice selection (2D/2.5D), field detection, fusion rules, training reproducibility, and UI scaling.
 
 ---
 
@@ -797,7 +730,7 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 ## Citation
 
-If you use this tool in your research, please cite:
+A manuscript describing MRID is under review at the *Journal of Imaging Informatics in Medicine*; check back soon for the full citation. Until then, please cite:
 
 ```bibtex
 @software{mrid2026,
