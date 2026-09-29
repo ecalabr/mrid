@@ -5,22 +5,64 @@ import os
 import shutil
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from .config import (IGNORE_MULTIPLE_ORIENTATIONS, SEPARATE_STACKED_SERIES, MAX_SPLIT,
-                     THUMBNAIL_FORMAT, THUMBNAIL_QUALITY)
+from . import config
 from .utils import get_symlink_dir_name, get_num_parallel_workers, _collapse_newlines
 from .logging_config import get_logger
 
 logger = get_logger()
 
 
-def check_dicom_batch(filepaths, include_types=None, exclude_types=None):
+def _normalize_image_types(values):
+    """ImageType filter values as upper-case strings (DICOM stores them upper-case)."""
+    if values is None:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    return [str(v).strip().upper() for v in values if str(v).strip()]
+
+
+def scan_options():
+    """The scan settings from the active config, as keyword arguments for
+    :func:`check_dicom_batch`.
+
+    Evaluate this in the process that loaded the project config and pass the
+    result to the workers (e.g. with functools.partial). A worker started with
+    the spawn or forkserver method re-imports mrid_app.config and would see the
+    repository defaults instead of the project's settings.
+    """
+    return {
+        "include_types": _normalize_image_types(config.INCLUDE_TYPES),
+        "exclude_types": _normalize_image_types(config.EXCLUDE_TYPES),
+        "read_orientation": bool(config.IGNORE_MULTIPLE_ORIENTATIONS),
+        "read_position": bool(config.SEPARATE_STACKED_SERIES),
+    }
+
+
+def check_dicom_batch(filepaths, include_types=None, exclude_types=None,
+                      read_orientation=None, read_position=None):
     """Process a batch of file paths and return a list of dicom metadata records (or None entries).
 
     This reduces per-file overhead by importing and initializing pydicom once per worker
     process and then parsing many files sequentially.
 
+    A file is kept only if its ImageType contains every value in *include_types*
+    and none in *exclude_types* (an empty list imposes no condition).
+    *read_orientation* / *read_position* read the tags that
+    IGNORE_MULTIPLE_ORIENTATIONS / SEPARATE_STACKED_SERIES need. Anything left as
+    None comes from the config this process sees; callers running workers should
+    pass :func:`scan_options` explicitly.
+
     Supports compressed DICOMs via python-gdcm.
     """
+    if any(v is None for v in (include_types, exclude_types, read_orientation, read_position)):
+        defaults = scan_options()
+        include_types = defaults["include_types"] if include_types is None else include_types
+        exclude_types = defaults["exclude_types"] if exclude_types is None else exclude_types
+        read_orientation = defaults["read_orientation"] if read_orientation is None else read_orientation
+        read_position = defaults["read_position"] if read_position is None else read_position
+    include_types = _normalize_image_types(include_types)
+    exclude_types = _normalize_image_types(exclude_types)
+
     results = []
     try:
         import pydicom
@@ -37,9 +79,6 @@ def check_dicom_batch(filepaths, include_types=None, exclude_types=None):
         except Exception:
             have_tag = False
 
-        include_types = include_types or ["ORIGINAL", "PRIMARY"]
-        exclude_types = exclude_types or ["DERIVED", "SECONDARY", "ADC", "DIFFUSION", "LOCALIZER", "MIP", "MPR"]
-
         # Precreate specific tags if supported
         specific = None
         if have_tag:
@@ -53,9 +92,9 @@ def check_dicom_batch(filepaths, include_types=None, exclude_types=None):
                     Tag(0x0008, 0x103E),  # SeriesDescription
                     Tag(0x0020, 0x0011),  # SeriesNumber
                 ]
-                if IGNORE_MULTIPLE_ORIENTATIONS:
+                if read_orientation:
                     specific = specific + [Tag(0x0020, 0x0037)]  # ImageOrientationPatient
-                if SEPARATE_STACKED_SERIES:
+                if read_position:
                     specific = specific + [Tag(0x0020, 0x0032)]  # ImagePositionPatient
             except Exception:
                 specific = None
@@ -100,11 +139,11 @@ def check_dicom_batch(filepaths, include_types=None, exclude_types=None):
                         results.append(None)
                         continue
 
-                img_type = getattr(ds, "ImageType", [])
-                if not all([item in img_type for item in include_types]):
+                img_type = _normalize_image_types(getattr(ds, "ImageType", []))
+                if not all(item in img_type for item in include_types):
                     results.append(None)
                     continue
-                if any([item in img_type for item in exclude_types]):
+                if any(item in img_type for item in exclude_types):
                     results.append(None)
                     continue
 
@@ -300,7 +339,8 @@ def extract_and_save_center_slice(file_records, thumbnail_dir, mrn, study_uid, s
 
         pil_img = pil_img.resize((256, 256))
 
-        file_extension = '.jpg' if THUMBNAIL_FORMAT.upper() == 'JPEG' else '.png'
+        thumbnail_format = str(config.THUMBNAIL_FORMAT).upper()
+        file_extension = '.jpg' if thumbnail_format == 'JPEG' else '.png'
 
         # Create thumbnail filename. Collapse stray CR/LF that can leak in from
         # DICOM header values (e.g. a multi-valued PatientID) so the filename —
@@ -314,8 +354,8 @@ def extract_and_save_center_slice(file_records, thumbnail_dir, mrn, study_uid, s
 
         thumbnail_path = os.path.join(thumbnail_dir, thumbnail_filename)
 
-        if THUMBNAIL_FORMAT.upper() == 'JPEG':
-            pil_img.save(thumbnail_path, 'JPEG', quality=THUMBNAIL_QUALITY)
+        if thumbnail_format == 'JPEG':
+            pil_img.save(thumbnail_path, 'JPEG', quality=config.THUMBNAIL_QUALITY)
         else:
             pil_img.save(thumbnail_path, 'PNG')
 
@@ -376,7 +416,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
             continue
 
         # 1. VALIDATION: Orientation
-        if IGNORE_MULTIPLE_ORIENTATIONS:
+        if config.IGNORE_MULTIPLE_ORIENTATIONS:
             unique_orientations = {tuple(f['image_orientation']) for f in files if f['image_orientation']}
             if len(unique_orientations) > 1:
                 logger.warning(f"Skipping series {first_rec['series_desc']} for patient {mrn}: Multiple orientations")
@@ -404,7 +444,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
 
         unique_positions_set = {tuple(f['image_position']) for f in files if f['image_position']}
 
-        if SEPARATE_STACKED_SERIES and len(unique_positions_set) != len(files):
+        if config.SEPARATE_STACKED_SERIES and len(unique_positions_set) != len(files):
             # Split by duplicate spatial position: an occurrence counter assigns
             # each repeat of a position to the next volume bucket, handling
             # multi-echo/dynamic data in O(N)
@@ -424,8 +464,8 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
                     subseries_buckets[idx].append(item)
 
                 # Process Buckets (Create symlinks)
-                if len(subseries_buckets) > MAX_SPLIT:
-                    logger.warning(f"Series {base_desc} for patient {mrn} exceeded max splits ({MAX_SPLIT}). Skipping.")
+                if len(subseries_buckets) > config.MAX_SPLIT:
+                    logger.warning(f"Series {base_desc} for patient {mrn} exceeded max splits ({config.MAX_SPLIT}). Skipping.")
                     try:
                         if progress_callback:
                             progress_callback(processed_groups)

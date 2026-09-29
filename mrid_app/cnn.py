@@ -6,7 +6,7 @@ import hashlib
 import multiprocessing as mp
 from .utils import (extract_study_id_from_path, get_study_csv_name,
                     get_classified_outputs_dir, get_num_parallel_workers,
-                    filter_nonempty_frames)
+                    filter_nonempty_frames, seed_everything, torch_generator)
 from .logging_config import get_logger
 
 logger = get_logger()
@@ -472,7 +472,7 @@ class AugmentedImageDataset(Dataset):
         return image, label
 
 
-def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNClass=None, progress_callback=None, cancel_check=None):
+def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNClass=None, progress_callback=None, cancel_check=None, class_names=None):
     """
     Train CNN model with optional progress reporting.
 
@@ -484,6 +484,9 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
         SimpleCNNClass: Optional custom CNN class
         progress_callback: Optional callback function(current_epoch, total_epochs, loss, accuracy, message)
         cancel_check: Optional callable returning True if training should be aborted
+        class_names: Optional class names in label-encoder order. When given, the
+            best model's per-class F1 on the validation split is recorded for the
+            'reliability' fusion method (see mrid_app.fusion).
     """
     if torch is None:
         return None, None
@@ -495,8 +498,25 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
     batch_size = int(_cfg('BATCH_SIZE', BATCH_SIZE))
     lr = float(_cfg('LR', LR))
 
+    # Seed before anything random happens: weight init, the split, batch order
+    # and the augmentation all draw from these generators.
+    seed = seed_everything()
+    logger.info(f"CNN training seed: {seed} (config STUDY_ORDER_SEED)")
+
     from sklearn.model_selection import train_test_split
-    X_train, X_val, y_train, y_val = train_test_split(X_data, y_labels, test_size=0.2, random_state=42, stratify=y_labels)
+    # Stratifying needs at least two examples of every class, which a small or
+    # newly-started label set may not have; fall back to an unstratified split.
+    try:
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_data, y_labels, test_size=0.2, random_state=seed, stratify=y_labels)
+    except ValueError as e:
+        logger.warning(
+            f"Could not stratify the CNN train/validation split ({e}). Falling back "
+            f"to an unstratified split — add more examples of the rarest classes "
+            f"for a more reliable validation score."
+        )
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_data, y_labels, test_size=0.2, random_state=seed)
     y_train_tensor = torch.from_numpy(y_train).long()
     y_val_tensor = torch.from_numpy(y_val).long()
 
@@ -505,7 +525,10 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
     train_dataset = AugmentedImageDataset(X_train, y_train_tensor, apply_augmentation=True)
     val_dataset = ImageDataset(X_val, y_val_tensor)
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    # An explicit generator pins the shuffle order independently of how much
+    # randomness weight initialization happened to consume first.
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
+                              generator=torch_generator(seed))
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
     # Channel count and image size come from the training data itself:
@@ -539,12 +562,15 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     best_accuracy = 0.0
+    # Always save the first epoch, so a run whose validation accuracy never
+    # rises above 0% still produces a checkpoint.
+    saved_any = False
 
     for epoch in range(num_epochs):
         # Check for cancellation at the start of each epoch
         if cancel_check is not None and cancel_check():
             logger.info("CNN training cancelled by user during epoch loop.")
-            return model_path if best_accuracy > 0 else None, best_accuracy
+            return (model_path if saved_any else None), best_accuracy
 
         model.train()
         running_loss = 0.0
@@ -577,9 +603,39 @@ def train_cnn_model_logic(X_data, y_labels, num_classes, output_dir, SimpleCNNCl
 
         logger.info(f"Epoch {epoch + 1}/{num_epochs} - Loss: {avg_loss:.4f}, Val Acc: {epoch_accuracy:.2f}%")
 
-        if epoch_accuracy > best_accuracy:
-            best_accuracy = epoch_accuracy
+        if epoch_accuracy > best_accuracy or not saved_any:
+            best_accuracy = max(best_accuracy, epoch_accuracy)
             torch.save(model.state_dict(), model_path)
+            saved_any = True
+
+    # Record the best checkpoint's per-class F1 on the validation split so the
+    # 'reliability' fusion method can weight the image model against the header
+    # model class by class. Note this split also selected the checkpoint, so the
+    # score is mildly optimistic — the header model's is scored the same way, so
+    # the ratio the fusion weights are built from stays a fair comparison.
+    if class_names is not None and saved_any:
+        try:
+            from sklearn.metrics import f1_score
+            from .fusion import record_validation_f1
+
+            best_model = model_cls(num_classes=num_classes, num_slices=num_slices,
+                                   image_size=image_size).to(device)
+            best_model.load_state_dict(torch.load(model_path, map_location=device))
+            best_model.eval()
+            preds = []
+            with torch.no_grad():
+                for inputs, _labels in val_loader:
+                    outputs = best_model(inputs.to(device))
+                    preds.append(torch.max(outputs.data, 1)[1].cpu().numpy())
+            if preds:
+                y_val_pred = np.concatenate(preds)
+                per_class_f1 = f1_score(y_val, y_val_pred,
+                                        labels=list(range(num_classes)),
+                                        average=None, zero_division=0)
+                record_validation_f1(os.path.join(output_dir, "model_files"), "cnn",
+                                     class_names, per_class_f1)
+        except Exception as e:
+            logger.warning(f"Could not record image-model validation F1: {e}")
 
     return model_path, best_accuracy
 
@@ -735,12 +791,13 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
             gui.close()
             return
 
-        # Note: y_str contains the string labels, need to filter and encode them
-        # Filter to match only valid classifications
+        # Keep exactly the rows the label decision above settled on (for a
+        # single-target-series project that includes the 'Other' class).
+        keep_labels = set(master_df['Classification'].astype(str))
         valid_indices = []
         valid_classifications = []
         for idx, classification in enumerate(y_str):
-            if str(classification).lower() not in ['other', 'none']:
+            if str(classification) in keep_labels:
                 valid_indices.append(idx)
                 valid_classifications.append(classification)
 
@@ -791,6 +848,7 @@ def TrainImageClassifierLogic(output_dir, gui, preloaded_df=None):
                 X, y_encoded, num_classes, output_dir,
                 progress_callback=training_progress,
                 cancel_check=gui.is_cancelled,
+                class_names=getattr(target_encoder, "classes_", None),
             )
         except Exception as e:
             gui.update_status(f"❌ Error during CNN training: {e}")

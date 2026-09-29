@@ -6,7 +6,7 @@ Handles detection of missing fields and updating existing CSVs.
 import os
 import pandas as pd
 import pydicom
-from .config import DICOM_HEADER_FIELDS
+from . import config
 from .utils import safe_get_dicom_attribute, extract_study_id_from_path, get_study_csv_name
 from .logging_config import get_logger
 
@@ -15,7 +15,7 @@ logger = get_logger()
 
 def get_expected_field_names():
     """Get list of expected field names from configuration."""
-    return [field[0] for field in DICOM_HEADER_FIELDS]
+    return [field[0] for field in config.DICOM_HEADER_FIELDS]
 
 
 def check_missing_fields(csv_path):
@@ -90,7 +90,7 @@ def extract_dicom_field_value(dicom_path, field_name):
     """
     # Find the DICOM attribute name for this field
     dicom_attr = None
-    for display_name, attr_name in DICOM_HEADER_FIELDS:
+    for display_name, attr_name in config.DICOM_HEADER_FIELDS:
         if display_name == field_name:
             dicom_attr = attr_name
             break

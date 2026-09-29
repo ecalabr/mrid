@@ -6,9 +6,10 @@ from sklearn.preprocessing import LabelEncoder, OrdinalEncoder
 from sklearn.metrics import accuracy_score
 import pandas as pd
 import pydicom
-from .prep import _preprocess_df, encode_text_features
-from .config import N_ESTIMATORS, DICOM_HEADER_FIELDS
-from .utils import safe_get_dicom_attribute, extract_study_id_from_path, get_study_csv_name, get_classified_outputs_dir, filter_nonempty_frames, get_num_parallel_workers
+from .prep import (_preprocess_df, encode_text_features, configured_semantic_model_name,
+                   get_semantic_model, inference_semantic_model_name, SEMANTIC_MODEL_ATTR)
+from . import config
+from .utils import safe_get_dicom_attribute, extract_study_id_from_path, get_study_csv_name, get_classified_outputs_dir, filter_nonempty_frames, get_io_executor, seed_everything
 from .csv_field_updater import (
     scan_for_missing_fields,
     update_all_csvs_with_missing_fields
@@ -161,11 +162,17 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
             gui.close()
             return
 
-        # Preprocess with automatic field type detection
+        # Preprocess with automatic field type detection, over the header
+        # fields the active config lists (read now, so a project's list applies)
+        configured_fields = configured_header_fields()
         X_clean, categorical_cols, text_cols, field_types = _preprocess_df(
             master_df.drop(columns=['Classification', 'Path']),
-            is_training=True
+            is_training=True,
+            field_names=[name for name, _ in configured_fields]
         )
+        # The fields the model is actually trained on: those configured that the
+        # classification CSVs contain. Classification must extract exactly these.
+        trained_fields = [(name, attr) for name, attr in configured_fields if name in field_types]
         y = master_df['Classification']
 
         gui.update_status("3/6: Encoding categorical features and target...")
@@ -186,7 +193,14 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
 
         feature_encoder = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)
         X_encoded_cat = feature_encoder.fit_transform(X_clean[categorical_cols]) if categorical_cols else pd.DataFrame()
-        embedded_features_dfs = encode_text_features(X_clean, text_cols)
+        semantic_model_name = configured_semantic_model_name()
+        if text_cols:
+            gui.update_status(f"3/6: Embedding text fields with '{semantic_model_name}'...")
+        embedded_features_dfs = encode_text_features(X_clean, text_cols, semantic_model_name)
+        # Record which embedding model (if any) produced the text features, so
+        # classification always embeds with the same one.
+        used_embeddings = bool(text_cols) and get_semantic_model(semantic_model_name) is not None
+        trained_semantic_model = semantic_model_name if used_embeddings else None
 
         X_final_num = X_clean.drop(columns=categorical_cols + text_cols).copy()
 
@@ -196,16 +210,36 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
         else:
             X_final = pd.concat([X_final_num] + embedded_features_dfs, axis=1)
 
-        gui.update_status(f"4/6: Training RandomForestClassifier ({N_ESTIMATORS} trees)...")
+        n_estimators = int(config.N_ESTIMATORS)
+        gui.update_status(f"4/6: Training RandomForestClassifier ({n_estimators} trees)...")
         if gui.is_cancelled():
             logger.info("Header model training cancelled by user.")
             gui.close()
             return
-        from sklearn.model_selection import train_test_split
-        X_train, X_test, y_train, y_test = train_test_split(X_final, y_encoded, test_size=0.3, random_state=42, stratify=y_encoded)
+        seed = seed_everything()
+        logger.info(f"Header model training seed: {seed} (config STUDY_ORDER_SEED)")
 
-        model = RandomForestClassifier(n_estimators=N_ESTIMATORS, random_state=42, n_jobs=-1, class_weight='balanced')
+        from sklearn.model_selection import train_test_split
+        # See the matching note in cnn.py: stratifying needs two examples per
+        # class, which a small or newly-started label set may not have.
+        try:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_final, y_encoded, test_size=0.3, random_state=seed, stratify=y_encoded)
+        except ValueError as e:
+            logger.warning(
+                f"Could not stratify the header train/test split ({e}). Falling back "
+                f"to an unstratified split — add more examples of the rarest classes "
+                f"for a more reliable accuracy estimate."
+            )
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_final, y_encoded, test_size=0.3, random_state=seed)
+
+        model = RandomForestClassifier(n_estimators=n_estimators, random_state=seed, n_jobs=-1, class_weight='balanced')
         model.fit(X_train, y_train)
+        setattr(model, SEMANTIC_MODEL_ATTR, trained_semantic_model)
+        setattr(model, HEADER_FIELDS_ATTR, trained_fields)
+        if trained_semantic_model:
+            logger.info(f"Header model text embeddings: {trained_semantic_model}")
 
         gui.update_status("5/6: Saving model, encoders, and field types...")
         if gui.is_cancelled():
@@ -227,6 +261,21 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
         gui.update_status("6/6: Evaluating model and saving results...")
         y_pred = model.predict(X_test)
         accuracy = accuracy_score(y_test, y_pred)
+
+        # Record the per-class F1 on this held-out split so the 'reliability'
+        # fusion method can weight the header model against the image model
+        # class by class. Only this model's own key is written, so the two
+        # models can be trained independently and in either order.
+        try:
+            from sklearn.metrics import f1_score
+            from .fusion import record_validation_f1
+            class_indices = list(range(len(target_encoder.classes_)))
+            per_class_f1 = f1_score(y_test, y_pred, labels=class_indices,
+                                    average=None, zero_division=0)
+            record_validation_f1(model_files_dir, "rf",
+                                 target_encoder.classes_, per_class_f1)
+        except Exception as e:
+            logger.warning(f"Could not record header-model validation F1: {e}")
 
         final_message = f"✅ Header Model Training Complete!\nAccuracy on Test Set: {accuracy:.2f}\nModel and Encoders Saved."
         summary_path = os.path.join(model_files_dir, "rf_model_training_summary.txt")
@@ -253,10 +302,70 @@ def TrainHeaderClassifierLogic(output_dir, gui, update_missing_fields_callback=N
 
 
 
-def get_series_features(dicom_path):
+#: Attribute on a trained header model listing the (display name, DICOM
+#: attribute) pairs it was trained on.
+HEADER_FIELDS_ATTR = "mrid_header_fields"
+
+_warned_fields = set()
+
+
+def configured_header_fields():
+    """DICOM_HEADER_FIELDS from the active config, read at call time."""
+    return [tuple(field) for field in config.DICOM_HEADER_FIELDS]
+
+
+def trained_header_fields(model, field_types=None):
+    """The (display name, DICOM attribute) pairs *model* was trained on.
+
+    Recorded on the model since MRID started recording them. For an older model
+    the names come from its saved field types (one per field it was trained
+    on, in training order), mapped to DICOM attributes through the configured
+    and the repository default field lists. Without either, the configured list.
     """
-    Extract DICOM header features based on configured fields.
-    Dynamically uses DICOM_HEADER_FIELDS from config.
+    recorded = getattr(model, HEADER_FIELDS_ATTR, None) if model is not None else None
+    if recorded:
+        return [tuple(field) for field in recorded]
+    configured = configured_header_fields()
+    if model is None or not field_types:
+        return configured
+    attrs = dict(configured)
+    if any(name not in attrs for name in field_types):
+        from .config_params import repository_defaults
+        for name, attr in repository_defaults().get("DICOM_HEADER_FIELDS", []):
+            attrs.setdefault(name, attr)
+    return [(name, attrs.get(name, name)) for name in field_types]
+
+
+def inference_header_fields(model, field_types=None):
+    """The header fields to classify with: always those *model* was trained on,
+    since the feature matrix must match it. Warns once if the config now lists
+    different fields."""
+    fields = trained_header_fields(model, field_types)
+    if model is None:
+        return fields
+    trained = [name for name, _ in fields]
+    configured = [name for name, _ in configured_header_fields()]
+    key = (tuple(trained), tuple(configured))
+    if trained != configured and key not in _warned_fields:
+        _warned_fields.add(key)
+        added = [n for n in configured if n not in trained]
+        removed = [n for n in trained if n not in configured]
+        detail = "; ".join(part for part in (
+            f"not in the model: {', '.join(added)}" if added else "",
+            f"no longer configured: {', '.join(removed)}" if removed else "",
+        ) if part) or "same fields, different order"
+        logger.warning(
+            f"The header model was trained on {len(trained)} DICOM header fields, which "
+            f"differ from DICOM_HEADER_FIELDS in the config ({detail}). Classification uses "
+            f"the fields the model was trained on; retrain the header model to use the "
+            f"configured list.")
+    return fields
+
+
+def get_series_features(dicom_path, fields=None):
+    """
+    Extract DICOM header features for *fields*, a list of (display name, DICOM
+    attribute) pairs (default: DICOM_HEADER_FIELDS from the active config).
     """
     try:
         ds = pydicom.dcmread(dicom_path, force=True)
@@ -264,7 +373,7 @@ def get_series_features(dicom_path):
         return None
 
     features = {}
-    for display_name, dicom_attr in DICOM_HEADER_FIELDS:
+    for display_name, dicom_attr in (fields if fields is not None else configured_header_fields()):
         features[display_name] = safe_get_dicom_attribute(ds, dicom_attr)
 
     return features
@@ -286,20 +395,13 @@ def get_series_probabilities(dicom_path, model, feature_encoder, field_types=Non
     if not all([model, feature_encoder]):
         return None
 
-    # Field types are not loaded from disk here; when None, the preprocessing
-    # below falls back to automatic field-type detection.
-    if field_types is None:
-        try:
-            field_types = None
-        except Exception:
-            field_types = None
-
-    features = get_series_features(dicom_path)
+    features = get_series_features(dicom_path, inference_header_fields(model, field_types))
     if not features:
         return None
 
     try:
-        X_final = _build_rf_feature_matrix(pd.DataFrame([features]), feature_encoder, field_types)
+        X_final = _build_rf_feature_matrix(pd.DataFrame([features]), feature_encoder, field_types,
+                                           model=model)
         _force_single_thread_predict(model)
         return model.predict_proba(X_final)[0]
     except Exception as e:
@@ -307,29 +409,37 @@ def get_series_probabilities(dicom_path, model, feature_encoder, field_types=Non
         return None
 
 
-def _build_rf_feature_matrix(X_pred_raw, feature_encoder, field_types=None):
+def _build_rf_feature_matrix(X_pred_raw, feature_encoder, field_types=None, model=None):
     """Build the model-ready feature matrix from raw header features (1+ rows).
 
     Shared by single- and batch-series RF inference. Text columns are embedded in
     one batched sentence-transformer call (the dominant cost), so processing all
-    of a study's series at once is far faster than one call per series."""
+    of a study's series at once is far faster than one call per series.
+
+    With the trained header *model*, its own header fields and text embedding
+    model are used, so the matrix matches what it was trained on. Without it,
+    the active config's are used."""
+    field_names = [name for name, _ in trained_header_fields(model, field_types)]
     if field_types is not None:
-        X_clean = _preprocess_df(X_pred_raw, is_training=False, field_types=field_types)
+        X_clean = _preprocess_df(X_pred_raw, is_training=False, field_types=field_types,
+                                 field_names=field_names)
     else:
-        X_clean = _preprocess_df(X_pred_raw, is_training=False)
+        X_clean = _preprocess_df(X_pred_raw, is_training=False, field_names=field_names)
 
     from .field_detection import analyze_dataframe_fields
     if field_types is not None:
         categorical_cols = [f for f, info in field_types.items() if info['type'] == 'categorical' and f in X_clean.columns]
         text_cols = [f for f, info in field_types.items() if info['type'] == 'text' and f in X_clean.columns]
     else:
-        field_names = [field[0] for field in DICOM_HEADER_FIELDS]
         detected_types = analyze_dataframe_fields(X_pred_raw, field_names)
         categorical_cols = [f for f, info in detected_types.items() if info['type'] == 'categorical' and f in X_clean.columns]
         text_cols = [f for f, info in detected_types.items() if info['type'] == 'text' and f in X_clean.columns]
 
+    semantic_model_name = (inference_semantic_model_name(model) if model is not None
+                           else configured_semantic_model_name())
     X_encoded_cat = feature_encoder.transform(X_clean[categorical_cols]) if categorical_cols else []
-    embedded_features_dfs = encode_text_features(X_clean, text_cols) if text_cols else []
+    embedded_features_dfs = (encode_text_features(X_clean, text_cols, semantic_model_name)
+                             if text_cols and semantic_model_name else [])
     X_final_num = X_clean.drop(columns=categorical_cols + text_cols) if categorical_cols or text_cols else X_clean
 
     if len(categorical_cols) > 0:
@@ -361,23 +471,26 @@ def get_series_probabilities_batch(dicom_paths, model, feature_encoder, field_ty
     if not all([model, feature_encoder]) or n == 0:
         return results
 
+    fields = inference_header_fields(model, field_types)
     feats = [None] * n
-    workers = max(1, min(get_num_parallel_workers(), n))
     try:
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            for i, f in ex.map(lambda ip: (ip[0], get_series_features(ip[1])), list(enumerate(dicom_paths))):
-                feats[i] = f
+        # Shared pool: a per-call pool would start and tear down threads on
+        # every batch, and each start holds concurrent.futures' process-wide
+        # _global_shutdown_lock, stalling unrelated submits elsewhere in the app.
+        ex = get_io_executor()
+        for i, f in ex.map(lambda ip: (ip[0], get_series_features(ip[1], fields)),
+                           list(enumerate(dicom_paths))):
+            feats[i] = f
     except Exception:
         for i, p in enumerate(dicom_paths):
-            feats[i] = get_series_features(p)
+            feats[i] = get_series_features(p, fields)
 
     valid = [i for i, f in enumerate(feats) if f]
     if not valid:
         return results
     try:
         X_final = _build_rf_feature_matrix(pd.DataFrame([feats[i] for i in valid]),
-                                           feature_encoder, field_types)
+                                           feature_encoder, field_types, model=model)
         _force_single_thread_predict(model)
         probas = model.predict_proba(X_final)
         for j, i in enumerate(valid):

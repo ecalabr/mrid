@@ -6,13 +6,36 @@ import pydicom
 from PIL import Image
 from .header import get_series_probabilities, get_series_probabilities_batch
 from .cnn import prepare_cnn_input_data
-from .config import OVERRIDE_THRESHOLD, PREFER_3D, DICOM_HEADER_FIELDS
+from .fusion import fuse_probabilities, get_configured_method, load_reliability, reliability_weights
 from .utils import (safe_get_dicom_attribute, get_nifti_prefix, extract_study_id_from_path,
                      get_study_dir_name, get_study_csv_name, get_classified_outputs_dir,
-                     get_num_parallel_workers)
+                     get_io_executor)
 from .logging_config import get_logger
 
 logger = get_logger()
+
+
+def _cfg(name, default):
+    """Read a config value at call time, so a config loaded or reloaded after
+    import (Load/Reload Config File, the wizard, Analyze mode) takes effect."""
+    try:
+        from . import config as _config
+        return getattr(_config, name, default)
+    except Exception:
+        return default
+
+
+def get_override_threshold():
+    """Minimum probability for a series to be auto-selected for a label."""
+    try:
+        return float(_cfg('OVERRIDE_THRESHOLD', 0.5))
+    except Exception:
+        return 0.5
+
+
+def get_prefer_3d():
+    """PREFER_3D: a dict of label -> bool, or a single bool for all labels."""
+    return _cfg('PREFER_3D', {})
 
 
 def convert_series_to_nifti(series_dir, output_path, label):
@@ -134,7 +157,8 @@ def background_conversion_worker(*args, convert=True, **kwargs):
     try:
         # Build fieldnames dynamically from configuration
         # Start with Classification and Path, then add all configured DICOM header fields
-        fieldnames = ["Classification", "Path"] + [display_name for display_name, _ in DICOM_HEADER_FIELDS]
+        header_fields = list(_cfg('DICOM_HEADER_FIELDS', []))
+        fieldnames = ["Classification", "Path"] + [display_name for display_name, _ in header_fields]
 
         with open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
@@ -162,7 +186,7 @@ def background_conversion_worker(*args, convert=True, **kwargs):
                     "Path": first_path
                 }
                 # Add all configured DICOM header fields
-                for display_name, dicom_attr in DICOM_HEADER_FIELDS:
+                for display_name, dicom_attr in header_fields:
                     attributes_dict[display_name] = safe_get_dicom_attribute(ds, dicom_attr)
 
                 row = [attributes_dict.get(field, "") for field in fieldnames]
@@ -571,7 +595,6 @@ def get_image_probabilities_batch(dicom_paths, model, target_encoder, thumbnail_
 
     # Load image tensors in parallel — the slow part is DICOM I/O.
     tensors = [None] * n
-    workers = max(1, min(get_num_parallel_workers(), n))
     def _load(i):
         if use_thumbs:
             tp = thumbnail_paths[i]
@@ -581,10 +604,10 @@ def get_image_probabilities_batch(dicom_paths, model, target_encoder, thumbnail_
                     return i, t
         return i, load_image_tensor(dicom_paths[i], num_slices=num_slices, image_size=image_size)
     try:
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            for i, t in ex.map(_load, range(n)):
-                tensors[i] = t
+        # Shared pool — see get_io_executor() for why a per-call pool hurts.
+        ex = get_io_executor()
+        for i, t in ex.map(_load, range(n)):
+            tensors[i] = t
     except Exception:
         for i in range(n):
             tensors[i] = load_image_tensor(dicom_paths[i], num_slices=num_slices, image_size=image_size)
@@ -609,7 +632,53 @@ def get_image_probabilities_batch(dicom_paths, model, target_encoder, thumbnail_
     return results
 
 
-def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model, cnn_target_encoder, rf_field_types=None):
+
+def _expand_to_label_space(proba, model, n_classes):
+    """Scatter a classifier's probability vector into the full label space.
+
+    ``RandomForestClassifier.predict_proba`` returns one column per class that
+    appeared in its *training labels*, not per class in the label encoder. When
+    a configured series type has no usable training examples — common on small
+    or newly-started projects — the vector comes back shorter than the label
+    space, and every class index used downstream then points at the wrong
+    column (or off the end of the array).
+
+    ``model.classes_`` holds the encoded label for each column, so it maps them
+    back. Classes the model never saw get probability 0, which is the correct
+    reading: it cannot predict them.
+
+    Returns the expanded vector, or None if the mapping is not recoverable.
+    """
+    if proba is None or n_classes is None:
+        return proba
+    if len(proba) == n_classes:
+        return proba
+    classes = getattr(model, 'classes_', None)
+    if classes is None or len(classes) != len(proba):
+        logger.warning(
+            f"Prediction has {len(proba)} classes but the label encoder has "
+            f"{n_classes}, and the model's class list does not explain the "
+            f"difference; ignoring this prediction."
+        )
+        return None
+    full = np.zeros(n_classes, dtype=np.float64)
+    for column, encoded in enumerate(classes):
+        index = int(encoded)
+        if 0 <= index < n_classes:
+            full[index] = proba[column]
+    logger.debug(
+        f"Expanded a {len(proba)}-class prediction into the {n_classes}-class "
+        f"label space (classes absent from training get probability 0)."
+    )
+    return full
+
+
+# model_files directories already warned about missing reliability metrics
+# (the warning would otherwise repeat for every study).
+_warned_no_reliability = set()
+
+
+def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encoder, rf_feature_encoder, cnn_model, cnn_target_encoder, rf_field_types=None, model_files_dir=None):
     """
     Optimize series selections for a study. Returns a tuple:
       - final_assignments: dict mapping series_start_path -> label
@@ -625,8 +694,14 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
       4. Ensure each series is assigned only once
       5. Remaining series are assigned 'Other'
 
+    In "Header + Image Model" mode the two probability vectors are reduced to one
+    by the rule named in ``FUSION_METHOD`` (see :mod:`mrid_app.fusion`).
+
     Args:
         rf_field_types: Optional field types dictionary for consistent RF preprocessing
+        model_files_dir: Optional path to the project's ``model_files`` directory.
+            Only needed for the ``reliability`` fusion method, which reads the
+            per-class validation F1 scores recorded there at training time.
     """
     target_encoder = rf_target_encoder if rf_target_encoder is not None else cnn_target_encoder
     if target_encoder is None:
@@ -666,20 +741,37 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
         cnn_list = get_image_probabilities_batch(paths, cnn_model, cnn_target_encoder,
                                                  thumbnail_paths=thumb_paths)
 
+    # Resolve the fusion rule once per study rather than per series. The
+    # reliability rule additionally needs the per-class validation F1 scores
+    # recorded at training time; without them it falls back to 'average'.
+    override_threshold = get_override_threshold()
+    prefer_3d_cfg = get_prefer_3d()
+    fusion_method = get_configured_method() if model_type == "Header + Image Model" else None
+    fusion_weights = None
+    if fusion_method == "reliability" and model_files_dir:
+        fusion_weights = reliability_weights(load_reliability(model_files_dir), all_labels)
+        if fusion_weights is None and model_files_dir not in _warned_no_reliability:
+            _warned_no_reliability.add(model_files_dir)
+            logger.warning(
+                "FUSION_METHOD='reliability' but no usable validation metrics were found in "
+                f"{model_files_dir}; falling back to 'average'. Retrain both models to record them."
+            )
+
+    n_classes = len(all_labels)
     temp_predictions = {}
     for i, (series_desc, first_path, _thumb) in enumerate(series_list):
         rf_proba = rf_list[i] if rf_list is not None else None
         cnn_proba = cnn_list[i] if cnn_list is not None else None
+        # Align both vectors with the label encoder before anything indexes them
+        # by class position.
+        rf_proba = _expand_to_label_space(rf_proba, rf_model, n_classes)
+        cnn_proba = _expand_to_label_space(cnn_proba, cnn_model, n_classes)
 
         # Combine predictions based on model type
         final_proba = None
         if model_type == "Header + Image Model":
-            if rf_proba is not None and cnn_proba is not None:
-                final_proba = (rf_proba + cnn_proba) / 2
-            elif rf_proba is not None:
-                final_proba = rf_proba
-            elif cnn_proba is not None:
-                final_proba = cnn_proba
+            final_proba = fuse_probabilities(rf_proba, cnn_proba,
+                                             method=fusion_method, weights=fusion_weights)
         elif model_type == "DICOM Header Model":
             final_proba = rf_proba
         elif model_type == "Image-Based Model":
@@ -705,10 +797,12 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
         candidates = []
         for series_desc, pred in temp_predictions.items():
             current_path = pred['path']
+            if idx >= len(pred['proba']):
+                continue
             current_proba = pred['proba'][idx]
 
             # Only consider series that exceed the threshold
-            if current_proba > OVERRIDE_THRESHOLD:
+            if current_proba > override_threshold:
                 # Check if this is a 3D acquisition
                 is_3d = check_is_3d_acquisition(current_path)
                 candidates.append((current_path, current_proba, is_3d))
@@ -716,10 +810,10 @@ def optimize_study_selections(study_dict, model_type, rf_model, rf_target_encode
         if candidates:
             # Apply PREFER_3D logic if enabled for this label
             # PREFER_3D may be a bool (applies to all non-Other series) or a dict
-            if isinstance(PREFER_3D, bool):
-                prefer_3d = PREFER_3D if label != "Other" else False
+            if isinstance(prefer_3d_cfg, bool):
+                prefer_3d = prefer_3d_cfg if label != "Other" else False
             else:
-                prefer_3d = PREFER_3D.get(label, False)
+                prefer_3d = prefer_3d_cfg.get(label, False)
 
             if prefer_3d:
                 # Check if there's at least one 3D series
@@ -809,7 +903,8 @@ def full_auto_classify_study(study_dict, mrn, study_uid, output_root,
         model_type,
         rf_model, rf_target_encoder, rf_feature_encoder,
         cnn_model, cnn_target_encoder,
-        rf_field_types
+        rf_field_types,
+        model_files_dir=os.path.join(output_root, "model_files")
     )
     for path, label in final_assignments.items():
         logger.info(f"  -> Series starting with '{path}' auto-selected as: {label}")

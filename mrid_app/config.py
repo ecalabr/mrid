@@ -8,7 +8,7 @@ THUMBNAIL_FORMAT = 'JPEG'  # Format for generated thumbnails: 'JPEG' or 'PNG'
 THUMBNAIL_QUALITY = 75  # JPEG quality (1-100, only used if THUMBNAIL_FORMAT='JPEG')
 
 # Classification settings
-TARGET_SERIES = ["T1", "T2", "FLAIR", "T1c", "Other"]
+TARGET_SERIES = ["T1", "T2", "FLAIR", "T1c", "Other"]  # labels to classify series into; "Other" catches everything else
 # prefer the 3D acquisition (MRAcquisitionType == '3D') even if it's not the highest probability.
 PREFER_3D = {
     "T1": True,
@@ -18,10 +18,10 @@ PREFER_3D = {
     "Other": False
 }
 # DICOM ImageType filtering
-INCLUDE_TYPES = ["ORIGINAL", "PRIMARY"]
-EXCLUDE_TYPES = ["DERIVED", "SECONDARY", "ADC", "DIFFUSION", "LOCALIZER", "MIP", "MPR"]
-IGNORE_MULTIPLE_ORIENTATIONS = True
-SEPARATE_STACKED_SERIES = True
+INCLUDE_TYPES = ["ORIGINAL", "PRIMARY"]  # keep only images whose ImageType contains all of these
+EXCLUDE_TYPES = ["DERIVED", "SECONDARY", "ADC", "DIFFUSION", "LOCALIZER", "MIP", "MPR"]  # skip images whose ImageType contains any of these
+IGNORE_MULTIPLE_ORIENTATIONS = True  # skip series whose images have more than one orientation (e.g. localizers)
+SEPARATE_STACKED_SERIES = True  # split series that repeat slice positions (multi-echo, dynamic) into separate series
 MAX_SPLIT = 5  # max number of splits for stacked series
 
 # Analyze mode settings
@@ -34,16 +34,28 @@ NUM_COLUMNS = 6  # max number of columns in classification/verification UI
 NUM_ROWS = 4  # max number of rows in verification UI
 THUMBNAIL_SCALE_FACTOR = 1.0  # additional static scale multiplier applied to thumbnail size only (e.g. 0.75 to shrink, 1.5 to enlarge)
 OVERRIDE_THRESHOLD = 0.5  # probability threshold for auto-classification
+# How the header and image model probabilities are combined when using the
+# "Header + Image Model" type. One of:
+#   'reliability' weight each model per class by its validation F1, recorded at
+#                 training time (default; falls back to 'average' without it)
+#   'average'     mean of both models
+#   'product'     geometric mean; both models must be confident (conservative)
+#   'max'         per-class maximum; the most confident model wins
+#   'confidence'  weight each model per series by its certainty (entropy based)
+FUSION_METHOD = 'reliability'
 ALLOW_DUPLICATE_LABELS = False  # allow multiple series to have the same label for manual classification
 NUM_PARALLEL_WORKERS = 8  # number of parallel workers (threads/processes) for file scanning, loading, and CNN data loading
 RANDOMIZE_STUDY_ORDER = True  # randomize the order of studies during manual/semi-auto classification
-STUDY_ORDER_SEED = 42  # seed for pseudo-random study ordering (ensures reproducibility)
+# Seed for everything random: study order, train/validation splits, model
+# training, and Analyze mode. Training is repeatable on the same machine and
+# GPU; results may differ across GPUs or PyTorch builds.
+STUDY_ORDER_SEED = 42
 
 # CNN hyperparameters
-IMAGE_SIZE = 128
-NUM_EPOCHS = 100
-BATCH_SIZE = 8
-LR = 0.001
+IMAGE_SIZE = 128  # CNN input size in pixels (images are resized to IMAGE_SIZE x IMAGE_SIZE)
+NUM_EPOCHS = 100  # CNN training epochs
+BATCH_SIZE = 8  # CNN training batch size
+LR = 0.001  # CNN learning rate
 # Number of evenly spaced slices fed to the CNN as input channels.
 # 1 = classic 2D mode (center slice only). N > 1 = 2.5D mode: for a series of
 # length L, slices at indices L*1//(N+1), L*2//(N+1), ..., L*N//(N+1) are used
@@ -52,7 +64,7 @@ LR = 0.001
 CNN_NUM_SLICES = 1
 
 # Random Forest hyperparameters
-N_ESTIMATORS = 400
+N_ESTIMATORS = 400  # number of trees in the Random Forest
 
 # ============================================================================
 # DICOM HEADER FIELDS CONFIGURATION
@@ -70,6 +82,7 @@ N_ESTIMATORS = 400
 # - Categorical: Limited set of discrete values (ScanningSequence, ImageType, etc.)
 # - Text: Free-form text for semantic encoding (SeriesDescription, etc.)
 
+# (display name, DICOM attribute) pairs used as header-model features
 DICOM_HEADER_FIELDS = [
     # Series identification and description
     ("SeriesDescription", "SeriesDescription"),
@@ -115,9 +128,12 @@ CATEGORICAL_UNIQUE_THRESHOLD = 50  # Fields with <= this many unique values are 
 TEXT_MIN_WORDS = 2  # Fields with avg >= this many words are treated as text
 ARRAY_SIZE_THRESHOLD = 1  # Fields with values containing > 1 number are arrays
 
-# NOTE: The sentence-transformers model is large and should be loaded lazily.
+# Sentence-transformers model that embeds free-text header fields (e.g.
+# SeriesDescription) for the header model: any model name on the Hugging Face
+# Hub (e.g. 'all-MiniLM-L6-v2', 'all-mpnet-base-v2') or a local model folder.
+# It is downloaded on first use. A trained header model keeps using the model it
+# was trained with; retrain it after changing this.
 SEMANTIC_MODEL_NAME = 'all-MiniLM-L6-v2'
-SEMANTIC_MODEL = None  # always None initially
 
 # ============================================================================
 # Logging configuration

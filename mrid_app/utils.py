@@ -1,4 +1,5 @@
 import os
+import threading as _threading
 import yaml
 from collections import defaultdict
 from typing import Optional
@@ -484,3 +485,101 @@ def warn_if_no_gpu_for_cnn(gui_parent: Optional[object] = None) -> bool:
         # Non-GUI environment or messagebox failed -> default to not proceeding
         logger.warning("No acceleration device detected. Operation cancelled by default in non-GUI context.")
         return False
+
+
+# ── Shared I/O thread pool ──────────────────────────────────────────────────
+
+_IO_EXECUTOR = None
+_IO_EXECUTOR_LOCK = _threading.Lock()
+
+
+def get_io_executor():
+    """One process-wide thread pool for the app's parallel DICOM reads.
+
+    Shared rather than created per batch: starting pool threads takes
+    concurrent.futures' process-wide shutdown lock, so short-lived pools stall
+    every other thread submitting work (e.g. GUI thumbnail loading). Sized on
+    first use from NUM_PARALLEL_WORKERS.
+    """
+    global _IO_EXECUTOR
+    if _IO_EXECUTOR is None:
+        with _IO_EXECUTOR_LOCK:
+            if _IO_EXECUTOR is None:
+                from concurrent.futures import ThreadPoolExecutor
+                _IO_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=max(1, get_num_parallel_workers()),
+                    thread_name_prefix="mrid-io")
+    return _IO_EXECUTOR
+
+
+# ── Reproducibility ─────────────────────────────────────────────────────────
+
+def get_random_seed():
+    """The project's single user-configurable seed.
+
+    STUDY_ORDER_SEED keeps its historical name, but it seeds every pseudo-random
+    part of MRID: study ordering, the train/validation splits, Random Forest
+    fitting, CNN weight initialization and batch shuffling, the on-the-fly
+    augmentation, and Analyze mode's PCA and UMAP. One knob, so a project's
+    results can be reproduced from its config alone.
+    """
+    try:
+        from . import config
+        return int(getattr(config, 'STUDY_ORDER_SEED', 42))
+    except Exception:
+        return 42
+
+
+def seed_everything(seed=None):
+    """Seed Python, NumPy and PyTorch, and put cuDNN in deterministic mode.
+
+    Call at the start of anything that trains a model. Returns the seed used.
+
+    Determinism holds for repeated runs on the same machine and device. Results
+    are not guaranteed to match across different GPUs, a GPU versus the CPU, or
+    different PyTorch builds, because the underlying kernels differ.
+    """
+    if seed is None:
+        seed = get_random_seed()
+    seed = int(seed)
+
+    import random as _random
+    _random.seed(seed)
+
+    try:
+        import numpy as _np
+        # NumPy's legacy global RNG seeds on 32 bits; the augmentation uses it.
+        _np.random.seed(seed % (2 ** 32))
+    except Exception as e:
+        logger.debug(f"Could not seed NumPy: {e}")
+
+    try:
+        import torch
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        # Without this, cuDNN picks convolution algorithms by benchmarking and
+        # may choose differently between runs, and some backward kernels
+        # accumulate non-deterministically.
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    except Exception as e:
+        logger.debug(f"Could not seed PyTorch: {e}")
+
+    return seed
+
+
+def torch_generator(seed=None):
+    """A seeded torch Generator for DataLoader shuffling, or None if unavailable.
+
+    DataLoader draws its shuffle order from the global RNG unless given its own
+    generator, which makes the order depend on how much randomness training has
+    already consumed. An explicit generator pins it.
+    """
+    try:
+        import torch
+        g = torch.Generator()
+        g.manual_seed(int(seed if seed is not None else get_random_seed()))
+        return g
+    except Exception:
+        return None

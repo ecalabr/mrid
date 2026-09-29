@@ -9,6 +9,7 @@ All MRID windows share:
 """
 
 import sys
+import tkinter as tk
 
 import customtkinter as ctk
 
@@ -16,6 +17,44 @@ from . import config
 from .logging_config import get_logger
 
 logger = get_logger()
+
+class ToolTip:
+    """Simple hover tooltip for a tkinter widget."""
+
+    def __init__(self, widget, text=""):
+        self.widget = widget
+        self.text = text
+        self._tip_win = None
+        widget.bind("<Enter>", self._show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+
+    def update_text(self, text):
+        self.text = text
+
+    def _show(self, _event=None):
+        if not self.text:
+            return
+        try:
+            x = self.widget.winfo_rootx() + 20
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+            self._tip_win = tw = tk.Toplevel(self.widget)
+            tw.wm_overrideredirect(True)
+            tw.wm_geometry(f"+{x}+{y}")
+            tk.Label(tw, text=self.text, justify="left",
+                     background=TOOLTIP_BG, foreground=TOOLTIP_FG,
+                     relief="solid", borderwidth=1,
+                     font=("TkDefaultFont", 9)).pack()
+        except Exception:
+            pass
+
+    def _hide(self, _event=None):
+        try:
+            if self._tip_win:
+                self._tip_win.destroy()
+                self._tip_win = None
+        except Exception:
+            pass
+
 
 # Reference screen size the UI was designed against
 BASE_SCREEN_W = 1920

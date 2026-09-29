@@ -5,9 +5,10 @@ numpy
 pillow
 PyYAML
 pandas
-scikit-learn
+scikit-learn==1.9.0
 joblib
-sentence-transformers
+sentence-transformers==5.6.0
+transformers==5.13.0
 torch>=1.8.0    # Optional for CNN functionality
 torchvision
 umap-learn      # UMAP dimensionality reduction for Analyze mode

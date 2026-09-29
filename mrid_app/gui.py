@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import queue
 import threading
 import time
 import random
@@ -142,42 +143,8 @@ def _save_ui_scale(scale: float):
         logger.debug(f"Could not save ui_scale to {_PREFS_FILE}: {exc}")
 
 
-class _ToolTip:
-    """Simple hover tooltip for a tkinter widget."""
-
-    def __init__(self, widget, text=""):
-        self.widget = widget
-        self.text = text
-        self._tip_win = None
-        widget.bind("<Enter>", self._show, add="+")
-        widget.bind("<Leave>", self._hide, add="+")
-
-    def update_text(self, text):
-        self.text = text
-
-    def _show(self, _event=None):
-        if not self.text:
-            return
-        try:
-            x = self.widget.winfo_rootx() + 20
-            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
-            self._tip_win = tw = tk.Toplevel(self.widget)
-            tw.wm_overrideredirect(True)
-            tw.wm_geometry(f"+{x}+{y}")
-            tk.Label(tw, text=self.text, justify="left",
-                     background=ui_theme.TOOLTIP_BG, foreground=ui_theme.TOOLTIP_FG,
-                     relief="solid", borderwidth=1,
-                     font=("TkDefaultFont", 9)).pack()
-        except Exception:
-            pass
-
-    def _hide(self, _event=None):
-        try:
-            if self._tip_win:
-                self._tip_win.destroy()
-                self._tip_win = None
-        except Exception:
-            pass
+# Hover tooltips live in ui_theme so the config wizard can use the same widget.
+_ToolTip = ui_theme.ToolTip
 
 
 def _generate_color_map(labels):
@@ -1382,10 +1349,13 @@ class MainApp:
                     batch_size = 64
                     chunks = [all_files[i:i+batch_size] for i in range(0, len(all_files), batch_size)]
 
-                    from .scanner import check_dicom_batch
+                    import functools
+                    from .scanner import check_dicom_batch, scan_options
+                    # Pass the project's scan settings to the workers explicitly
+                    scan_batch = functools.partial(check_dicom_batch, **scan_options())
 
                     processed = 0
-                    for batch_res in pool.imap_unordered(check_dicom_batch, chunks):
+                    for batch_res in pool.imap_unordered(scan_batch, chunks):
                         # batch_res is a list of per-file results (or None entries)
                         if batch_res:
                             results.extend(batch_res)
@@ -1530,7 +1500,8 @@ class MainApp:
                         holder['result'][0] = processing.optimize_study_selections(
                             n_series, model_type,
                             rf_model, rf_target_encoder, rf_feature_encoder,
-                            cnn_model, cnn_target_encoder, self.rf_field_types)
+                            cnn_model, cnn_target_encoder, self.rf_field_types,
+                            model_files_dir=os.path.join(output_dir, "model_files"))
                     except Exception as e:
                         logger.debug(f"Prefetch inference failed for study {next_idx}: {e}")
                         holder['result'][0] = None
@@ -1606,7 +1577,8 @@ class MainApp:
                         optimized_result = processing.optimize_study_selections(
                             series_dict, model_type,
                             rf_model, rf_target_encoder, rf_feature_encoder,
-                            cnn_model, cnn_target_encoder, self.rf_field_types
+                            cnn_model, cnn_target_encoder, self.rf_field_types,
+                            model_files_dir=os.path.join(output_dir, "model_files")
                         )
 
                 is_first = (idx == 0)
@@ -2741,21 +2713,8 @@ class MainApp:
             tuple: (success: bool, missing_vars: list, error_msg: str)
         """
         try:
-            # Get expected globals from the repository config
-            expected_globals = self._get_config_globals()
-
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("temp_config", config_path)
-            if spec is None or spec.loader is None:
-                return False, [], "Could not load config file"
-
-            temp_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(temp_module)
-
-            missing_vars = []
-            for var_name in expected_globals:
-                if not hasattr(temp_module, var_name):
-                    missing_vars.append(var_name)
+            from .config_params import find_missing_params
+            missing_vars = find_missing_params(config_path)
 
             if missing_vars:
                 return False, missing_vars, f"Missing required variables: {', '.join(missing_vars)}"
@@ -2810,6 +2769,16 @@ class MainApp:
                 if hasattr(temp_module, var_name):
                     setattr(config, var_name, getattr(temp_module, var_name))
 
+            # A setting this file lacks takes the repository default. The config
+            # module can't be relied on for that: if another project's config was
+            # loaded earlier in the session, it still holds that project's value.
+            if missing_vars:
+                from .config_params import project_defaults
+                defaults = project_defaults(config_path)
+                for var_name in missing_vars:
+                    if var_name in defaults:
+                        setattr(config, var_name, defaults[var_name])
+
             # Update local globals that are imported directly
             global TARGET_SERIES, NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LABELS, THUMBNAIL_SCALE_FACTOR
             TARGET_SERIES = sanitize_target_series(config.TARGET_SERIES)
@@ -2842,20 +2811,19 @@ class MainApp:
         """
         Prompt the user to add parameters that *config_path* is missing relative
         to the current MRID version, with editable suggested defaults. On accept,
-        the chosen values are written into the config file and it is reloaded.
+        the values are validated, written into the config file, and it is reloaded.
         """
-        import ast
+        from .config_params import (add_params_to_config, param_descriptions,
+                                    param_hint, parse_value, project_defaults)
 
-        # Suggested default for each missing param = the repository default
-        # (config module still holds it, since the loaded file didn't set it).
-        rows = []  # (name, default_repr)
-        for name in missing_vars:
-            try:
-                rows.append((name, repr(getattr(config, name))))
-            except Exception:
-                rows.append((name, "None"))
+        # Suggest the repository default, read fresh from the repository config
+        # (the config module may still hold a previously loaded project's value)
+        # and adapted to this project, e.g. PREFER_3D keyed by its own labels.
+        defaults = project_defaults(config_path)
+        rows = [(name, repr(defaults.get(name))) for name in missing_vars]
         if not rows:
             return
+        descriptions = param_descriptions()
 
         dlg = ctk.CTkToplevel(self.master)
         dlg.title("Add New Config Parameters")
@@ -2866,8 +2834,11 @@ class MainApp:
             dlg,
             text=("This config file is missing parameters available in this "
                   "version of MRID.\nReview the suggested defaults below (edit "
-                  "if desired) and click \"Add to Config\" to write them into:\n"
-                  f"{config_path}"),
+                  "if desired; hover a name for what it does) and click \"Add to "
+                  "Config\" to write them into:\n"
+                  f"{config_path}\n\n"
+                  "\"Skip\" uses the defaults for this session only; you can add "
+                  "them later with Configuration \u2192 Add Missing Parameters."),
             justify="left", wraplength=scale_value(560)
         ).pack(padx=scale_value(16), pady=(scale_value(14), scale_value(8)), anchor="w")
 
@@ -2875,8 +2846,11 @@ class MainApp:
         scroll.pack(fill="both", expand=True, padx=scale_value(16))
         entry_vars = {}
         for r, (name, default_repr) in enumerate(rows):
-            ctk.CTkLabel(scroll, text=name, anchor="w").grid(
-                row=r, column=0, sticky="w", padx=scale_value(4), pady=scale_value(4))
+            label = ctk.CTkLabel(scroll, text=name, anchor="w")
+            label.grid(row=r, column=0, sticky="w", padx=scale_value(4), pady=scale_value(4))
+            tip = descriptions.get(name, "")
+            tip = (tip + "\n\n" if tip else "") + f"Valid values: {param_hint(name)}"
+            _ToolTip(label, tip)
             var = tk.StringVar(value=default_repr)
             ctk.CTkEntry(scroll, textvariable=var, width=scale_value(320)).grid(
                 row=r, column=1, sticky="w", padx=scale_value(6), pady=scale_value(4))
@@ -2887,38 +2861,32 @@ class MainApp:
         btns.pack(pady=scale_value(14))
 
         def on_add():
-            # Validate every value is a safe Python literal before writing.
-            replacements = {}
+            # Validate every value against that parameter's rules before writing.
+            values = {}
             for name, var in entry_vars.items():
                 text = var.get().strip()
                 try:
-                    ast.literal_eval(text)
-                except Exception as e:
+                    values[name] = parse_value(name, text)
+                except ValueError as e:
                     messagebox.showwarning(
                         "Invalid Value",
-                        f"The value for {name} is not a valid Python literal:\n\n{text}\n\n{e}",
+                        f"{name} {e}.\n\nValid values: {param_hint(name)}",
                         parent=dlg
                     )
                     return
-                replacements[name] = text
             try:
-                with open(config_path, "r", encoding="utf-8") as fh:
-                    source = fh.read()
-                new_source = _rewrite_config_assignments(source, replacements)
-                with open(config_path, "w", encoding="utf-8") as fh:
-                    fh.write(new_source)
+                add_params_to_config(config_path, values)
             except Exception as e:
                 messagebox.showerror("Write Failed",
                                      f"Could not update the config file:\n{e}", parent=dlg)
                 return
             dlg.grab_release()
             dlg.destroy()
-            logger.info(f"Added missing parameters to {config_path}: {list(replacements)}")
             # Reload so the new values take effect (no re-prompt).
             self._load_config_from_file(config_path, prompt_missing=False)
             messagebox.showinfo(
                 "Config Updated",
-                f"Added {len(replacements)} parameter(s) to:\n{config_path}",
+                f"Added {len(values)} parameter(s) to:\n{config_path}",
                 parent=self.master
             )
 
@@ -3222,11 +3190,14 @@ class MainApp:
                 pool = mp.Pool(get_num_parallel_workers())
                 results = []
                 try:
-                    from .scanner import check_dicom_batch
+                    import functools
+                    from .scanner import check_dicom_batch, scan_options
+                    # Pass the project's scan settings to the workers explicitly
+                    scan_batch = functools.partial(check_dicom_batch, **scan_options())
                     batch_size = 64
                     chunks = [all_files[i:i + batch_size] for i in range(0, len(all_files), batch_size)]
                     processed = 0
-                    for batch_res in pool.imap_unordered(check_dicom_batch, chunks):
+                    for batch_res in pool.imap_unordered(scan_batch, chunks):
                         if batch_res:
                             results.extend(batch_res)
                             processed += len(batch_res)
@@ -4585,14 +4556,52 @@ def _bind_space_paging(root, canvas):
 _THUMBNAIL_EXECUTOR = None
 
 
+_THUMBNAIL_EXECUTOR_LOCK = threading.Lock()
+
+
 def _get_thumbnail_executor():
     global _THUMBNAIL_EXECUTOR
     if _THUMBNAIL_EXECUTOR is None:
-        import concurrent.futures
-        _THUMBNAIL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max(1, get_num_parallel_workers()),
-            thread_name_prefix="mrid-thumb")
+        with _THUMBNAIL_EXECUTOR_LOCK:
+            if _THUMBNAIL_EXECUTOR is None:
+                import concurrent.futures
+                _THUMBNAIL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=max(1, get_num_parallel_workers()),
+                    thread_name_prefix="mrid-thumb")
     return _THUMBNAIL_EXECUTOR
+
+
+def _pump_thumbnail_results(root, results_q, update_fn, stop_event, interval_ms=40):
+    """Apply finished thumbnails to their panels, on the main thread.
+
+    Worker threads must never call into Tk: ``root.after()`` from another thread
+    blocks until the main thread services Tcl's event queue, which can deadlock
+    a window that is still being built. Loaders put results on *results_q*
+    instead, and this poller, running on the main thread, drains it.
+    """
+    def _pump():
+        if stop_event.is_set():
+            return
+        try:
+            while True:
+                path, img = results_q.get_nowait()
+                try:
+                    update_fn(path, img)
+                except Exception as e:
+                    logger.debug(f"Error updating thumbnail for {path}: {e}")
+        except queue.Empty:
+            pass
+        except Exception as e:
+            logger.debug(f"Thumbnail pump error: {e}")
+        try:
+            root.after(interval_ms, _pump)
+        except Exception:
+            pass   # window destroyed
+
+    try:
+        root.after(interval_ms, _pump)
+    except Exception:
+        pass
 
 
 def show_verification_gui(batch_df, target_series, batch_start, total_series,
@@ -4709,6 +4718,7 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
     # abandon any outstanding loads the moment it closes.
     stop_loading = threading.Event()
     pending_futures = []
+    results_q = queue.Queue()
 
     def load_single_thumbnail(series_path, panel, output_dir):
         """Load a single thumbnail, preferring a pre-generated thumbnail (JPEG/PNG)."""
@@ -4755,20 +4765,18 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
         except Exception as e:
             logger.debug(f"Error updating thumbnail: {e}")
 
-    def _on_thumbnail_loaded(future, series_path):
-        # Runs on a pool worker thread; bail out if the window has closed.
+    def _load_into_queue(series_path, *args):
+        """Runs on a pool worker thread. Touches no Tk: the result goes on a
+        queue that the main thread drains (see _pump_thumbnail_results)."""
         if stop_loading.is_set():
             return
         try:
-            pil_img = future.result()
+            pil_img = load_single_thumbnail(series_path, *args)
         except Exception as e:
             logger.debug(f"Error loading thumbnail for {series_path}: {e}")
             return
-        if pil_img is not None:
-            try:
-                root.after(0, lambda p=series_path, img=pil_img: update_thumbnail(p, img))
-            except Exception:
-                pass
+        if pil_img is not None and not stop_loading.is_set():
+            results_q.put((series_path, pil_img))
 
     # Submit each load to the shared pool (fast, non-blocking) — no per-window
     # thread or pool, so windows can't accumulate threads.
@@ -4776,11 +4784,11 @@ def show_verification_gui(batch_df, target_series, batch_start, total_series,
     for idx, row_data in batch_df.iterrows():
         sp = row_data['Path']
         try:
-            fut = _executor.submit(load_single_thumbnail, sp, panel_widgets[sp], output_dir)
-            fut.add_done_callback(lambda f, p=sp: _on_thumbnail_loaded(f, p))
-            pending_futures.append(fut)
+            pending_futures.append(
+                _executor.submit(_load_into_queue, sp, panel_widgets[sp], output_dir))
         except Exception as e:
             logger.debug(f"Could not submit thumbnail load for {sp}: {e}")
+    _pump_thumbnail_results(root, results_q, update_thumbnail, stop_loading)
 
     button_frame = ctk.CTkFrame(root, fg_color="transparent")
     button_frame.grid(row=1, column=0, sticky="ew", pady=scale_value(10))
@@ -5008,7 +5016,8 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
                 model_type,
                 rf_model, rf_target_encoder, rf_feature_encoder,
                 cnn_model, cnn_target_encoder,
-                rf_field_types  # Pass field types for consistent preprocessing
+                rf_field_types,  # Pass field types for consistent preprocessing
+                model_files_dir=os.path.join(output_root, "model_files")
             )
         # optimize_study_selections returns (final_assignments, predictions_by_path)
         try:
@@ -5355,6 +5364,7 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
     # Load thumbnails on the shared bounded pool (same as verification mode).
     stop_loading = threading.Event()
     pending_futures = []
+    results_q = queue.Queue()
 
     def load_single_thumbnail(first_path, panel, dicom_paths, thumbnail_path):
         """Load a single thumbnail, preferring a pre-generated thumbnail (JPEG/PNG)."""
@@ -5413,28 +5423,27 @@ def classify_study_gui(study_dict, mrn, study_uid, output_root, stop_event, stud
         except Exception as e:
             logger.debug(f"Error updating thumbnail: {e}")
 
-    def _on_thumbnail_loaded(future, series_path):
+    def _load_into_queue(series_path, *args):
+        """Runs on a pool worker thread. Touches no Tk: the result goes on a
+        queue that the main thread drains (see _pump_thumbnail_results)."""
         if stop_loading.is_set():
             return
         try:
-            pil_img = future.result()
+            pil_img = load_single_thumbnail(series_path, *args)
         except Exception as e:
             logger.debug(f"Error loading thumbnail for {series_path}: {e}")
             return
-        if pil_img is not None:
-            try:
-                root.after(0, lambda p=series_path, img=pil_img: update_thumbnail(p, img))
-            except Exception:
-                pass
+        if pil_img is not None and not stop_loading.is_set():
+            results_q.put((series_path, pil_img))
 
     _executor = _get_thumbnail_executor()
     for path, panel_data in panel_widgets.items():
         try:
-            fut = _executor.submit(load_single_thumbnail, path, panel_data[0], panel_data[1], panel_data[2])
-            fut.add_done_callback(lambda f, p=path: _on_thumbnail_loaded(f, p))
-            pending_futures.append(fut)
+            pending_futures.append(_executor.submit(
+                _load_into_queue, path, panel_data[0], panel_data[1], panel_data[2]))
         except Exception as e:
             logger.debug(f"Could not submit thumbnail load for {path}: {e}")
+    _pump_thumbnail_results(root, results_q, update_thumbnail, stop_loading)
 
     button_frame = ctk.CTkFrame(root, fg_color="transparent")
     button_frame.grid(row=1, column=0, sticky="ew", pady=scale_value(10))

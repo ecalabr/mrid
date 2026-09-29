@@ -23,6 +23,7 @@ from . import ui_theme
 from . import themed_dialogs as messagebox
 from .config_io import (format_prefer3d_dict, rewrite_config_assignments,
                         get_default_config_path)
+from .fusion import FUSION_METHODS, FUSION_METHOD_DESCRIPTIONS
 from .logging_config import get_logger
 from .ui_theme import scale_value, cascade
 
@@ -83,10 +84,11 @@ class ConfigWizard:
                      "IGNORE_MULTIPLE_ORIENTATIONS", "SEPARATE_STACKED_SERIES", "MAX_SPLIT",
                      "NUM_COLUMNS", "NUM_ROWS", "THUMBNAIL_SCALE_FACTOR", "OVERRIDE_THRESHOLD",
                      "ALLOW_DUPLICATE_LABELS", "NUM_PARALLEL_WORKERS", "RANDOMIZE_STUDY_ORDER",
-                     "STUDY_ORDER_SEED", "IMAGE_SIZE", "NUM_EPOCHS", "BATCH_SIZE", "LR",
+                     "STUDY_ORDER_SEED", "FUSION_METHOD",
+                     "IMAGE_SIZE", "NUM_EPOCHS", "BATCH_SIZE", "LR",
                      "CNN_NUM_SLICES", "N_ESTIMATORS", "DICOM_HEADER_FIELDS",
                      "ANALYZE_COVERAGE_THRESHOLD", "ANALYZE_HDBSCAN_CLUSTER_METHOD",
-                     "LOG_LEVEL"]:
+                     "SEMANTIC_MODEL_NAME", "LOG_LEVEL"]:
             values[name] = get(name)
         return values
 
@@ -200,6 +202,27 @@ class ConfigWizard:
         if hint:
             ctk.CTkLabel(parent, text=hint, text_color="#8a8a8a", anchor="w").grid(
                 row=row, column=2, sticky="w", padx=scale_value(6))
+        return var
+
+    def _option_row(self, parent, row, label, initial, values, width=140,
+                    hint=None, tooltips=None):
+        """A labelled dropdown row.
+
+        *tooltips* maps an option value to a longer description; when supplied
+        the dropdown carries a hover tooltip that follows the current selection,
+        so each choice can explain itself without crowding the page.
+        """
+        ctk.CTkLabel(parent, text=label, anchor="w").grid(
+            row=row, column=0, sticky="w", padx=scale_value(6), pady=scale_value(5))
+        var = tk.StringVar(value=str(initial))
+        menu = ctk.CTkOptionMenu(parent, variable=var, width=width, values=list(values))
+        menu.grid(row=row, column=1, sticky="w", padx=scale_value(6), pady=scale_value(5))
+        if hint:
+            ctk.CTkLabel(parent, text=hint, text_color="#8a8a8a", anchor="w").grid(
+                row=row, column=2, sticky="w", padx=scale_value(6))
+        if tooltips:
+            tip = ui_theme.ToolTip(menu, tooltips.get(var.get(), ""))
+            var.trace_add("write", lambda *_a: tip.update_text(tooltips.get(var.get(), "")))
         return var
 
     def _check_row(self, parent, row, label, initial, hint=None):
@@ -327,13 +350,19 @@ class ConfigWizard:
         self.v_threshold = self._entry_row(grid, 3, "Auto-classification threshold:",
                                            self._initial["OVERRIDE_THRESHOLD"], width=80,
                                            hint="probability 0–1 for Semi/Full-Auto")
-        self.v_workers = self._entry_row(grid, 4, "Parallel workers:",
+        self.v_fusion = self._option_row(
+            grid, 4, "Header + Image fusion:",
+            self._initial["FUSION_METHOD"] or "reliability",
+            list(FUSION_METHODS), width=140,
+            hint="how the two models' probabilities are combined",
+            tooltips=FUSION_METHOD_DESCRIPTIONS)
+        self.v_workers = self._entry_row(grid, 5, "Parallel workers:",
                                          self._initial["NUM_PARALLEL_WORKERS"], width=80)
-        self.v_dup_labels = self._check_row(grid, 5, "Allow duplicate labels within a study",
+        self.v_dup_labels = self._check_row(grid, 6, "Allow duplicate labels within a study",
                                             self._initial["ALLOW_DUPLICATE_LABELS"])
-        self.v_randomize = self._check_row(grid, 6, "Randomize study order (Manual/Semi-Auto)",
+        self.v_randomize = self._check_row(grid, 7, "Randomize study order (Manual/Semi-Auto)",
                                            self._initial["RANDOMIZE_STUDY_ORDER"])
-        self.v_seed = self._entry_row(grid, 7, "Study order seed:",
+        self.v_seed = self._entry_row(grid, 8, "Study order seed:",
                                       self._initial["STUDY_ORDER_SEED"], width=80)
 
         return {"frame": frame, "title": "Step 3 of 3 — Classification UI",
@@ -351,6 +380,9 @@ class ConfigWizard:
         self.v_cnn_slices = self._entry_row(grid, 4, "CNN slices (2.5D):", self._initial["CNN_NUM_SLICES"],
                                             width=80, hint="1 = center slice only")
         self.v_estimators = self._entry_row(grid, 5, "Random Forest trees:", self._initial["N_ESTIMATORS"], width=80)
+        self.v_semantic_model = self._entry_row(
+            grid, 9, "Text embedding model:", self._initial["SEMANTIC_MODEL_NAME"], width=220,
+            hint="sentence-transformers model (retrain header model after changing)")
         self.v_coverage = self._entry_row(grid, 6, "Analyze coverage threshold:",
                                           self._initial["ANALYZE_COVERAGE_THRESHOLD"], width=80)
         ctk.CTkLabel(grid, text="Analyze HDBSCAN method:", anchor="w").grid(
@@ -431,6 +463,10 @@ class ConfigWizard:
         include = [s.strip() for s in self.v_include.get().split(",") if s.strip()]
         exclude = [s.strip() for s in self.v_exclude.get().split(",") if s.strip()]
 
+        semantic_model = self.v_semantic_model.get().strip()
+        if not semantic_model:
+            raise ValueError("Text embedding model cannot be empty")
+
         fields = []
         for line in self.fields_box.get("1.0", "end").splitlines():
             line = line.strip()
@@ -464,6 +500,7 @@ class ConfigWizard:
             "NUM_PARALLEL_WORKERS": repr(self._parse(self.v_workers, int, "Parallel workers", 1)),
             "RANDOMIZE_STUDY_ORDER": repr(bool(self.v_randomize.get())),
             "STUDY_ORDER_SEED": repr(self._parse(self.v_seed, int, "Study order seed")),
+            "FUSION_METHOD": repr(self.v_fusion.get()),
             "IMAGE_SIZE": repr(self._parse(self.v_image_size, int, "CNN image size", 16)),
             "NUM_EPOCHS": repr(self._parse(self.v_epochs, int, "CNN epochs", 1)),
             "BATCH_SIZE": repr(self._parse(self.v_batch, int, "CNN batch size", 1)),
@@ -472,6 +509,7 @@ class ConfigWizard:
             "N_ESTIMATORS": repr(self._parse(self.v_estimators, int, "Random Forest trees", 1)),
             "ANALYZE_COVERAGE_THRESHOLD": repr(self._parse(self.v_coverage, float, "Coverage threshold", 0.0, 1.0)),
             "ANALYZE_HDBSCAN_CLUSTER_METHOD": repr(self.v_hdbscan_method.get()),
+            "SEMANTIC_MODEL_NAME": repr(semantic_model),
             "LOG_LEVEL": repr(self.v_log_level.get()),
             "DICOM_HEADER_FIELDS": "[\n" + "".join(
                 f"    ({display!r}, {attr!r}),\n" for display, attr in fields) + "]",
