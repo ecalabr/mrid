@@ -24,8 +24,13 @@ Examples:
     # Use existing hierarchy.yaml (skip scanning)
     python headless_autoclassify.py -i /data/dicoms -o /data/output --hierarchy /data/output/hierarchy.yaml
 
-    # Use custom config file
+    # Use a specific config file (by default, /data/output/config.py is used if it
+    # exists, otherwise the repository default config)
     python headless_autoclassify.py -i /data/dicoms -o /data/output --config /path/to/custom_config.py
+
+    # Config written by an older MRID version, in a script or batch job: add any
+    # settings it lacks with their default values instead of prompting
+    python headless_autoclassify.py -i /data/dicoms -o /data/output --accept-config-defaults
 """
 
 import argparse
@@ -86,7 +91,16 @@ def parse_args():
         "--config",
         type=str,
         default=None,
-        help="Path to custom config.py file (default: use repository config)"
+        help="Path to the config.py to use (default: config.py in the output directory "
+             "if it exists, otherwise the repository default config, with a warning)"
+    )
+
+    parser.add_argument(
+        "--accept-config-defaults",
+        action="store_true",
+        help="If the config file lacks settings added in newer MRID versions, add them "
+             "with their default values without prompting (for scripts and batch jobs). "
+             "Without this flag you are asked about each one when running in a terminal."
     )
 
     parser.add_argument(
@@ -123,62 +137,92 @@ def load_hierarchy_from_yaml(yaml_path):
     return hierarchy
 
 
-def load_custom_config(config_path):
+def resolve_config_path(config_arg, output_dir):
+    """The project config a run should use, or None for the repository default.
+
+    An explicit --config wins. Otherwise the project's own config.py in the
+    output directory is used, as the GUI does when a workflow starts.
+    """
+    if config_arg:
+        return config_arg
+    project_config = os.path.join(output_dir, "config.py")
+    if os.path.isfile(project_config):
+        return project_config
+    return None
+
+
+def load_custom_config(config_path, accept_defaults=False, interactive=None,
+                       input_fn=input, out=None):
     """
     Load a custom config.py file and update the config module.
-    
+
+    If the file lacks settings added in newer MRID versions, they are resolved
+    before anything runs: added with their defaults (*accept_defaults*), asked
+    about on the terminal (*interactive*; by default, when stdin is a terminal),
+    or, when neither is possible, reported with the lines to add by hand. Values
+    that are chosen are written to the config file.
+
     Args:
         config_path: Path to the custom config.py file
-        
+        accept_defaults: Add missing settings with their defaults without asking
+        interactive: Whether the user can be prompted; None detects a terminal
+            (stdin and the prompt stream must both be terminals)
+        input_fn, out: Where prompts read from and write to (for testing)
+
     Returns:
         bool: True if successful, False otherwise
     """
+    from mrid_app import config
+    from mrid_app.config_params import (find_missing_params, load_config_module,
+                                        repository_defaults, resolve_missing_params_cli)
     logger = get_logger()
-    
+
     if not os.path.exists(config_path):
         logger.error(f"Config file not found: {config_path}")
         return False
-    
+
     try:
-        from mrid_app import config
-        import importlib.util
-        
-        # Get expected globals from the repository config
-        expected_globals = [name for name in dir(config) if name.isupper() and not name.startswith('_')]
-        
-        # Load the custom config file
-        spec = importlib.util.spec_from_file_location("custom_config", config_path)
-        if spec is None or spec.loader is None:
-            logger.error(f"Could not load config file: {config_path}")
-            return False
-        
-        custom_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(custom_module)
-        
-        # Check for missing required variables
-        missing_vars = []
-        for var_name in expected_globals:
-            if not hasattr(custom_module, var_name):
-                missing_vars.append(var_name)
-        
-        if missing_vars:
-            logger.error(f"Custom config is missing required variables: {', '.join(missing_vars)}")
-            return False
-        
-        # Update the config module with values from the custom config
-        for var_name in expected_globals:
-            if hasattr(custom_module, var_name):
-                setattr(config, var_name, getattr(custom_module, var_name))
-        
-        logger.info(f"Successfully loaded custom config from: {config_path}")
-        return True
-        
+        missing = find_missing_params(config_path)
     except SyntaxError as e:
         logger.error(f"Syntax error in config file: {e}")
         return False
     except Exception as e:
         logger.error(f"Error loading config file: {e}")
         return False
+
+    added = {}
+    if missing:
+        logger.warning(f"Config {config_path} is missing setting(s) added in newer "
+                       f"MRID versions: {', '.join(missing)}")
+        if interactive is None:
+            # Prompts go to stderr; asking when either end is redirected would
+            # wait for an answer to a question the user cannot see.
+            interactive = sys.stdin.isatty() and (out or sys.stderr).isatty()
+        added = resolve_missing_params_cli(
+            config_path, missing, interactive=interactive,
+            accept_defaults=accept_defaults, input_fn=input_fn, out=out)
+        if added is None:
+            return False
+
+    try:
+        custom_module = load_config_module(config_path)
+    except Exception as e:
+        logger.error(f"Error loading config file: {e}")
+        return False
+
+    # Apply every setting. One the file still lacks (only when writing it failed
+    # and the user chose to continue) comes from the values chosen for this run.
+    for var_name in repository_defaults():
+        if hasattr(custom_module, var_name):
+            setattr(config, var_name, getattr(custom_module, var_name))
+        elif var_name in added:
+            setattr(config, var_name, added[var_name])
+        else:
+            logger.error(f"Config {config_path} is still missing {var_name}")
+            return False
+
+    logger.info(f"Successfully loaded custom config from: {config_path}")
+    return True
 
 
 def scan_dicom_directory(input_dir, output_dir, num_workers=None):
@@ -187,7 +231,8 @@ def scan_dicom_directory(input_dir, output_dir, num_workers=None):
 
     This replicates the scanning logic from the GUI.
     """
-    from mrid_app.scanner import check_dicom_batch, build_hierarchy
+    import functools
+    from mrid_app.scanner import check_dicom_batch, build_hierarchy, scan_options
     from mrid_app.utils import write_yaml_hierarchy
 
     logger = get_logger()
@@ -222,8 +267,11 @@ def scan_dicom_directory(input_dir, output_dir, num_workers=None):
         batch_size = 64
         chunks = [all_files[i:i + batch_size] for i in range(0, len(all_files), batch_size)]
 
+        # Pass the project's scan settings to the workers explicitly
+        scan_batch = functools.partial(check_dicom_batch, **scan_options())
+
         processed = 0
-        for batch_res in pool.imap_unordered(check_dicom_batch, chunks):
+        for batch_res in pool.imap_unordered(scan_batch, chunks):
             if batch_res:
                 results.extend(batch_res)
                 processed += len(batch_res)
@@ -438,18 +486,24 @@ def main():
 
     os.makedirs(args.output, exist_ok=True)
 
-    # Set up logging (file handler in output directory), then load the custom
-    # config if one was provided so config-loading messages are logged.
-    if args.config:
-        setup_logging(args.output)
-        logger = get_logger()
+    # Set up logging (file handler in output directory) first, so
+    # config-loading messages are logged.
+    setup_logging(args.output)
+    logger = get_logger()
 
-        if not load_custom_config(args.config):
-            logger.error("Failed to load custom config. Exiting.")
+    config_path = resolve_config_path(args.config, args.output)
+    if config_path:
+        if not load_custom_config(config_path, accept_defaults=args.accept_config_defaults):
+            logger.error("Failed to load config. Exiting.")
             sys.exit(1)
     else:
-        setup_logging(args.output)
-        logger = get_logger()
+        from mrid_app.config_io import get_default_config_path
+        logger.warning(
+            f"No config.py found in the output directory ({args.output}). Using the "
+            f"repository default config ({get_default_config_path()}); its TARGET_SERIES, "
+            "naming template and other settings may not match this project. Pass --config, "
+            "or create the project config with the GUI (Configuration \u2192 Run Config Wizard)."
+        )
 
     model_type = model_type_str(args.model_type)
 
@@ -458,6 +512,7 @@ def main():
     logger.info("=" * 60)
     logger.info(f"Input:      {args.input}")
     logger.info(f"Output:     {args.output}")
+    logger.info(f"Config:     {config_path or 'repository default'}")
     logger.info(f"Model:      {model_type}")
     logger.info(f"Convert:    {'Yes' if not args.no_convert else 'No'}")
     logger.info("=" * 60)

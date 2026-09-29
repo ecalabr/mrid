@@ -14,6 +14,8 @@ TEST_MODULES = [
     'tests.test_field_detection',
     'tests.test_config',
     'tests.test_config_io',
+    'tests.test_config_params',
+    'tests.test_config_controlled',
     'tests.test_analyze_coverage',
     'tests.test_processing',
     'tests.test_cnn_slices',

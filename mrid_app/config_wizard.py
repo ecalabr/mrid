@@ -88,7 +88,7 @@ class ConfigWizard:
                      "IMAGE_SIZE", "NUM_EPOCHS", "BATCH_SIZE", "LR",
                      "CNN_NUM_SLICES", "N_ESTIMATORS", "DICOM_HEADER_FIELDS",
                      "ANALYZE_COVERAGE_THRESHOLD", "ANALYZE_HDBSCAN_CLUSTER_METHOD",
-                     "LOG_LEVEL"]:
+                     "SEMANTIC_MODEL_NAME", "LOG_LEVEL"]:
             values[name] = get(name)
         return values
 
@@ -380,6 +380,9 @@ class ConfigWizard:
         self.v_cnn_slices = self._entry_row(grid, 4, "CNN slices (2.5D):", self._initial["CNN_NUM_SLICES"],
                                             width=80, hint="1 = center slice only")
         self.v_estimators = self._entry_row(grid, 5, "Random Forest trees:", self._initial["N_ESTIMATORS"], width=80)
+        self.v_semantic_model = self._entry_row(
+            grid, 9, "Text embedding model:", self._initial["SEMANTIC_MODEL_NAME"], width=220,
+            hint="sentence-transformers model (retrain header model after changing)")
         self.v_coverage = self._entry_row(grid, 6, "Analyze coverage threshold:",
                                           self._initial["ANALYZE_COVERAGE_THRESHOLD"], width=80)
         ctk.CTkLabel(grid, text="Analyze HDBSCAN method:", anchor="w").grid(
@@ -460,6 +463,10 @@ class ConfigWizard:
         include = [s.strip() for s in self.v_include.get().split(",") if s.strip()]
         exclude = [s.strip() for s in self.v_exclude.get().split(",") if s.strip()]
 
+        semantic_model = self.v_semantic_model.get().strip()
+        if not semantic_model:
+            raise ValueError("Text embedding model cannot be empty")
+
         fields = []
         for line in self.fields_box.get("1.0", "end").splitlines():
             line = line.strip()
@@ -502,6 +509,7 @@ class ConfigWizard:
             "N_ESTIMATORS": repr(self._parse(self.v_estimators, int, "Random Forest trees", 1)),
             "ANALYZE_COVERAGE_THRESHOLD": repr(self._parse(self.v_coverage, float, "Coverage threshold", 0.0, 1.0)),
             "ANALYZE_HDBSCAN_CLUSTER_METHOD": repr(self.v_hdbscan_method.get()),
+            "SEMANTIC_MODEL_NAME": repr(semantic_model),
             "LOG_LEVEL": repr(self.v_log_level.get()),
             "DICOM_HEADER_FIELDS": "[\n" + "".join(
                 f"    ({display!r}, {attr!r}),\n" for display, attr in fields) + "]",

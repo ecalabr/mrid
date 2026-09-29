@@ -6,7 +6,6 @@ import pydicom
 from PIL import Image
 from .header import get_series_probabilities, get_series_probabilities_batch
 from .cnn import prepare_cnn_input_data
-from .config import DICOM_HEADER_FIELDS
 from .fusion import fuse_probabilities, get_configured_method, load_reliability, reliability_weights
 from .utils import (safe_get_dicom_attribute, get_nifti_prefix, extract_study_id_from_path,
                      get_study_dir_name, get_study_csv_name, get_classified_outputs_dir,
@@ -164,7 +163,8 @@ def background_conversion_worker(*args, convert=True, **kwargs):
     try:
         # Build fieldnames dynamically from configuration
         # Start with Classification and Path, then add all configured DICOM header fields
-        fieldnames = ["Classification", "Path"] + [display_name for display_name, _ in DICOM_HEADER_FIELDS]
+        header_fields = list(_cfg('DICOM_HEADER_FIELDS', []))
+        fieldnames = ["Classification", "Path"] + [display_name for display_name, _ in header_fields]
 
         with open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
@@ -192,7 +192,7 @@ def background_conversion_worker(*args, convert=True, **kwargs):
                     "Path": first_path
                 }
                 # Add all configured DICOM header fields
-                for display_name, dicom_attr in DICOM_HEADER_FIELDS:
+                for display_name, dicom_attr in header_fields:
                     attributes_dict[display_name] = safe_get_dicom_attribute(ds, dicom_attr)
 
                 row = [attributes_dict.get(field, "") for field in fieldnames]

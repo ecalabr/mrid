@@ -346,10 +346,28 @@ Everywhere a center-slice thumbnail is shown (classification, verification, and 
 
 ```bash
 mrid auto -i /data/dicoms -o /data/output
-mrid auto --help   # all options, including --config
+mrid auto -i /data/dicoms -o /data/output --config /path/to/other/config.py
+mrid auto --help   # all options
 ```
 
 (Equivalent to `python headless_autoclassify.py ...`, which still works.)
+
+**Which config is used.** `--config` if given; otherwise the project's own `config.py` in the output directory, as in the GUI. If neither exists, `mrid auto` logs a warning and uses the repository default config.
+
+**Configs from older MRID versions.** If the config file lacks settings added in a newer MRID version, `mrid auto` stops before doing any work and, for each missing setting, shows what it does, which values are valid, and its default. You can:
+
+- **Accept the default** (press Enter)
+- **Enter a value**, which is validated (you are asked again until it is valid; a blank line goes back)
+- **Accept the defaults for all remaining** settings
+- **Cancel**, which leaves the file unchanged and prints the lines to paste into it yourself
+
+After a final confirmation the chosen values are appended to the config file as a commented block, leaving everything already in it untouched, and the run continues. Settings that depend on the project are suggested accordingly: `PREFER_3D` is keyed to the project's own `TARGET_SERIES`.
+
+Scripts and batch jobs cannot answer prompts. Without a terminal, `mrid auto` exits with the same copy-paste instructions; add `--accept-config-defaults` to add the defaults automatically instead:
+
+```bash
+mrid auto -i /data/dicoms -o /data/output --accept-config-defaults
+```
 
 ---
 
@@ -371,7 +389,7 @@ The wizard walks you through generating or editing a project config without touc
 #### Pages:
 1. **Output naming** (study name template, thumbnail format/quality)
 2. **Classification & DICOM filtering** (target series with per-series 3D preference, ImageType include/exclude filters, stacked-series handling)
-3. **Classification UI** (grid size, thresholds, the [Header + Image fusion rule](#header--image-fusion), ordering). An **Advanced Settings** page covers model hyperparameters, the DICOM header field list, the Analyze coverage threshold and HDBSCAN method, and the log level. Saving rewrites the config file while preserving its comments. In Analyze mode the target-series section is locked, since Analyze determines the series itself.
+3. **Classification UI** (grid size, thresholds, the [Header + Image fusion rule](#header--image-fusion), ordering). An **Advanced Settings** page covers model hyperparameters, the [text embedding model](#text-embedding-model), the DICOM header field list, the Analyze coverage threshold and HDBSCAN method, and the log level. Saving rewrites the config file while preserving its comments. In Analyze mode the target-series section is locked, since Analyze determines the series itself.
 
 <p align="center">
   <img src="docs/images/config_wizard_naming.png" alt="Config wizard step 1: output naming" width="640">
@@ -397,7 +415,7 @@ The wizard walks you through generating or editing a project config without touc
 | **Reload Config File** | Re-read the active config after manual edits |
 | **Add Missing Parameters** | Add parameters newer MRID versions introduced to an older config, with editable suggested defaults |
 
-When a workflow starts, a `config.py` already in the output directory is loaded automatically. Configs from older MRID versions that lack newer settings load with a warning; missing settings use defaults.
+When a workflow starts, a `config.py` already in the output directory is loaded automatically. If it comes from an older MRID version and lacks newer settings, MRID lists them with suggested defaults (hover a name for what it does). Edit any value, then **Add to Config** validates each value and appends them to the file, or **Skip** to use the defaults for this session only. The same check runs for the headless CLI (see [Headless Batch Classification](#headless-batch-classification)).
 
 ### Configuration Reference
 
@@ -434,14 +452,14 @@ PREFER_3D = True
 When a label prefers 3D and several series exceed `OVERRIDE_THRESHOLD` for it, a 3D acquisition (`MRAcquisitionType == '3D'`) is selected even if a 2D candidate has a higher probability. Labels missing from the dict default to `False`.
 
 ```python
-INCLUDE_TYPES = ["ORIGINAL", "PRIMARY"]   # ImageType must contain one of these
-EXCLUDE_TYPES = ["DERIVED", "SECONDARY", "ADC", "DIFFUSION", "LOCALIZER", "MIP", "MPR"]
+INCLUDE_TYPES = ["ORIGINAL", "PRIMARY"]   # ImageType must contain all of these
+EXCLUDE_TYPES = ["DERIVED", "SECONDARY", "ADC", "DIFFUSION", "LOCALIZER", "MIP", "MPR"]  # ...and none of these
 IGNORE_MULTIPLE_ORIENTATIONS = True       # skip series mixing orientations
 SEPARATE_STACKED_SERIES = True            # split multi-volume series
 MAX_SPLIT = 5                             # max splits per stacked series
 ```
 Use these parameters to pre-filter series before even attempting to classify.
-- Primary filtering is base don the `ImageType` DICOM field, with both `INCLUDE_TYPES` and `EXCLUDE_TYPES` options.
+- Primary filtering is based on the `ImageType` DICOM field: an image is kept only if its `ImageType` contains every value in `INCLUDE_TYPES` and none in `EXCLUDE_TYPES` (matching ignores case; an empty list imposes no condition). Filtering happens when DICOMs are scanned, so a change applies to the next scan of the input folder, not to a `hierarchy.yaml` built earlier.
 - `IGNORE_MULTIPLE_ORIENTATIONS` excludes or include series with multiple different image orientations (e.g. 3-plane localizer images or angled axial images of the spine).
 - `SEPARATE_STACKED_SERIES` optionally splits multi-volume series (e.g. DWI/B0 or multi-phase postcontrast imaging) into separate series per volume.
 - `MAX_SPLIT` limits how many volumes are split off a series (when `SEPARATE_STACKED_SERIES` is True). Series exceeding this number are left intact (e.g. a stacked 60-direction DTI scan).
@@ -579,6 +597,15 @@ CNN_NUM_SLICES = 1    # 1 = 2D (center slice), >1 = 2.5D
 N_ESTIMATORS = 400    # number of trees
 ```
 
+#### Text embedding model
+
+```python
+SEMANTIC_MODEL_NAME = 'all-MiniLM-L6-v2'
+```
+The [sentence-transformers](https://www.sbert.net) model that embeds free-text header fields (e.g. `SeriesDescription`) for the header model. Use any sentence-transformers model on the [Hugging Face Hub](https://huggingface.co/models?library=sentence-transformers), such as `'all-mpnet-base-v2'` (larger, slower) or a multilingual model for non-English series descriptions, or the path to a local model folder. It is downloaded on first use, so an offline machine needs the model in its Hugging Face cache or as a local folder. If the model cannot be loaded, training stops with an error instead of silently leaving out the text features.
+
+A trained header model always classifies with the embedding model it was trained with, because a different model produces different features. After changing `SEMANTIC_MODEL_NAME`, retrain the header model; until then MRID logs a warning and keeps using the old one.
+
 #### DICOM header fields
 
 ```python
@@ -590,6 +617,8 @@ DICOM_HEADER_FIELDS = [
 ]
 ```
 The header model's input features. Field types (numerical / array / categorical / free text) are detected automatically and encoded appropriately; for example, free-text fields use semantic sentence embeddings. When you add fields, the next training run offers to back-fill them into existing classification CSVs from the original DICOMs.
+
+A trained header model records the fields it was trained on and always classifies with those, since its features must match. After changing `DICOM_HEADER_FIELDS`, retrain the header model; until then MRID logs a warning listing the difference. (Models trained before MRID recorded this take their fields from their saved `field_types.joblib`.)
 
 ##### DICOM header field encoding parameters
 ```python

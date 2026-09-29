@@ -1349,10 +1349,13 @@ class MainApp:
                     batch_size = 64
                     chunks = [all_files[i:i+batch_size] for i in range(0, len(all_files), batch_size)]
 
-                    from .scanner import check_dicom_batch
+                    import functools
+                    from .scanner import check_dicom_batch, scan_options
+                    # Pass the project's scan settings to the workers explicitly
+                    scan_batch = functools.partial(check_dicom_batch, **scan_options())
 
                     processed = 0
-                    for batch_res in pool.imap_unordered(check_dicom_batch, chunks):
+                    for batch_res in pool.imap_unordered(scan_batch, chunks):
                         # batch_res is a list of per-file results (or None entries)
                         if batch_res:
                             results.extend(batch_res)
@@ -2710,21 +2713,8 @@ class MainApp:
             tuple: (success: bool, missing_vars: list, error_msg: str)
         """
         try:
-            # Get expected globals from the repository config
-            expected_globals = self._get_config_globals()
-
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("temp_config", config_path)
-            if spec is None or spec.loader is None:
-                return False, [], "Could not load config file"
-
-            temp_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(temp_module)
-
-            missing_vars = []
-            for var_name in expected_globals:
-                if not hasattr(temp_module, var_name):
-                    missing_vars.append(var_name)
+            from .config_params import find_missing_params
+            missing_vars = find_missing_params(config_path)
 
             if missing_vars:
                 return False, missing_vars, f"Missing required variables: {', '.join(missing_vars)}"
@@ -2779,6 +2769,16 @@ class MainApp:
                 if hasattr(temp_module, var_name):
                     setattr(config, var_name, getattr(temp_module, var_name))
 
+            # A setting this file lacks takes the repository default. The config
+            # module can't be relied on for that: if another project's config was
+            # loaded earlier in the session, it still holds that project's value.
+            if missing_vars:
+                from .config_params import project_defaults
+                defaults = project_defaults(config_path)
+                for var_name in missing_vars:
+                    if var_name in defaults:
+                        setattr(config, var_name, defaults[var_name])
+
             # Update local globals that are imported directly
             global TARGET_SERIES, NUM_COLUMNS, NUM_ROWS, ALLOW_DUPLICATE_LABELS, THUMBNAIL_SCALE_FACTOR
             TARGET_SERIES = sanitize_target_series(config.TARGET_SERIES)
@@ -2811,20 +2811,19 @@ class MainApp:
         """
         Prompt the user to add parameters that *config_path* is missing relative
         to the current MRID version, with editable suggested defaults. On accept,
-        the chosen values are written into the config file and it is reloaded.
+        the values are validated, written into the config file, and it is reloaded.
         """
-        import ast
+        from .config_params import (add_params_to_config, param_descriptions,
+                                    param_hint, parse_value, project_defaults)
 
-        # Suggested default for each missing param = the repository default
-        # (config module still holds it, since the loaded file didn't set it).
-        rows = []  # (name, default_repr)
-        for name in missing_vars:
-            try:
-                rows.append((name, repr(getattr(config, name))))
-            except Exception:
-                rows.append((name, "None"))
+        # Suggest the repository default, read fresh from the repository config
+        # (the config module may still hold a previously loaded project's value)
+        # and adapted to this project, e.g. PREFER_3D keyed by its own labels.
+        defaults = project_defaults(config_path)
+        rows = [(name, repr(defaults.get(name))) for name in missing_vars]
         if not rows:
             return
+        descriptions = param_descriptions()
 
         dlg = ctk.CTkToplevel(self.master)
         dlg.title("Add New Config Parameters")
@@ -2835,8 +2834,11 @@ class MainApp:
             dlg,
             text=("This config file is missing parameters available in this "
                   "version of MRID.\nReview the suggested defaults below (edit "
-                  "if desired) and click \"Add to Config\" to write them into:\n"
-                  f"{config_path}"),
+                  "if desired; hover a name for what it does) and click \"Add to "
+                  "Config\" to write them into:\n"
+                  f"{config_path}\n\n"
+                  "\"Skip\" uses the defaults for this session only; you can add "
+                  "them later with Configuration \u2192 Add Missing Parameters."),
             justify="left", wraplength=scale_value(560)
         ).pack(padx=scale_value(16), pady=(scale_value(14), scale_value(8)), anchor="w")
 
@@ -2844,8 +2846,11 @@ class MainApp:
         scroll.pack(fill="both", expand=True, padx=scale_value(16))
         entry_vars = {}
         for r, (name, default_repr) in enumerate(rows):
-            ctk.CTkLabel(scroll, text=name, anchor="w").grid(
-                row=r, column=0, sticky="w", padx=scale_value(4), pady=scale_value(4))
+            label = ctk.CTkLabel(scroll, text=name, anchor="w")
+            label.grid(row=r, column=0, sticky="w", padx=scale_value(4), pady=scale_value(4))
+            tip = descriptions.get(name, "")
+            tip = (tip + "\n\n" if tip else "") + f"Valid values: {param_hint(name)}"
+            _ToolTip(label, tip)
             var = tk.StringVar(value=default_repr)
             ctk.CTkEntry(scroll, textvariable=var, width=scale_value(320)).grid(
                 row=r, column=1, sticky="w", padx=scale_value(6), pady=scale_value(4))
@@ -2856,38 +2861,32 @@ class MainApp:
         btns.pack(pady=scale_value(14))
 
         def on_add():
-            # Validate every value is a safe Python literal before writing.
-            replacements = {}
+            # Validate every value against that parameter's rules before writing.
+            values = {}
             for name, var in entry_vars.items():
                 text = var.get().strip()
                 try:
-                    ast.literal_eval(text)
-                except Exception as e:
+                    values[name] = parse_value(name, text)
+                except ValueError as e:
                     messagebox.showwarning(
                         "Invalid Value",
-                        f"The value for {name} is not a valid Python literal:\n\n{text}\n\n{e}",
+                        f"{name} {e}.\n\nValid values: {param_hint(name)}",
                         parent=dlg
                     )
                     return
-                replacements[name] = text
             try:
-                with open(config_path, "r", encoding="utf-8") as fh:
-                    source = fh.read()
-                new_source = _rewrite_config_assignments(source, replacements)
-                with open(config_path, "w", encoding="utf-8") as fh:
-                    fh.write(new_source)
+                add_params_to_config(config_path, values)
             except Exception as e:
                 messagebox.showerror("Write Failed",
                                      f"Could not update the config file:\n{e}", parent=dlg)
                 return
             dlg.grab_release()
             dlg.destroy()
-            logger.info(f"Added missing parameters to {config_path}: {list(replacements)}")
             # Reload so the new values take effect (no re-prompt).
             self._load_config_from_file(config_path, prompt_missing=False)
             messagebox.showinfo(
                 "Config Updated",
-                f"Added {len(replacements)} parameter(s) to:\n{config_path}",
+                f"Added {len(values)} parameter(s) to:\n{config_path}",
                 parent=self.master
             )
 
@@ -3191,11 +3190,14 @@ class MainApp:
                 pool = mp.Pool(get_num_parallel_workers())
                 results = []
                 try:
-                    from .scanner import check_dicom_batch
+                    import functools
+                    from .scanner import check_dicom_batch, scan_options
+                    # Pass the project's scan settings to the workers explicitly
+                    scan_batch = functools.partial(check_dicom_batch, **scan_options())
                     batch_size = 64
                     chunks = [all_files[i:i + batch_size] for i in range(0, len(all_files), batch_size)]
                     processed = 0
-                    for batch_res in pool.imap_unordered(check_dicom_batch, chunks):
+                    for batch_res in pool.imap_unordered(scan_batch, chunks):
                         if batch_res:
                             results.extend(batch_res)
                             processed += len(batch_res)
