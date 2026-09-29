@@ -2,7 +2,7 @@
 
 A GUI application for automated classification and organization of MRI DICOM series using machine learning models.
 
-[![Version 2.0](https://img.shields.io/badge/version-2.0-brightgreen.svg)](https://github.com/ecalabr/mrid)
+[![Version 2.1](https://img.shields.io/badge/version-2.1-brightgreen.svg)](https://github.com/ecalabr/mrid)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
