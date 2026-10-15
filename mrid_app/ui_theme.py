@@ -8,8 +8,11 @@ All MRID windows share:
 - Deterministic cascaded placement of child windows relative to their parent.
 """
 
+import collections
 import sys
+import threading
 import tkinter as tk
+import tkinter.font
 
 import customtkinter as ctk
 
@@ -346,6 +349,67 @@ def _use_proportional_fallback_font(window):
                 return
     except Exception:
         pass
+
+
+# ── Tk object finalizers run on the main thread only ───────────────────────
+#
+# Tk variables, fonts and images release their Tcl counterpart in __del__. When
+# one sits in a reference cycle, Python's cyclic garbage collector frees it, and
+# that can happen in any thread. A Tcl call from a background thread waits for
+# the main thread to service it; if the main thread is at that moment waiting on
+# the background thread (e.g. in Thread.start(), which waits for the new thread
+# to begin), neither can proceed and the app hangs. So off the main thread these
+# finalizers are queued instead, and the main thread runs them from the event
+# loop shortly after.
+
+_deferred_finalizers = collections.deque()
+_finalizer_guard_installed = False
+
+
+def _main_thread_finalizer(original):
+    def __del__(self):
+        # get_ident(), not current_thread(): this can run while a thread is
+        # still starting, before threading has registered it.
+        if threading.get_ident() == threading.main_thread().ident:
+            original(self)
+        else:
+            _deferred_finalizers.append((original, self))   # finalized later
+    __del__.__wrapped__ = original
+    return __del__
+
+
+def _run_deferred_finalizers(root):
+    while _deferred_finalizers:
+        original, obj = _deferred_finalizers.popleft()
+        try:
+            original(obj)
+        except Exception:
+            pass
+    try:
+        root.after(500, _run_deferred_finalizers, root)
+    except Exception:
+        pass   # root destroyed
+
+
+def guard_tk_finalizers(root):
+    """Make Tk variables, fonts and images release their Tcl resources on the
+    main thread only (see the note above). Call once with the application's
+    root window; later calls are no-ops."""
+    global _finalizer_guard_installed
+    if _finalizer_guard_installed:
+        return
+    classes = [tk.Variable, tk.Image, tkinter.font.Font]
+    try:
+        from PIL import ImageTk
+        classes += [ImageTk.PhotoImage, ImageTk.BitmapImage]
+    except Exception:
+        pass
+    for cls in classes:
+        original = cls.__dict__.get("__del__")
+        if original is not None and not hasattr(original, "__wrapped__"):
+            cls.__del__ = _main_thread_finalizer(original)
+    _finalizer_guard_installed = True
+    root.after(500, _run_deferred_finalizers, root)
 
 
 def init_appearance():

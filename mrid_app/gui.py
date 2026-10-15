@@ -351,6 +351,7 @@ class ProgressGUI:
 class MainApp:
     def __init__(self, master):
         self.master = master
+        ui_theme.guard_tk_finalizers(master)
         master.title("MRID — DICOM Classification Tool")
         # Apply the saved user UI-scale before any widgets are built so they are
         # all created at the chosen scale.
