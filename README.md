@@ -43,6 +43,7 @@ Described in Fishman & Calabrese, [*Automated MRI Series Classification Across H
 - [Testing](#testing)
 - [Contributing](#contributing)
 - [License](#license)
+- [Citation](#citation)
 
 ---
 
