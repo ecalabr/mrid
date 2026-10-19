@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use MRID in your research, please cite the article below."
+title: "MRID: Medical Imaging DICOM Classification Tool"
+type: software
+version: "2.1"
+license: MIT
+repository-code: "https://github.com/ecalabr/mrid"
+authors:
+  - family-names: Calabrese
+    given-names: Evan
+preferred-citation:
+  type: article
+  title: "Automated MRI Series Classification Across Heterogeneous Datasets Using Limited Manual Annotation"
+  authors:
+    - family-names: Fishman
+      given-names: Ryan
+    - family-names: Calabrese
+      given-names: Evan
+  journal: "Journal of Imaging Informatics in Medicine"
+  year: 2026
+  doi: "10.1007/s10278-026-02425-w"
+  url: "https://doi.org/10.1007/s10278-026-02425-w"

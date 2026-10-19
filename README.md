@@ -2,9 +2,12 @@
 
 A GUI application for automated classification and organization of MRI DICOM series using machine learning models.
 
+Described in Fishman & Calabrese, [*Automated MRI Series Classification Across Heterogeneous Datasets Using Limited Manual Annotation*](https://doi.org/10.1007/s10278-026-02425-w), Journal of Imaging Informatics in Medicine (2026).
+
 [![Version 2.1](https://img.shields.io/badge/version-2.1-brightgreen.svg)](https://github.com/ecalabr/mrid)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![DOI](https://img.shields.io/badge/DOI-10.1007%2Fs10278--026--02425--w-blue.svg)](https://doi.org/10.1007/s10278-026-02425-w)
 
 <p align="center">
   <img src="docs/images/main_window.png" alt="MRID main window" width="860">
@@ -730,14 +733,18 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 ## Citation
 
-A manuscript describing MRID is under review at the *Journal of Imaging Informatics in Medicine*; check back soon for the full citation. Until then, please cite:
+If you use MRID in your research, please cite:
+
+> Fishman R, Calabrese E. Automated MRI Series Classification Across Heterogeneous Datasets Using Limited Manual Annotation. *Journal of Imaging Informatics in Medicine*. 2026. [doi:10.1007/s10278-026-02425-w](https://doi.org/10.1007/s10278-026-02425-w)
 
 ```bibtex
-@software{mrid2026,
-  title={MRID: Medical Imaging DICOM Classification Tool},
-  author={Evan Calabrese},
+@article{fishman2026mrid,
+  title={Automated {MRI} Series Classification Across Heterogeneous Datasets Using Limited Manual Annotation},
+  author={Fishman, Ryan and Calabrese, Evan},
+  journal={Journal of Imaging Informatics in Medicine},
   year={2026},
-  url={https://github.com/ecalabr/mrid}
+  doi={10.1007/s10278-026-02425-w},
+  url={https://doi.org/10.1007/s10278-026-02425-w}
 }
 ```
 
