@@ -17,9 +17,9 @@ PREFER_3D = {
     "T1c": True,
     "Other": False
 }
-# DICOM ImageType filtering (ORIGINAL/DERIVED are judged per series: one ORIGINAL image makes the whole series ORIGINAL)
-INCLUDE_TYPES = ["ORIGINAL", "PRIMARY"]  # keep only images whose ImageType contains all of these
-EXCLUDE_TYPES = ["DERIVED", "SECONDARY", "ADC", "DIFFUSION", "LOCALIZER", "MIP", "MPR"]  # skip images whose ImageType contains any of these
+# DICOM ImageType filtering. A series is kept whole if at least one of its images passes.
+INCLUDE_TYPES = ["ORIGINAL", "PRIMARY"]  # an image passes if its ImageType contains all of these
+EXCLUDE_TYPES = ["DERIVED", "SECONDARY", "ADC", "DIFFUSION", "LOCALIZER", "MIP", "MPR"]  # an image passes only if its ImageType contains none of these
 IGNORE_MULTIPLE_ORIENTATIONS = True  # skip series whose images have more than one orientation (e.g. localizers)
 SEPARATE_STACKED_SERIES = True  # split series that repeat slice positions (multi-echo, dynamic) into separate series
 MAX_SPLIT = 5  # max number of splits for stacked series

@@ -192,8 +192,7 @@ def test_headless_output_config_gets_the_missing_settings_check():
 def _scan(paths, **options):
     """Per-file scan plus the per-series step, as the callers run them."""
     from mrid_app.scanner import check_dicom_batch, select_series_images
-    return select_series_images(check_dicom_batch(paths, **options),
-                                options.get("include_types"), options.get("exclude_types"))
+    return select_series_images(check_dicom_batch(paths, **options))
 
 
 def test_image_type_filters_follow_the_config():
@@ -223,14 +222,17 @@ def test_explicit_options_override_the_config():
 
 
 def _mixed_series(folder):
-    """Three series of four slices: ORIGINAL with one DERIVED slice, ORIGINAL
-    with one DERIVED\\SECONDARY slice, and all DERIVED. Returns {name: [paths]}."""
+    """Four-slice series that mix image types. Returns {name: [paths]}."""
     from pydicom.uid import generate_uid
     study = generate_uid()
+    orig = ["ORIGINAL", "PRIMARY", "M"]
     layouts = {
-        "mixed": [["ORIGINAL", "PRIMARY", "M"]] * 3 + [["DERIVED", "PRIMARY", "M"]],
-        "mixed_secondary": [["ORIGINAL", "PRIMARY", "M"]] * 3 + [["DERIVED", "SECONDARY", "M"]],
+        "mixed_derived": [orig] * 3 + [["DERIVED", "PRIMARY", "M"]],
+        "mixed_secondary": [orig] * 3 + [["DERIVED", "SECONDARY", "M"]],
+        "mixed_localizer": [orig] * 3 + [["ORIGINAL", "PRIMARY", "LOCALIZER"]],
         "all_derived": [["DERIVED", "PRIMARY", "M"]] * 4,
+        "all_failing": [["DERIVED", "PRIMARY", "M"], ["ORIGINAL", "SECONDARY", "M"],
+                        ["ORIGINAL", "PRIMARY", "LOCALIZER"], ["ORIGINAL", "PRIMARY", "MPR"]],
     }
     out = {}
     for name, types in layouts.items():
@@ -245,26 +247,26 @@ def _kept_per_series(series, results):
     return {name: sum(p in by_path for p in paths) for name, paths in series.items()}
 
 
-def test_series_with_any_original_slice_is_kept_whole():
+def test_series_is_kept_whole_if_any_image_passes():
     with _tmpdir() as tmp, _preserve_config_module():
         series = _mixed_series(tmp)
         paths = [p for ps in series.values() for p in ps]
-        # Defaults: ORIGINAL and PRIMARY required, DERIVED and SECONDARY excluded
+        # Defaults: ORIGINAL and PRIMARY required; DERIVED, SECONDARY, LOCALIZER, MPR... excluded
         assert _kept_per_series(series, _scan(paths)) == {
-            "mixed": 4,             # the DERIVED slice stays with its series
-            "mixed_secondary": 3,   # SECONDARY is still checked per image
+            "mixed_derived": 4, "mixed_secondary": 4, "mixed_localizer": 4,
             "all_derived": 0,
+            "all_failing": 0,   # each image fails for a different reason
         }
-        # A series with an ORIGINAL slice counts as ORIGINAL for every filter
         assert _kept_per_series(series, _scan(paths, include_types=["DERIVED"], exclude_types=[])) == {
-            "mixed": 0, "mixed_secondary": 0, "all_derived": 4,
+            "mixed_derived": 4, "mixed_secondary": 4, "mixed_localizer": 0,
+            "all_derived": 4, "all_failing": 4,
         }
         assert _kept_per_series(series, _scan(paths, include_types=[], exclude_types=["ORIGINAL"])) == {
-            "mixed": 0, "mixed_secondary": 0, "all_derived": 4,
+            "mixed_derived": 4, "mixed_secondary": 4, "mixed_localizer": 0,
+            "all_derived": 4, "all_failing": 4,
         }
-        # Without ORIGINAL/DERIVED filters nothing changes
         assert _kept_per_series(series, _scan(paths, include_types=[], exclude_types=[])) == {
-            "mixed": 4, "mixed_secondary": 4, "all_derived": 4,
+            name: 4 for name in series
         }
 
 
@@ -274,13 +276,11 @@ def test_mixed_series_is_kept_whole_across_worker_batches():
     from mrid_app.scanner import check_dicom_batch, scan_options, select_series_images
     with _tmpdir() as tmp, _preserve_config_module():
         series = _mixed_series(tmp)
-        paths = series["mixed"]
-        options = scan_options()
+        paths = series["mixed_derived"]
         results = []
         for batch in ([paths[-1]], paths[:-1]):   # DERIVED slice scanned on its own
-            results.extend(check_dicom_batch(batch, **options))
-        kept = select_series_images(results, options["include_types"], options["exclude_types"])
-        assert sorted(r["path"] for r in kept) == sorted(paths)
+            results.extend(check_dicom_batch(batch, **scan_options()))
+        assert sorted(r["path"] for r in select_series_images(results)) == sorted(paths)
 
 
 def test_scan_options_reach_spawned_worker_processes():
@@ -295,11 +295,10 @@ def test_scan_options_reach_spawned_worker_processes():
         ctx = mp.get_context("spawn")
         with ctx.Pool(1) as pool:
             unconfigured = pool.map(check_dicom_batch, [paths])[0]
-            options = scan_options()
-            configured = pool.map(functools.partial(check_dicom_batch, **options), [paths])[0]
-        assert _kept(files, unconfigured) == ["original"], "premise: the worker sees defaults"
-        configured = select_series_images(configured, options["include_types"], options["exclude_types"])
-        assert _kept(files, configured) == ["derived"]
+            configured = pool.map(functools.partial(check_dicom_batch, **scan_options()), [paths])[0]
+        assert _kept(files, select_series_images(unconfigured)) == ["original"], \
+            "premise: the worker sees defaults"
+        assert _kept(files, select_series_images(configured)) == ["derived"]
 
 
 def test_series_checks_follow_the_config():

@@ -268,8 +268,7 @@ def scan_dicom_directory(input_dir, output_dir, num_workers=None):
         chunks = [all_files[i:i + batch_size] for i in range(0, len(all_files), batch_size)]
 
         # Pass the project's scan settings to the workers explicitly
-        options = scan_options()
-        scan_batch = functools.partial(check_dicom_batch, **options)
+        scan_batch = functools.partial(check_dicom_batch, **scan_options())
 
         processed = 0
         for batch_res in pool.imap_unordered(scan_batch, chunks):
@@ -291,7 +290,7 @@ def scan_dicom_directory(input_dir, output_dir, num_workers=None):
 
     print()  # Newline after progress
 
-    dicom_records = select_series_images(results, options["include_types"], options["exclude_types"])
+    dicom_records = select_series_images(results)
     logger.info(f"Identified {len(dicom_records)} valid DICOM files.")
 
     if not dicom_records:
