@@ -457,7 +457,7 @@ MAX_SPLIT = 5                             # max splits per stacked series
 ```
 Use these parameters to pre-filter series before even attempting to classify.
 - Primary filtering is based on the `ImageType` DICOM field: an image is kept only if its `ImageType` contains every value in `INCLUDE_TYPES` and none in `EXCLUDE_TYPES` (matching ignores case; an empty list imposes no condition). Filtering happens when DICOMs are scanned, so a change applies to the next scan of the input folder, not to a `hierarchy.yaml` built earlier.
-- `IGNORE_MULTIPLE_ORIENTATIONS` excludes or include series with multiple different image orientations (e.g. 3-plane localizer images or angled axial images of the spine).
+- `IGNORE_MULTIPLE_ORIENTATIONS` excludes or include series with multiple different image orientations (e.g. 3-plane localizer images or angled axial images of the spine). Orientations are compared with a small tolerance (`1e-4` per direction cosine, about 0.006°), so the tiny slice-to-slice variation some scanners write in `ImageOrientationPatient` does not count as a different orientation.
 - `SEPARATE_STACKED_SERIES` optionally splits multi-volume series (e.g. DWI/B0 or multi-phase postcontrast imaging) into separate series per volume.
 - `MAX_SPLIT` limits how many volumes are split off a series (when `SEPARATE_STACKED_SERIES` is True). Series exceeding this number are left intact (e.g. a stacked 60-direction DTI scan).
 

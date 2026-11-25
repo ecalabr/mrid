@@ -366,6 +366,33 @@ def extract_and_save_center_slice(file_records, thumbnail_dir, mrn, study_uid, s
         return None
 
 
+#: Largest difference in any ImageOrientationPatient direction cosine still
+#: treated as the same orientation (1e-4 is about 0.006 degrees). Some scanners
+#: write values that vary from slice to slice in the 8th-10th decimal place; a
+#: genuinely different plane differs by orders of magnitude more.
+ORIENTATION_TOLERANCE = 1e-4
+
+
+def has_multiple_orientations(file_records, tolerance=ORIENTATION_TOLERANCE):
+    """True if the records' ImageOrientationPatient values describe more than one
+    orientation, comparing each against the first within *tolerance*. Records
+    with a missing or unreadable orientation are ignored."""
+    reference = None
+    for rec in file_records:
+        iop = rec.get('image_orientation')
+        if not iop:
+            continue
+        try:
+            vec = np.asarray([float(v) for v in iop], dtype=np.float64)
+        except (TypeError, ValueError):
+            continue
+        if reference is None:
+            reference = vec
+        elif vec.shape != reference.shape or np.max(np.abs(vec - reference)) > tolerance:
+            return True
+    return False
+
+
 def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thumbnail_progress_callback=None):
     # Sort globally once
     dicom_records.sort(key=itemgetter(
@@ -417,8 +444,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
 
         # 1. VALIDATION: Orientation
         if config.IGNORE_MULTIPLE_ORIENTATIONS:
-            unique_orientations = {tuple(f['image_orientation']) for f in files if f['image_orientation']}
-            if len(unique_orientations) > 1:
+            if has_multiple_orientations(files):
                 logger.warning(f"Skipping series {first_rec['series_desc']} for patient {mrn}: Multiple orientations")
                 try:
                     if progress_callback:

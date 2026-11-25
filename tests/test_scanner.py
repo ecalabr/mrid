@@ -250,3 +250,109 @@ def test_extract_center_slice_falls_back_without_positions():
         os.makedirs(tdir)
         path = extract_and_save_center_slice(records, tdir, "MRN", "ST", "SE")
         assert path is not None and os.path.exists(path)
+
+
+# ── IGNORE_MULTIPLE_ORIENTATIONS: compare orientations within a tolerance ────
+
+# Values as GE writes them: the same axial orientation, varying slice to slice
+# around the 8th-10th decimal place.
+_NOISY_AXIAL = [
+    ["0.9999528786255", "-0.0097071686387", "0", "0.0097071686387", "0.9999528786255", "0"],
+    ["0.9999528786198", "-0.0097071686412", "0", "0.0097071686412", "0.9999528786198", "0"],
+    ["0.9999528786301", "-0.0097071686355", "0", "0.0097071686355", "0.9999528786301", "0"],
+]
+_AXIAL = [1, 0, 0, 0, 1, 0]
+_SAGITTAL = [0, 1, 0, 0, 0, -1]
+_CORONAL = [1, 0, 0, 0, 0, -1]
+
+
+def _records(orientations):
+    return [{"image_orientation": o} for o in orientations]
+
+
+def test_orientation_noise_is_one_orientation():
+    from mrid_app.scanner import has_multiple_orientations
+    assert not has_multiple_orientations(_records(_NOISY_AXIAL * 18))
+
+
+def test_different_planes_are_multiple_orientations():
+    from mrid_app.scanner import has_multiple_orientations
+    assert has_multiple_orientations(_records([_AXIAL, _SAGITTAL, _CORONAL]))  # 3-plane localizer
+
+
+def test_a_slight_tilt_is_still_a_different_orientation():
+    import math
+    from mrid_app.scanner import has_multiple_orientations
+    t = math.radians(1.0)   # e.g. a second, slightly angled axial block
+    tilted = [1, 0, 0, 0, math.cos(t), math.sin(t)]
+    assert has_multiple_orientations(_records([_AXIAL, tilted]))
+
+
+def test_missing_or_unreadable_orientations_are_ignored():
+    from mrid_app.scanner import has_multiple_orientations
+    assert not has_multiple_orientations(_records([None, _AXIAL, [], ["x"] * 6, _AXIAL]))
+    assert not has_multiple_orientations(_records([None, None]))
+
+
+def _write_dicom(path, series_uid, study_uid, iop, z, desc):
+    import numpy as np
+    import pydicom
+    from pydicom.dataset import FileDataset, FileMetaDataset
+    from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+    meta = FileMetaDataset()
+    meta.MediaStorageSOPClassUID = pydicom.uid.MRImageStorage
+    meta.MediaStorageSOPInstanceUID = generate_uid()
+    meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    ds = FileDataset(path, {}, file_meta=meta, preamble=b"\0" * 128)
+    ds.SOPClassUID = meta.MediaStorageSOPClassUID
+    ds.SOPInstanceUID = meta.MediaStorageSOPInstanceUID
+    ds.PatientID, ds.AccessionNumber, ds.Modality = "P1", "A1", "MR"
+    ds.StudyInstanceUID, ds.SeriesInstanceUID = study_uid, series_uid
+    ds.SeriesDescription, ds.SeriesNumber = desc, 1
+    ds.ImageType = ["ORIGINAL", "PRIMARY", "M"]
+    ds.ImageOrientationPatient = iop
+    ds.ImagePositionPatient = [0.0, 0.0, float(z)]
+    ds.Rows = ds.Columns = 8
+    ds.SamplesPerPixel, ds.PhotometricInterpretation = 1, "MONOCHROME2"
+    ds.BitsAllocated = ds.BitsStored = 16
+    ds.HighBit, ds.PixelRepresentation = 15, 0
+    ds.PixelData = np.arange(64, dtype=np.uint16).reshape(8, 8).tobytes()
+    ds.save_as(path)
+    return path
+
+
+def test_scan_keeps_series_with_orientation_noise():
+    """End to end through the real DICOM reader: a series whose slices carry
+    noisy orientations is kept, a 3-plane localizer is still skipped."""
+    from pydicom.uid import generate_uid
+    from mrid_app import config
+    from mrid_app.scanner import build_hierarchy, check_dicom_batch
+
+    saved = config.IGNORE_MULTIPLE_ORIENTATIONS
+    config.IGNORE_MULTIPLE_ORIENTATIONS = True
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dicom_dir = os.path.join(tmpdir, "dicom")
+            os.makedirs(dicom_dir)
+            study = generate_uid()
+            spgr, loc = generate_uid(), generate_uid()
+            paths = [_write_dicom(os.path.join(dicom_dir, f"spgr{i}.dcm"), spgr, study,
+                                  _NOISY_AXIAL[i % 3], i, "ax spgr +c") for i in range(12)]
+            paths += [_write_dicom(os.path.join(dicom_dir, f"loc{i}.dcm"), loc, study,
+                                   iop, i, "loc") for i, iop in enumerate([_AXIAL, _SAGITTAL, _CORONAL])]
+
+            records = [r for r in check_dicom_batch(paths) if r]
+            assert len(records) == 15
+            noisy = {tuple(r["image_orientation"]) for r in records if r["series_desc"] == "ax spgr +c"}
+            assert len(noisy) == 3, "premise: the stored orientations differ exactly"
+
+            hierarchy = build_hierarchy(records, output_dir=os.path.join(tmpdir, "out"))
+            series = hierarchy.get("P1", {}).get(study, {}).get("series", {})
+            assert "ax spgr +c" in series, "noisy-orientation series must be kept"
+            entry = series["ax spgr +c"]
+            assert len(entry) == 1, "kept as one series, not split"
+            linked = os.listdir(os.path.dirname(entry[0]["dicom_path"]))
+            assert len(linked) == 12, f"all 12 slices must be kept, got {len(linked)}"
+            assert "loc" not in series, "a real multi-plane localizer must still be skipped"
+    finally:
+        config.IGNORE_MULTIPLE_ORIENTATIONS = saved
