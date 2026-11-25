@@ -17,7 +17,7 @@ PREFER_3D = {
     "T1c": True,
     "Other": False
 }
-# DICOM ImageType filtering
+# DICOM ImageType filtering (ORIGINAL/DERIVED are judged per series: one ORIGINAL image makes the whole series ORIGINAL)
 INCLUDE_TYPES = ["ORIGINAL", "PRIMARY"]  # keep only images whose ImageType contains all of these
 EXCLUDE_TYPES = ["DERIVED", "SECONDARY", "ADC", "DIFFUSION", "LOCALIZER", "MIP", "MPR"]  # skip images whose ImageType contains any of these
 IGNORE_MULTIPLE_ORIENTATIONS = True  # skip series whose images have more than one orientation (e.g. localizers)

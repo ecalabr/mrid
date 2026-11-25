@@ -189,38 +189,104 @@ def test_headless_output_config_gets_the_missing_settings_check():
 
 # ── 2. scanner settings come from the active config ──────────────────────────
 
+def _scan(paths, **options):
+    """Per-file scan plus the per-series step, as the callers run them."""
+    from mrid_app.scanner import check_dicom_batch, select_series_images
+    return select_series_images(check_dicom_batch(paths, **options),
+                                options.get("include_types"), options.get("exclude_types"))
+
+
 def test_image_type_filters_follow_the_config():
-    from mrid_app.scanner import check_dicom_batch
     with _tmpdir() as tmp, _preserve_config_module():
         files = _image_type_files(tmp)
         paths = list(files.values())
-        assert _kept(files, check_dicom_batch(paths)) == ["original"]
+        assert _kept(files, _scan(paths)) == ["original"]
 
         config.INCLUDE_TYPES = ["ORIGINAL"]
         config.EXCLUDE_TYPES = ["LOCALIZER"]
-        assert _kept(files, check_dicom_batch(paths)) == ["orig_secondary", "original"]
+        assert _kept(files, _scan(paths)) == ["orig_secondary", "original"]
 
         config.INCLUDE_TYPES = []  # an empty list imposes no condition
         config.EXCLUDE_TYPES = []
-        assert _kept(files, check_dicom_batch(paths)) == sorted(files)
+        assert _kept(files, _scan(paths)) == sorted(files)
 
         config.INCLUDE_TYPES = ["original", "primary"]  # case does not matter
         config.EXCLUDE_TYPES = ["localizer"]
-        assert _kept(files, check_dicom_batch(paths)) == ["original"]
+        assert _kept(files, _scan(paths)) == ["original"]
 
 
 def test_explicit_options_override_the_config():
-    from mrid_app.scanner import check_dicom_batch
     with _tmpdir() as tmp:
         files = _image_type_files(tmp)
-        kept = check_dicom_batch(list(files.values()), include_types=["DERIVED"], exclude_types=[])
+        kept = _scan(list(files.values()), include_types=["DERIVED"], exclude_types=[])
         assert _kept(files, kept) == ["derived"]
+
+
+def _mixed_series(folder):
+    """Three series of four slices: ORIGINAL with one DERIVED slice, ORIGINAL
+    with one DERIVED\\SECONDARY slice, and all DERIVED. Returns {name: [paths]}."""
+    from pydicom.uid import generate_uid
+    study = generate_uid()
+    layouts = {
+        "mixed": [["ORIGINAL", "PRIMARY", "M"]] * 3 + [["DERIVED", "PRIMARY", "M"]],
+        "mixed_secondary": [["ORIGINAL", "PRIMARY", "M"]] * 3 + [["DERIVED", "SECONDARY", "M"]],
+        "all_derived": [["DERIVED", "PRIMARY", "M"]] * 4,
+    }
+    out = {}
+    for name, types in layouts.items():
+        uid = generate_uid()
+        out[name] = [_write_dicom(os.path.join(folder, f"{name}_{i}.dcm"), it, study, uid, desc=name)
+                     for i, it in enumerate(types)]
+    return out
+
+
+def _kept_per_series(series, results):
+    by_path = {r["path"] for r in results if r}
+    return {name: sum(p in by_path for p in paths) for name, paths in series.items()}
+
+
+def test_series_with_any_original_slice_is_kept_whole():
+    with _tmpdir() as tmp, _preserve_config_module():
+        series = _mixed_series(tmp)
+        paths = [p for ps in series.values() for p in ps]
+        # Defaults: ORIGINAL and PRIMARY required, DERIVED and SECONDARY excluded
+        assert _kept_per_series(series, _scan(paths)) == {
+            "mixed": 4,             # the DERIVED slice stays with its series
+            "mixed_secondary": 3,   # SECONDARY is still checked per image
+            "all_derived": 0,
+        }
+        # A series with an ORIGINAL slice counts as ORIGINAL for every filter
+        assert _kept_per_series(series, _scan(paths, include_types=["DERIVED"], exclude_types=[])) == {
+            "mixed": 0, "mixed_secondary": 0, "all_derived": 4,
+        }
+        assert _kept_per_series(series, _scan(paths, include_types=[], exclude_types=["ORIGINAL"])) == {
+            "mixed": 0, "mixed_secondary": 0, "all_derived": 4,
+        }
+        # Without ORIGINAL/DERIVED filters nothing changes
+        assert _kept_per_series(series, _scan(paths, include_types=[], exclude_types=[])) == {
+            "mixed": 4, "mixed_secondary": 4, "all_derived": 4,
+        }
+
+
+def test_mixed_series_is_kept_whole_across_worker_batches():
+    """The slices of one series can land in different worker batches; the
+    series decision is made after the batches are combined."""
+    from mrid_app.scanner import check_dicom_batch, scan_options, select_series_images
+    with _tmpdir() as tmp, _preserve_config_module():
+        series = _mixed_series(tmp)
+        paths = series["mixed"]
+        options = scan_options()
+        results = []
+        for batch in ([paths[-1]], paths[:-1]):   # DERIVED slice scanned on its own
+            results.extend(check_dicom_batch(batch, **options))
+        kept = select_series_images(results, options["include_types"], options["exclude_types"])
+        assert sorted(r["path"] for r in kept) == sorted(paths)
 
 
 def test_scan_options_reach_spawned_worker_processes():
     """A spawned worker re-imports the repository config; the project's settings
     only arrive if they are passed in explicitly, as the callers now do."""
-    from mrid_app.scanner import check_dicom_batch, scan_options
+    from mrid_app.scanner import check_dicom_batch, scan_options, select_series_images
     with _tmpdir() as tmp, _preserve_config_module():
         files = _image_type_files(tmp)
         paths = list(files.values())
@@ -229,8 +295,10 @@ def test_scan_options_reach_spawned_worker_processes():
         ctx = mp.get_context("spawn")
         with ctx.Pool(1) as pool:
             unconfigured = pool.map(check_dicom_batch, [paths])[0]
-            configured = pool.map(functools.partial(check_dicom_batch, **scan_options()), [paths])[0]
+            options = scan_options()
+            configured = pool.map(functools.partial(check_dicom_batch, **options), [paths])[0]
         assert _kept(files, unconfigured) == ["original"], "premise: the worker sees defaults"
+        configured = select_series_images(configured, options["include_types"], options["exclude_types"])
         assert _kept(files, configured) == ["derived"]
 
 

@@ -21,6 +21,19 @@ def _normalize_image_types(values):
     return [str(v).strip().upper() for v in values if str(v).strip()]
 
 
+# ImageType values that describe where the pixel data came from. Filters on
+# these are applied per series (see select_series_images), the rest per image.
+_ORIGIN_TYPES = ("ORIGINAL", "DERIVED")
+
+
+def _image_origin(image_type):
+    """'ORIGINAL', 'DERIVED' or None for a normalized ImageType list."""
+    for origin in _ORIGIN_TYPES:
+        if origin in image_type:
+            return origin
+    return None
+
+
 def scan_options():
     """The scan settings from the active config, as keyword arguments for
     :func:`check_dicom_batch`.
@@ -46,7 +59,10 @@ def check_dicom_batch(filepaths, include_types=None, exclude_types=None,
     process and then parsing many files sequentially.
 
     A file is kept only if its ImageType contains every value in *include_types*
-    and none in *exclude_types* (an empty list imposes no condition).
+    and none in *exclude_types* (an empty list imposes no condition). ORIGINAL
+    and DERIVED are the exception: they are recorded as the file's
+    ``image_origin`` and checked per series by :func:`select_series_images`,
+    which callers must apply to the combined results.
     *read_orientation* / *read_position* read the tags that
     IGNORE_MULTIPLE_ORIENTATIONS / SEPARATE_STACKED_SERIES need. Anything left as
     None comes from the config this process sees; callers running workers should
@@ -60,8 +76,8 @@ def check_dicom_batch(filepaths, include_types=None, exclude_types=None,
         exclude_types = defaults["exclude_types"] if exclude_types is None else exclude_types
         read_orientation = defaults["read_orientation"] if read_orientation is None else read_orientation
         read_position = defaults["read_position"] if read_position is None else read_position
-    include_types = _normalize_image_types(include_types)
-    exclude_types = _normalize_image_types(exclude_types)
+    include_types = [t for t in _normalize_image_types(include_types) if t not in _ORIGIN_TYPES]
+    exclude_types = [t for t in _normalize_image_types(exclude_types) if t not in _ORIGIN_TYPES]
 
     results = []
     try:
@@ -157,6 +173,7 @@ def check_dicom_batch(filepaths, include_types=None, exclude_types=None,
                     "series_number": int(getattr(ds, "SeriesNumber", 0)),
                     "image_position": getattr(ds, "ImagePositionPatient", None),
                     "image_orientation": getattr(ds, "ImageOrientationPatient", None),
+                    "image_origin": _image_origin(img_type),
                 }
                 results.append(rec)
             except Exception:
@@ -165,6 +182,49 @@ def check_dicom_batch(filepaths, include_types=None, exclude_types=None,
         # If import fails, return a list of None placeholders matching inputs
         results = [None] * len(filepaths)
     return results
+
+
+def select_series_images(results, include_types=None, exclude_types=None):
+    """Combine :func:`check_dicom_batch` results and apply the ORIGINAL/DERIVED
+    part of the ImageType filters to each series as a whole.
+
+    A series with at least one ORIGINAL image counts as ORIGINAL, including its
+    DERIVED images, so a series that mixes the two is kept or skipped in full
+    instead of being cut down to a partial volume. Otherwise it counts as
+    DERIVED if any image is. Unreadable or filtered files (None) are dropped.
+    Filters left as None come from the active config.
+    """
+    if include_types is None:
+        include_types = config.INCLUDE_TYPES
+    if exclude_types is None:
+        exclude_types = config.EXCLUDE_TYPES
+    include = [t for t in _normalize_image_types(include_types) if t in _ORIGIN_TYPES]
+    exclude = [t for t in _normalize_image_types(exclude_types) if t in _ORIGIN_TYPES]
+
+    records = [r for r in results if r is not None]
+    if not include and not exclude:
+        return records
+
+    series_key = itemgetter('patient', 'study_uid', 'series_uid')
+    origins = defaultdict(set)
+    for rec in records:
+        origins[series_key(rec)].add(rec.get('image_origin'))
+
+    kept, promoted, promoted_series = [], 0, set()
+    for rec in records:
+        key = series_key(rec)
+        found = origins[key]
+        origin = next((o for o in _ORIGIN_TYPES if o in found), None)
+        if not all(t == origin for t in include) or origin in exclude:
+            continue
+        kept.append(rec)
+        if origin == "ORIGINAL" and rec.get('image_origin') != "ORIGINAL":
+            promoted += 1
+            promoted_series.add(key)
+    if promoted:
+        logger.info(f"Treated {promoted} non-ORIGINAL image(s) as ORIGINAL in "
+                    f"{len(promoted_series)} series that also contain ORIGINAL images.")
+    return kept
 
 
 def convert_defaultdict_to_dict(obj):

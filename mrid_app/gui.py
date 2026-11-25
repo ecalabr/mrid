@@ -1353,7 +1353,8 @@ class MainApp:
                     import functools
                     from .scanner import check_dicom_batch, scan_options
                     # Pass the project's scan settings to the workers explicitly
-                    scan_batch = functools.partial(check_dicom_batch, **scan_options())
+                    scan_opts = scan_options()
+                    scan_batch = functools.partial(check_dicom_batch, **scan_opts)
 
                     processed = 0
                     for batch_res in pool.imap_unordered(scan_batch, chunks):
@@ -1379,7 +1380,9 @@ class MainApp:
                     pool.join()
 
                 # 4. Process results
-                dicom_records = [r for r in results if r is not None]
+                from .scanner import select_series_images
+                dicom_records = select_series_images(
+                    results, scan_opts["include_types"], scan_opts["exclude_types"])
                 logger.info(f"Identified {len(dicom_records)} valid DICOM files.")
 
                 # Count unique groups for hierarchy building
@@ -3194,7 +3197,8 @@ class MainApp:
                     import functools
                     from .scanner import check_dicom_batch, scan_options
                     # Pass the project's scan settings to the workers explicitly
-                    scan_batch = functools.partial(check_dicom_batch, **scan_options())
+                    scan_opts = scan_options()
+                    scan_batch = functools.partial(check_dicom_batch, **scan_opts)
                     batch_size = 64
                     chunks = [all_files[i:i + batch_size] for i in range(0, len(all_files), batch_size)]
                     processed = 0
@@ -3217,7 +3221,9 @@ class MainApp:
                     pool.close()
                     pool.join()
 
-                dicom_records = [r for r in results if r is not None]
+                from .scanner import select_series_images
+                dicom_records = select_series_images(
+                    results, scan_opts["include_types"], scan_opts["exclude_types"])
                 logger.info(f"Identified {len(dicom_records)} valid DICOM records.")
 
                 groups = set((r['patient'], r['study_uid'], r['series_uid']) for r in dicom_records)

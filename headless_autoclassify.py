@@ -232,7 +232,7 @@ def scan_dicom_directory(input_dir, output_dir, num_workers=None):
     This replicates the scanning logic from the GUI.
     """
     import functools
-    from mrid_app.scanner import check_dicom_batch, build_hierarchy, scan_options
+    from mrid_app.scanner import check_dicom_batch, build_hierarchy, scan_options, select_series_images
     from mrid_app.utils import write_yaml_hierarchy
 
     logger = get_logger()
@@ -268,7 +268,8 @@ def scan_dicom_directory(input_dir, output_dir, num_workers=None):
         chunks = [all_files[i:i + batch_size] for i in range(0, len(all_files), batch_size)]
 
         # Pass the project's scan settings to the workers explicitly
-        scan_batch = functools.partial(check_dicom_batch, **scan_options())
+        options = scan_options()
+        scan_batch = functools.partial(check_dicom_batch, **options)
 
         processed = 0
         for batch_res in pool.imap_unordered(scan_batch, chunks):
@@ -290,7 +291,7 @@ def scan_dicom_directory(input_dir, output_dir, num_workers=None):
 
     print()  # Newline after progress
 
-    dicom_records = [r for r in results if r is not None]
+    dicom_records = select_series_images(results, options["include_types"], options["exclude_types"])
     logger.info(f"Identified {len(dicom_records)} valid DICOM files.")
 
     if not dicom_records:
