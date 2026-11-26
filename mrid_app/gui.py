@@ -1021,8 +1021,9 @@ class MainApp:
             if hierarchy_exists:
                 try:
                     import yaml
+                    from .scanner import split_shared_descriptions
                     with open(hierarchy_path, 'r') as hf:
-                        existing_hierarchy = yaml.safe_load(hf)
+                        existing_hierarchy = split_shared_descriptions(yaml.safe_load(hf))
                     logger.info("Automatically loaded existing hierarchy.yaml - skipping DICOM scan")
                 except Exception as e:
                     logger.warning(f"Failed to load existing hierarchy.yaml: {e} - will rescan files")

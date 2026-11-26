@@ -361,6 +361,8 @@ def _rules():
         "IGNORE_MULTIPLE_ORIENTATIONS": _bool_rule(),
         "SEPARATE_STACKED_SERIES": _bool_rule(),
         "MAX_SPLIT": _int_rule(1),
+        "MERGE_STUDIES": _bool_rule(),
+        "MERGE_STUDIES_WINDOW_DAYS": _int_rule(0),
         "ANALYZE_COVERAGE_THRESHOLD": _float_rule(0.0, 1.0),
         "ANALYZE_HDBSCAN_CLUSTER_METHOD": _choice_rule(("eom", "leaf")),
         "NUM_COLUMNS": _int_rule(1),

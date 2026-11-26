@@ -385,7 +385,7 @@ The wizard walks you through generating or editing a project config without touc
 
 #### Pages:
 1. **Output naming** (study name template, thumbnail format/quality)
-2. **Classification & DICOM filtering** (target series with per-series 3D preference, ImageType include/exclude filters, stacked-series handling)
+2. **Classification & DICOM filtering** (target series with per-series 3D preference, ImageType include/exclude filters, stacked-series handling, study merging)
 3. **Classification UI** (grid size, thresholds, the [Header + Image fusion rule](#header--image-fusion), ordering). An **Advanced Settings** page covers model hyperparameters, the [text embedding model](#text-embedding-model), the DICOM header field list, the Analyze coverage threshold and HDBSCAN method, and the log level. Saving rewrites the config file while preserving its comments. In Analyze mode the target-series section is locked, since Analyze determines the series itself.
 
 <p align="center">
@@ -394,7 +394,7 @@ The wizard walks you through generating or editing a project config without touc
 </p>
 <p align="center">
   <img src="docs/images/config_wizard_classification.png" alt="Config wizard step 2: classification and DICOM filtering" width="640">
-  <br><em>Step 2 — Classification &amp; DICOM filtering: target labels with per-label 3D preference, ImageType include/exclude, and stacked-series handling.</em>
+  <br><em>Step 2 — Classification &amp; DICOM filtering: target labels with per-label 3D preference, ImageType include/exclude, stacked-series handling, and study merging.</em>
 </p>
 <p align="center">
   <img src="docs/images/config_wizard_ui.png" alt="Config wizard step 3: classification UI settings" width="640">
@@ -454,12 +454,16 @@ EXCLUDE_TYPES = ["DERIVED", "SECONDARY", "ADC", "DIFFUSION", "LOCALIZER", "MIP",
 IGNORE_MULTIPLE_ORIENTATIONS = True       # skip series mixing orientations
 SEPARATE_STACKED_SERIES = True            # split multi-volume series
 MAX_SPLIT = 5                             # max splits per stacked series
+MERGE_STUDIES = False                     # merge a patient's studies performed close together
+MERGE_STUDIES_WINDOW_DAYS = 0             # ...within this many days (0 = same calendar day)
 ```
 Use these parameters to pre-filter series before even attempting to classify.
 - Primary filtering is based on the `ImageType` DICOM field: an image passes if its `ImageType` contains every value in `INCLUDE_TYPES` and none in `EXCLUDE_TYPES` (matching ignores case; an empty list imposes no condition). Series are kept or skipped whole: a series is kept in full if at least one of its images passes, so a series that mixes image types (e.g. ORIGINAL and DERIVED slices) is never cut down to a partial volume. Filtering happens when DICOMs are scanned, so a change applies to the next scan of the input folder, not to a `hierarchy.yaml` built earlier.
 - `IGNORE_MULTIPLE_ORIENTATIONS` excludes or include series with multiple different image orientations (e.g. 3-plane localizer images or angled axial images of the spine). Orientations are compared with a small tolerance (`1e-4` per direction cosine, about 0.006°), so the tiny slice-to-slice variation some scanners write in `ImageOrientationPatient` does not count as a different orientation.
 - `SEPARATE_STACKED_SERIES` optionally splits multi-volume series (e.g. DWI/B0 or multi-phase postcontrast imaging) into separate series per volume.
 - `MAX_SPLIT` limits how many volumes are split off a series (when `SEPARATE_STACKED_SERIES` is True). Series exceeding this number are left intact (e.g. a stacked 60-direction DTI scan).
+- `MERGE_STUDIES` treats a patient's studies performed within `MERGE_STUDIES_WINDOW_DAYS` of each other (by `StudyDate`) as one exam, e.g. a brain and a spine study from the same visit. The window is measured from the exam's earliest study, and studies without a date are never merged. The merged exam is classified and saved under its earliest study's UID and accession number, and `hierarchy.yaml` lists the merged studies under `merged_studies`. **Export DICOMS** still files each series under its own study UID. Off by default.
+- Series in a study that share a description are listed separately; later ones (by series number) get a numbered suffix, e.g. `ax t1 (2)`.
 
 ```python
 ANALYZE_COVERAGE_THRESHOLD = 0.1

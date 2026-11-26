@@ -131,10 +131,11 @@ def model_type_str(model_type_arg):
 
 def load_hierarchy_from_yaml(yaml_path):
     """Load hierarchy from a YAML file."""
+    from mrid_app.scanner import split_shared_descriptions
     print(f"Loading hierarchy from: {yaml_path}")
     with open(yaml_path, "r") as f:
         hierarchy = yaml.safe_load(f)
-    return hierarchy
+    return split_shared_descriptions(hierarchy)
 
 
 def resolve_config_path(config_arg, output_dir):

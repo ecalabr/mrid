@@ -1,4 +1,5 @@
 from collections import defaultdict
+from datetime import datetime
 from operator import itemgetter
 from itertools import groupby
 import os
@@ -94,6 +95,8 @@ def check_dicom_batch(filepaths, include_types=None, exclude_types=None,
                     Tag(0x0020, 0x000E),  # SeriesInstanceUID
                     Tag(0x0008, 0x103E),  # SeriesDescription
                     Tag(0x0020, 0x0011),  # SeriesNumber
+                    Tag(0x0008, 0x0020),  # StudyDate
+                    Tag(0x0008, 0x0021),  # SeriesDate (fallback for StudyDate)
                 ]
                 if read_orientation:
                     specific = specific + [Tag(0x0020, 0x0037)]  # ImageOrientationPatient
@@ -154,6 +157,7 @@ def check_dicom_batch(filepaths, include_types=None, exclude_types=None,
                     "series_uid": str(getattr(ds, "SeriesInstanceUID", None)),
                     "series_desc": getattr(ds, "SeriesDescription", "UNKNOWN_SERIES"),
                     "series_number": int(getattr(ds, "SeriesNumber", 0)),
+                    "study_date": str(getattr(ds, "StudyDate", "") or getattr(ds, "SeriesDate", "") or ""),
                     "image_position": getattr(ds, "ImagePositionPatient", None),
                     "image_orientation": getattr(ds, "ImageOrientationPatient", None),
                     "passes_image_type": passes_image_type,
@@ -421,6 +425,94 @@ def has_multiple_orientations(file_records, tolerance=ORIENTATION_TOLERANCE):
     return False
 
 
+def unique_series_key(series_dict, desc):
+    """*desc*, or "desc (2)", "desc (3)", ... if a series already uses it.
+
+    Each key of a study's series dict holds exactly one series; series that
+    share a description get numbered keys instead of sharing one.
+    """
+    if desc not in series_dict:
+        return desc
+    n = 2
+    while f"{desc} ({n})" in series_dict:
+        n += 1
+    return f"{desc} ({n})"
+
+
+def split_shared_descriptions(hierarchy):
+    """Give every series in *hierarchy* its own key, in place, and return it.
+
+    Hierarchies written by earlier versions kept series that share a
+    description as several entries under one key, of which only the first was
+    classified. Loading one through this function recovers the others.
+    """
+    recovered = 0
+    for studies in (hierarchy or {}).values():
+        if not isinstance(studies, dict):
+            continue
+        for study_data in studies.values():
+            series = study_data.get("series") if isinstance(study_data, dict) else None
+            if not isinstance(series, dict) or all(
+                    not isinstance(e, list) or len(e) <= 1 for e in series.values()):
+                continue
+            split = {}
+            taken = dict.fromkeys(series)   # existing keys are never reassigned
+            for desc, entries in series.items():
+                if not isinstance(entries, list) or len(entries) <= 1:
+                    split[desc] = entries
+                    continue
+                recovered += len(entries) - 1
+                split[desc] = entries[:1]
+                for entry in entries[1:]:
+                    key = unique_series_key(taken, desc)
+                    taken[key] = None
+                    split[key] = [entry]
+            study_data["series"] = split
+    if recovered:
+        logger.info(f"Gave {recovered} series that share a description with another series in "
+                    f"their study their own entry. Studies classified before this keep their "
+                    f"saved CSV; reopen them to classify these series.")
+    return hierarchy
+
+
+def _parse_study_date(value):
+    """A DICOM DA value (YYYYMMDD, or the old YYYY.MM.DD form) as a date, or None."""
+    text = str(value or "").strip().replace(".", "")
+    try:
+        return datetime.strptime(text[:8], "%Y%m%d").date()
+    except ValueError:
+        return None
+
+
+def study_merge_map(dicom_records, window_days):
+    """Which study each study merges into when same-patient studies are merged.
+
+    Returns {(patient, study_uid): study_uid of the exam it belongs to}. Per
+    patient, dated studies are taken in date order; each one joins the current
+    exam if its date is at most *window_days* after that exam's first study
+    (0 = same calendar day), and starts a new exam otherwise. Studies without a
+    readable date are never merged and are left out of the map.
+    """
+    dates = {}
+    for rec in dicom_records:
+        key = (rec['patient'], rec['study_uid'])
+        if dates.get(key) is None:
+            dates[key] = _parse_study_date(rec.get('study_date'))
+    by_patient = defaultdict(list)
+    for (patient, study_uid), date in dates.items():
+        if date is not None:
+            by_patient[patient].append((date, study_uid))
+
+    mapping = {}
+    for patient, studies in by_patient.items():
+        anchor_date = anchor_uid = None
+        for date, study_uid in sorted(studies):
+            if anchor_uid is None or (date - anchor_date).days > window_days:
+                anchor_date, anchor_uid = date, study_uid
+            mapping[(patient, study_uid)] = anchor_uid
+    return mapping
+
+
 def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thumbnail_progress_callback=None):
     # Sort globally once
     dicom_records.sort(key=itemgetter(
@@ -449,6 +541,18 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
         logger.info("Detected unorganized DICOM folder. Organizing files with symlinks in dicom_symlinks directory...")
 
     group_key = itemgetter('patient', 'study_uid', 'series_uid')
+
+    # Optionally merge each patient's studies performed close together into one exam
+    merge_into = {}
+    if config.MERGE_STUDIES:
+        merge_into = study_merge_map(dicom_records, config.MERGE_STUDIES_WINDOW_DAYS)
+        study_accn = {}
+        for rec in dicom_records:
+            study_accn.setdefault((rec['patient'], rec['study_uid']), rec.get('accession_number', '') or '')
+        n_merged = sum(1 for (p, u), target in merge_into.items() if u != target)
+        if n_merged:
+            logger.info(f"Merging {n_merged} studies into an earlier study of the same patient "
+                        f"(MERGE_STUDIES, within {config.MERGE_STUDIES_WINDOW_DAYS} day(s)).")
 
     # Use a counter to report progress back to caller
     processed_groups = 0
@@ -485,15 +589,24 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
         # We handle splitting and normal assignment here
         patient_dict = hierarchy.setdefault(mrn, {})
 
-        # Initialize study data if this is the first time we're seeing this study
-        if study_uid not in patient_dict:
-            patient_dict[study_uid] = {
-                "accn": first_rec.get('accession_number', '') or '',
+        # The exam this series belongs to: its own study, or the earlier study
+        # it merges into
+        exam_uid = merge_into.get((mrn, study_uid), study_uid)
+        if exam_uid not in patient_dict:
+            patient_dict[exam_uid] = {
+                "accn": (study_accn[(mrn, exam_uid)] if exam_uid != study_uid
+                         else first_rec.get('accession_number', '') or ''),
                 "series": {}
             }
-
-        study_data = patient_dict[study_uid]
+        study_data = patient_dict[exam_uid]
+        if exam_uid != study_uid:
+            merged = study_data.setdefault("merged_studies", [exam_uid])
+            if study_uid not in merged:
+                merged.append(study_uid)
         study_dict = study_data["series"]
+        # Symlink folders keep the series' own study identity
+        series_accn = first_rec.get('accession_number', '') or ''
+
         base_desc = first_rec['series_desc'] or "UNKNOWN_SERIES"
 
         unique_positions_set = {tuple(f['image_position']) for f in files if f['image_position']}
@@ -530,7 +643,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
                     if not temp_base: continue
 
                     subseries_dir = os.path.join(temp_base, get_symlink_dir_name(
-                        mrn, study_uid, series_uid, study_data["accn"], n
+                        mrn, study_uid, series_uid, series_accn, n
                     ))
                     os.makedirs(subseries_dir, exist_ok=True)
 
@@ -548,7 +661,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
                         'dicom_path': first_link,
                         'thumbnail_path': None  # Will be filled in parallel phase
                     }
-                    study_dict.setdefault(desc_key, []).append(entry_dict)
+                    study_dict[unique_series_key(study_dict, desc_key)] = [entry_dict]
 
                     # Queue thumbnail generation task
                     if thumbnail_base and first_link:
@@ -577,7 +690,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
                 try:
                     # Create organized directory structure using symlinks
                     organized_dir = os.path.join(temp_base, get_symlink_dir_name(
-                        mrn, study_uid, series_uid, study_data["accn"]
+                        mrn, study_uid, series_uid, series_accn
                     ))
                     os.makedirs(organized_dir, exist_ok=True)
 
@@ -594,7 +707,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
                         'dicom_path': first_link,
                         'thumbnail_path': None  # Will be filled in parallel phase
                     }
-                    study_dict.setdefault(base_desc, []).append(entry_dict)
+                    study_dict[unique_series_key(study_dict, base_desc)] = [entry_dict]
 
                     # Queue thumbnail generation task
                     if thumbnail_base and first_link:
@@ -614,7 +727,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
                         'dicom_path': first_rec['path'],
                         'thumbnail_path': None  # Will be filled in parallel phase
                     }
-                    study_dict.setdefault(base_desc, []).append(entry_dict)
+                    study_dict[unique_series_key(study_dict, base_desc)] = [entry_dict]
 
                     # Queue thumbnail generation task
                     if thumbnail_base:
@@ -633,7 +746,7 @@ def build_hierarchy(dicom_records, output_dir=None, progress_callback=None, thum
                     'dicom_path': first_rec['path'],
                     'thumbnail_path': None  # Will be filled in parallel phase
                 }
-                study_dict.setdefault(base_desc, []).append(entry_dict)
+                study_dict[unique_series_key(study_dict, base_desc)] = [entry_dict]
 
                 # Queue thumbnail generation task
                 if thumbnail_base:

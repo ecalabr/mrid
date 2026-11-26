@@ -23,6 +23,8 @@ EXCLUDE_TYPES = ["DERIVED", "SECONDARY", "ADC", "DIFFUSION", "LOCALIZER", "MIP",
 IGNORE_MULTIPLE_ORIENTATIONS = True  # skip series whose images have more than one orientation (e.g. localizers)
 SEPARATE_STACKED_SERIES = True  # split series that repeat slice positions (multi-echo, dynamic) into separate series
 MAX_SPLIT = 5  # max number of splits for stacked series
+MERGE_STUDIES = False  # merge a patient's studies performed within MERGE_STUDIES_WINDOW_DAYS of each other into one exam
+MERGE_STUDIES_WINDOW_DAYS = 0  # days between study dates for MERGE_STUDIES (0 = same calendar day)
 
 # Analyze mode settings
 ANALYZE_COVERAGE_THRESHOLD = 0.1  # clusters will only be considered if this proportion of exams contains a member

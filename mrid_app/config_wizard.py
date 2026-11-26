@@ -82,6 +82,7 @@ class ConfigWizard:
         for name in ["STUDY_NAME_TEMPLATE", "THUMBNAIL_FORMAT", "THUMBNAIL_QUALITY",
                      "TARGET_SERIES", "PREFER_3D", "INCLUDE_TYPES", "EXCLUDE_TYPES",
                      "IGNORE_MULTIPLE_ORIENTATIONS", "SEPARATE_STACKED_SERIES", "MAX_SPLIT",
+                     "MERGE_STUDIES", "MERGE_STUDIES_WINDOW_DAYS",
                      "NUM_COLUMNS", "NUM_ROWS", "THUMBNAIL_SCALE_FACTOR", "OVERRIDE_THRESHOLD",
                      "ALLOW_DUPLICATE_LABELS", "NUM_PARALLEL_WORKERS", "RANDOMIZE_STUDY_ORDER",
                      "STUDY_ORDER_SEED", "FUSION_METHOD",
@@ -306,6 +307,11 @@ class ConfigWizard:
                                           self._initial["SEPARATE_STACKED_SERIES"])
         self.v_max_split = self._entry_row(grid, 4, "Max splits per series:",
                                            self._initial["MAX_SPLIT"], width=80)
+        self.v_merge = self._check_row(grid, 5, "Merge a patient's studies performed close together",
+                                       self._initial["MERGE_STUDIES"])
+        self.v_merge_days = self._entry_row(grid, 6, "Merge window (days):",
+                                            self._initial["MERGE_STUDIES_WINDOW_DAYS"], width=80,
+                                            hint="0 = same calendar day")
 
         return {"frame": frame, "title": "Step 2 of 3 — Classification & DICOM Filtering",
                 "subtitle": "Which series types to classify and which DICOM files to consider."}
@@ -492,6 +498,8 @@ class ConfigWizard:
             "IGNORE_MULTIPLE_ORIENTATIONS": repr(bool(self.v_ignore_multi.get())),
             "SEPARATE_STACKED_SERIES": repr(bool(self.v_separate.get())),
             "MAX_SPLIT": repr(self._parse(self.v_max_split, int, "Max splits", 1)),
+            "MERGE_STUDIES": repr(bool(self.v_merge.get())),
+            "MERGE_STUDIES_WINDOW_DAYS": repr(self._parse(self.v_merge_days, int, "Merge window", 0)),
             "NUM_COLUMNS": repr(self._parse(self.v_columns, int, "Grid columns", 1)),
             "NUM_ROWS": repr(self._parse(self.v_rows, int, "Grid rows", 1)),
             "THUMBNAIL_SCALE_FACTOR": repr(self._parse(self.v_thumb_scale, float, "Thumbnail scale", 0.1)),
